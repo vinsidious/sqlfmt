@@ -49,7 +49,7 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 ## Install
 
 ```bash
-npm install sqlfmt
+npm install @vcoppola/sqlfmt
 ```
 
 ## Usage
@@ -70,7 +70,7 @@ npx sqlfmt --check query.sql
 ### As a library
 
 ```typescript
-import { formatSQL } from 'sqlfmt';
+import { formatSQL } from '@vcoppola/sqlfmt';
 
 const formatted = formatSQL(`
   select name, email from users where active = true
