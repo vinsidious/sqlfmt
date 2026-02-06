@@ -1,6 +1,6 @@
 {
   "name": "@vcoppola/sqlfmt",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "An opinionated SQL formatter implementing the Simon Holywell SQL Style Guide (sqlstyle.guide)",
   "type": "module",
   "main": "dist/index.cjs",
