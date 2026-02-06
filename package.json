@@ -1,26 +1,32 @@
 {
-  "name": "sqlfmt",
+  "name": "@vcoppola/sqlfmt",
   "version": "1.0.0",
   "description": "An opinionated SQL formatter implementing the Simon Holywell SQL Style Guide (sqlstyle.guide)",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "types": "dist/index.d.cts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.js"
+      "types": {
+        "import": "./dist/index.d.ts",
+        "require": "./dist/index.d.cts"
+      },
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     }
   },
   "bin": {
-    "sqlfmt": "./dist/cli.js"
+    "sqlfmt": "dist/cli.cjs"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
     "test": "bun test",
     "check": "tsc --noEmit",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "release": "sh -c 'npm version \"$1\" && git push --follow-tags' --"
   },
   "keywords": [
     "sql",
@@ -42,6 +48,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/bun": "^1.3.8",
+    "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   }
 }
