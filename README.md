@@ -113,6 +113,13 @@ The pipeline is:
 
 The key formatting concept is the **river**. For each statement, `sqlfmt` derives a river width from the longest top-level aligned keyword in that statement (for example, `RETURNING` can widen DML alignment). Clause/logical keywords are then right-aligned to that width so content starts in a consistent column. Nested blocks may use their own derived widths. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
 
+## Limitations
+
+- Dialect coverage is broad but intentionally pragmatic, with strongest support for PostgreSQL-style syntax.
+- Procedural SQL bodies (`CREATE FUNCTION ... LANGUAGE plpgsql` control-flow blocks, vendor-specific scripting extensions) are not fully parsed as procedural ASTs.
+- Unknown/unsupported constructs may fall back to raw statement preservation.
+- Formatting style is opinionated and focused on a Holywell-style output rather than per-project style configurability.
+
 ## License
 
 MIT
