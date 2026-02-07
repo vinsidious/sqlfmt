@@ -5,6 +5,7 @@ export type Statement =
   | InsertStatement
   | UpdateStatement
   | DeleteStatement
+  | ExplainStatement
   | CreateTableStatement
   | AlterTableStatement
   | DropTableStatement
@@ -56,6 +57,7 @@ export type Expression =
   | ArrayConstructorExpr
   | IsDistinctFromExpr
   | RegexExpr
+  | CollateExpr
   | AliasedExpr
   | ArraySubscriptExpr
   | OrderedExpr
@@ -64,6 +66,7 @@ export type Expression =
 export interface SelectStatement {
   readonly type: 'select';
   readonly distinct: boolean;
+  readonly distinctOn?: readonly Expression[];
   readonly columns: readonly ColumnExpr[];
   readonly from?: FromClause;
   readonly additionalFromItems?: readonly FromClause[];
@@ -201,8 +204,24 @@ export interface CTEStatement {
   readonly type: 'cte';
   readonly recursive?: boolean;
   readonly ctes: readonly CTEDefinition[];
+  readonly search?: CTESearchClause;
+  readonly cycle?: CTECycleClause;
   readonly mainQuery: SelectStatement | UnionStatement;
   readonly leadingComments: readonly CommentNode[];
+}
+
+export interface CTESearchClause {
+  readonly mode: 'DEPTH FIRST' | 'BREADTH FIRST';
+  readonly by: readonly string[];
+  readonly set: string;
+}
+
+export interface CTECycleClause {
+  readonly columns: readonly string[];
+  readonly set: string;
+  readonly using?: string;
+  readonly to?: Expression;
+  readonly default?: Expression;
 }
 
 export interface CTEDefinition {
@@ -229,6 +248,21 @@ export interface MergeWhenClause {
   readonly setItems?: readonly { readonly column: string; readonly value: Expression }[];
   readonly columns?: readonly string[];
   readonly values?: readonly Expression[];
+}
+
+export interface ExplainStatement {
+  readonly type: 'explain';
+  readonly analyze?: boolean;
+  readonly verbose?: boolean;
+  readonly costs?: boolean;
+  readonly buffers?: boolean;
+  readonly timing?: boolean;
+  readonly summary?: boolean;
+  readonly settings?: boolean;
+  readonly wal?: boolean;
+  readonly format?: 'TEXT' | 'XML' | 'JSON' | 'YAML';
+  readonly statement: QueryExpression;
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface CreateIndexStatement {
@@ -454,8 +488,19 @@ export interface PgCastExpr {
 export interface WindowSpec {
   readonly partitionBy?: readonly Expression[];
   readonly orderBy?: readonly OrderByItem[];
-  readonly frame?: string;
+  readonly frame?: FrameSpec;
   readonly exclude?: string;
+}
+
+export interface FrameSpec {
+  readonly unit: 'ROWS' | 'RANGE' | 'GROUPS';
+  readonly start: FrameBound;
+  readonly end?: FrameBound;
+}
+
+export interface FrameBound {
+  readonly kind: 'UNBOUNDED PRECEDING' | 'UNBOUNDED FOLLOWING' | 'CURRENT ROW' | 'PRECEDING' | 'FOLLOWING';
+  readonly value?: Expression;
 }
 
 export interface WindowFunctionExpr {
@@ -463,7 +508,7 @@ export interface WindowFunctionExpr {
   readonly func: FunctionCallExpr;
   readonly partitionBy?: readonly Expression[];
   readonly orderBy?: readonly OrderByItem[];
-  readonly frame?: string; // raw frame clause like "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+  readonly frame?: FrameSpec;
   readonly exclude?: string;
   readonly windowName?: string;
 }
@@ -522,6 +567,12 @@ export interface RegexExpr {
   readonly right: Expression;
 }
 
+export interface CollateExpr {
+  readonly type: 'collate';
+  readonly expr: Expression;
+  readonly collation: string;
+}
+
 export interface AliasedExpr {
   readonly type: 'aliased';
   readonly expr: Expression;
@@ -545,7 +596,14 @@ export interface OrderedExpr {
 export interface RawExpression {
   readonly type: 'raw';
   readonly text: string;
+  readonly reason?: RawReason;
 }
+
+export type RawReason =
+  | 'parse_error'
+  | 'unsupported'
+  | 'comment_only'
+  | 'verbatim';
 
 // Column expression with optional alias and comment
 export interface ColumnExpr {
@@ -622,6 +680,7 @@ export interface TableElement {
   readonly name?: string;
   readonly dataType?: string;
   readonly constraints?: string;
+  readonly columnConstraints?: readonly ColumnConstraint[];
   readonly constraintName?: string;
   readonly constraintBody?: string;
   readonly constraintType?: 'check' | 'raw';
@@ -630,4 +689,75 @@ export interface TableElement {
   readonly fkRefTable?: string;
   readonly fkRefColumns?: string;
   readonly fkActions?: string;
+}
+
+export type ColumnConstraint =
+  | ColumnConstraintNotNull
+  | ColumnConstraintNull
+  | ColumnConstraintDefault
+  | ColumnConstraintCheck
+  | ColumnConstraintReferences
+  | ColumnConstraintGeneratedIdentity
+  | ColumnConstraintPrimaryKey
+  | ColumnConstraintUnique
+  | ColumnConstraintRaw;
+
+export interface ColumnConstraintNotNull {
+  readonly type: 'not_null';
+  readonly name?: string;
+}
+
+export interface ColumnConstraintNull {
+  readonly type: 'null';
+  readonly name?: string;
+}
+
+export interface ColumnConstraintDefault {
+  readonly type: 'default';
+  readonly name?: string;
+  readonly expr: Expression;
+}
+
+export interface ColumnConstraintCheck {
+  readonly type: 'check';
+  readonly name?: string;
+  readonly expr: Expression;
+}
+
+export interface ColumnConstraintReferences {
+  readonly type: 'references';
+  readonly name?: string;
+  readonly table: string;
+  readonly columns?: readonly string[];
+  readonly actions?: readonly ReferentialAction[];
+  readonly deferrable?: 'DEFERRABLE' | 'NOT DEFERRABLE';
+  readonly initially?: 'DEFERRED' | 'IMMEDIATE';
+}
+
+export interface ReferentialAction {
+  readonly event: 'DELETE' | 'UPDATE';
+  readonly action: 'RESTRICT' | 'CASCADE' | 'SET NULL' | 'SET DEFAULT' | 'NO ACTION';
+}
+
+export interface ColumnConstraintGeneratedIdentity {
+  readonly type: 'generated_identity';
+  readonly name?: string;
+  readonly always: boolean;
+  readonly options?: string;
+}
+
+export interface ColumnConstraintPrimaryKey {
+  readonly type: 'primary_key';
+  readonly name?: string;
+}
+
+export interface ColumnConstraintUnique {
+  readonly type: 'unique';
+  readonly name?: string;
+}
+
+export interface ColumnConstraintRaw {
+  readonly type: 'raw';
+  readonly name?: string;
+  readonly text: string;
 }
