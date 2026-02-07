@@ -1,6 +1,6 @@
 {
   "name": "@vcoppola/sqlfmt",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Zero-config SQL formatter with river alignment (sqlstyle.guide). Zero dependencies.",
   "sideEffects": false,
   "type": "module",
