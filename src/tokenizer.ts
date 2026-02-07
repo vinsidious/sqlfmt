@@ -78,8 +78,16 @@ export function tokenize(input: string): Token[] {
     // Quoted identifier: "identifier"
     if (ch === '"') {
       pos++;
-      while (pos < len && input[pos] !== '"') pos++;
-      if (pos < len) pos++; // skip closing quote
+      while (pos < len) {
+        if (input[pos] === '"' && pos + 1 < len && input[pos + 1] === '"') {
+          pos += 2; // escaped double quote inside identifier
+        } else if (input[pos] === '"') {
+          pos++;
+          break;
+        } else {
+          pos++;
+        }
+      }
       const val = input.slice(start, pos);
       tokens.push({ type: 'identifier', value: val, upper: val, position: start });
       continue;
