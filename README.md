@@ -49,6 +49,21 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 - Comment-aware formatting for line and block comments
 - Idempotent — formatting already-formatted SQL produces the same output
 
+## Why sqlfmt?
+
+| | **sqlfmt** | sql-formatter | prettier-plugin-sql |
+|---|---|---|---|
+| **Formatting style** | River alignment ([sqlstyle.guide](https://www.sqlstyle.guide/)) | Indentation-based | Indentation-based |
+| **Configuration** | Zero-config, opinionated | Configurable | Configurable via Prettier |
+| **PostgreSQL support** | First-class (casts, JSON ops, dollar-quoting, arrays) | Partial | Partial |
+| **Runtime dependencies** | Zero | Several | Prettier + parser |
+| **Idempotent** | Yes | Yes | Yes |
+| **Keyword casing** | Uppercase (enforced) | Configurable | Configurable |
+| **Identifier casing** | Lowercase (enforced) | Not modified | Not modified |
+| **Output** | Deterministic, single style | Depends on config | Depends on config |
+
+sqlfmt is the right choice when you want a formatter that produces consistent, readable SQL without any configuration decisions -- just run it and move on.
+
 ## Install
 
 ```bash
