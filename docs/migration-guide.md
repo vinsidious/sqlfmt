@@ -6,8 +6,8 @@ Use this guide to roll out `sqlfmt` across an existing codebase with minimal chu
 
 `sqlfmt` is intentionally opinionated:
 
-- No `.sqlfmtrc`
-- No style toggles
+- Optional `.sqlfmtrc.json` for operational settings (`maxLineLength`, `maxDepth`, `maxInputSize`, `strict`, `recover`)
+- No style toggles (indent/casing/alignment modes)
 - Deterministic output
 
 Plan for one-time diffs when first applying formatting.

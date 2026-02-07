@@ -29,7 +29,24 @@ interface CLIOptions {
   strict: boolean;
   ignore: string[];
   stdinFilepath: string | null;
+  configPath: string | null;
+  maxLineLength?: number;
   files: string[];
+}
+
+interface RuntimeFormatOptions {
+  recover: boolean;
+  maxLineLength?: number;
+  maxDepth?: number;
+  maxInputSize?: number;
+}
+
+interface CLIConfigFile {
+  maxLineLength?: number;
+  maxDepth?: number;
+  maxInputSize?: number;
+  strict?: boolean;
+  recover?: boolean;
 }
 
 // Recovery event collected during formatting
@@ -37,6 +54,8 @@ interface RecoveryEvent {
   line: number;
   message: string;
   dropped?: boolean;
+  statementIndex?: number;
+  totalStatements?: number;
 }
 
 // ANSI color helpers — disabled by NO_COLOR env, --no-color flag, or non-TTY stderr
@@ -47,6 +66,11 @@ const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 
 let colorEnabled = true;
+
+const EXIT_SUCCESS = 0;
+const EXIT_CHECK_FAILURE = 1;
+const EXIT_PARSE_ERROR = 2;
+const EXIT_USAGE_OR_IO_ERROR = 3;
 
 function initColor(opts: CLIOptions): void {
   if (opts.colorMode === 'always') {
@@ -102,7 +126,7 @@ function printHelp(): void {
   SQL style guide at https://www.sqlstyle.guide/. Keywords
   are right-aligned to form a "river" of whitespace, making
   queries easier to scan.
-  Zero-config by design: no .sqlfmtrc, no --init, no style flags.
+  Deterministic by design: defaults are opinionated, with optional project config.
 
 Usage: sqlfmt [options] [file ...]
 
@@ -119,12 +143,14 @@ Formatting:
   --preview             Alias for --dry-run
   -w, --write           Write formatted output back to input file(s)
   -l, --list-different  Print only filenames that need formatting
+  --max-line-length <n> Preferred output line width (default: 80)
   --strict              Disable parser recovery; exit 2 on parse errors
                         (recommended for CI)
 
 File selection:
   --ignore <pattern>    Exclude files matching glob pattern (repeatable)
                         Also reads patterns from .sqlfmtignore if present
+  --config <path>       Use an explicit config file (default: .sqlfmtrc.json)
   --stdin-filepath <p>  Path shown in error messages when reading stdin
 
 Output:
@@ -151,8 +177,9 @@ Examples:
 
 Exit codes:
   0  Success (or all files already formatted with --check)
-  1  Check failure / usage error / I/O error
+  1  Check failure
   2  Parse or tokenize error
+  3  Usage or I/O error
 
 Docs: https://github.com/vinsidious/sqlfmt`);
 }
@@ -179,6 +206,8 @@ function parseArgs(args: string[]): CLIOptions {
     strict: false,
     ignore: [],
     stdinFilepath: null,
+    configPath: null,
+    maxLineLength: undefined,
     files: [],
   };
 
@@ -215,6 +244,19 @@ function parseArgs(args: string[]): CLIOptions {
     }
     if (arg === '--strict') {
       opts.strict = true;
+      continue;
+    }
+    if (arg === '--max-line-length') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--max-line-length requires a numeric argument');
+      }
+      const parsed = Number(next);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 40) {
+        throw new CLIUsageError('--max-line-length must be an integer >= 40');
+      }
+      opts.maxLineLength = parsed;
+      i++;
       continue;
     }
     if (arg.startsWith('--color=')) {
@@ -264,6 +306,15 @@ function parseArgs(args: string[]): CLIOptions {
         throw new CLIUsageError('--stdin-filepath requires a path argument');
       }
       opts.stdinFilepath = next;
+      i++;
+      continue;
+    }
+    if (arg === '--config') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--config requires a path argument');
+      }
+      opts.configPath = next;
       i++;
       continue;
     }
@@ -374,6 +425,7 @@ type IgnoreGlobToken =
 const MAX_IGNORE_PATTERN_LENGTH = 1024;
 const MAX_DOUBLE_STAR_SEGMENTS = 10;
 const IGNORE_FILE_NAME = '.sqlfmtignore';
+const CONFIG_FILE_NAME = '.sqlfmtrc.json';
 
 function validateIgnorePattern(pattern: string, source: string): void {
   if (pattern.includes('../')) {
@@ -452,6 +504,66 @@ function loadIgnorePatterns(cwd: string): string[] {
     if (ioErr?.code === 'ENOENT') return [];
     if (err instanceof CLIUsageError) throw err;
     throw new CLIUsageError(`Failed to read ${IGNORE_FILE_NAME}: ${ioErr?.message ?? String(err)}`);
+  }
+}
+
+function validateConfigShape(raw: unknown, sourcePath: string): CLIConfigFile {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new CLIUsageError(`${sourcePath} must contain a JSON object`);
+  }
+  const obj = raw as Record<string, unknown>;
+  const cfg: CLIConfigFile = {};
+
+  if (obj.maxLineLength !== undefined) {
+    const value = obj.maxLineLength;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 40) {
+      throw new CLIUsageError(`${sourcePath}: maxLineLength must be an integer >= 40`);
+    }
+    cfg.maxLineLength = value;
+  }
+  if (obj.maxDepth !== undefined) {
+    const value = obj.maxDepth;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      throw new CLIUsageError(`${sourcePath}: maxDepth must be an integer >= 1`);
+    }
+    cfg.maxDepth = value;
+  }
+  if (obj.maxInputSize !== undefined) {
+    const value = obj.maxInputSize;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      throw new CLIUsageError(`${sourcePath}: maxInputSize must be an integer >= 1`);
+    }
+    cfg.maxInputSize = value;
+  }
+  if (obj.strict !== undefined) {
+    if (typeof obj.strict !== 'boolean') {
+      throw new CLIUsageError(`${sourcePath}: strict must be a boolean`);
+    }
+    cfg.strict = obj.strict;
+  }
+  if (obj.recover !== undefined) {
+    if (typeof obj.recover !== 'boolean') {
+      throw new CLIUsageError(`${sourcePath}: recover must be a boolean`);
+    }
+    cfg.recover = obj.recover;
+  }
+  return cfg;
+}
+
+function loadConfig(cwd: string, explicitPath: string | null): CLIConfigFile {
+  const configPath = explicitPath ? resolve(cwd, explicitPath) : join(cwd, CONFIG_FILE_NAME);
+  try {
+    const content = readFileSync(configPath, 'utf8');
+    const parsed = JSON.parse(content) as unknown;
+    return validateConfigShape(parsed, explicitPath ? configPath : CONFIG_FILE_NAME);
+  } catch (err) {
+    const ioErr = err as NodeJS.ErrnoException;
+    if (ioErr?.code === 'ENOENT') return {};
+    if (err instanceof CLIUsageError) throw err;
+    if (err instanceof SyntaxError) {
+      throw new CLIUsageError(`Invalid JSON in ${explicitPath ? configPath : CONFIG_FILE_NAME}: ${err.message}`);
+    }
+    throw new CLIUsageError(`Failed to read ${explicitPath ? configPath : CONFIG_FILE_NAME}: ${ioErr?.message ?? String(err)}`);
   }
 }
 
@@ -590,7 +702,7 @@ function toLines(text: string): string[] {
   return lines;
 }
 
-function unifiedDiff(aText: string, bText: string): string {
+function unifiedDiff(aText: string, bText: string, aLabel: string = 'a/input.sql', bLabel: string = 'b/formatted.sql'): string {
   const a = toLines(aText);
   const b = toLines(bText);
   const n = a.length;
@@ -631,23 +743,37 @@ function unifiedDiff(aText: string, bText: string): string {
   }
 
   return [
-    bold('--- input'),
-    bold('+++ formatted'),
+    bold(`--- ${aLabel}`),
+    bold(`+++ ${bLabel}`),
     `@@ -1,${n} +1,${m} @@`,
     ...body,
   ].join('\n');
 }
 
-function formatOneInput(input: string, strict: boolean): { output: string; recoveries: RecoveryEvent[] } {
+function formatOneInput(input: string, options: RuntimeFormatOptions): { output: string; recoveries: RecoveryEvent[] } {
   const recoveries: RecoveryEvent[] = [];
   const output = formatSQL(input, {
-    recover: !strict,
-    onRecover: (error: ParseError, raw: RawExpression | null) => {
+    recover: options.recover,
+    maxLineLength: options.maxLineLength,
+    maxDepth: options.maxDepth,
+    maxInputSize: options.maxInputSize,
+    onRecover: (error: ParseError, raw: RawExpression | null, context) => {
       if (!raw) return;
-      recoveries.push({ line: error.line, message: error.message });
+      recoveries.push({
+        line: error.line,
+        message: error.message,
+        statementIndex: context.statementIndex,
+        totalStatements: context.totalStatements,
+      });
     },
-    onDropStatement: (error: ParseError) => {
-      recoveries.push({ line: error.line, message: error.message, dropped: true });
+    onDropStatement: (error: ParseError, context) => {
+      recoveries.push({
+        line: error.line,
+        message: error.message,
+        dropped: true,
+        statementIndex: context.statementIndex,
+        totalStatements: context.totalStatements,
+      });
     },
   });
   return { output, recoveries };
@@ -712,7 +838,7 @@ function handleParseError(err: unknown, input?: string, filepath?: string | null
     } else {
       console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${safeMessage}`));
     }
-    process.exit(2);
+    process.exit(EXIT_PARSE_ERROR);
   }
   if (err instanceof TokenizeError) {
     const safeMessage = sanitizeErrorMessage(err);
@@ -726,7 +852,7 @@ function handleParseError(err: unknown, input?: string, filepath?: string | null
     } else {
       console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${safeMessage}`));
     }
-    process.exit(2);
+    process.exit(EXIT_PARSE_ERROR);
   }
   throw err;
 }
@@ -737,10 +863,13 @@ function printRecoveryWarnings(recoveries: RecoveryEvent[]): void {
   if (recoveries.length === 0) return;
 
   for (const r of recoveries) {
+    const stmtLabel = r.statementIndex && r.totalStatements
+      ? `statement ${r.statementIndex}/${r.totalStatements}`
+      : `statement at line ${r.line}`;
     if (r.dropped) {
-      console.error(`Warning: Statement at line ${r.line} was dropped (could not recover)`);
+      console.error(`Warning: ${stmtLabel} was dropped (could not recover)`);
     } else {
-      console.error(`Warning: Statement at line ${r.line} could not be parsed and was passed through as-is`);
+      console.error(`Warning: ${stmtLabel} could not be parsed and was passed through as-is`);
     }
   }
   const droppedCount = recoveries.filter(r => r.dropped).length;
@@ -757,17 +886,24 @@ function main(): void {
 
     if (opts.version) {
       console.log(readVersion());
-      process.exit(0);
+      process.exit(EXIT_SUCCESS);
     }
 
     if (opts.help) {
       printHelp();
-      process.exit(0);
+      process.exit(EXIT_SUCCESS);
     }
 
     initColor(opts);
     const cwd = process.cwd();
+    const config = loadConfig(cwd, opts.configPath);
     const fileIgnorePatterns = loadIgnorePatterns(cwd);
+    const runtimeFormatOptions: RuntimeFormatOptions = {
+      recover: opts.strict ? false : (config.recover ?? !(config.strict ?? false)),
+      maxLineLength: opts.maxLineLength ?? config.maxLineLength,
+      maxDepth: config.maxDepth,
+      maxInputSize: config.maxInputSize,
+    };
 
     let expandedFiles = expandGlobs(opts.files);
     const allIgnorePatterns = [...fileIgnorePatterns, ...opts.ignore];
@@ -790,7 +926,7 @@ function main(): void {
       let output: string;
       let recoveries: RecoveryEvent[];
       try {
-        ({ output, recoveries } = formatOneInput(input, opts.strict));
+        ({ output, recoveries } = formatOneInput(input, runtimeFormatOptions));
       } catch (err) {
         handleParseError(err, input, opts.stdinFilepath);
       }
@@ -805,7 +941,7 @@ function main(): void {
             console.error(red('Input is not formatted.'));
           }
           if (opts.diff && !opts.quiet) {
-            console.error(unifiedDiff(normalizedInput, output));
+            console.error(unifiedDiff(normalizedInput, output, 'a/stdin.sql', 'b/stdin.sql'));
           }
         }
       } else if (!opts.quiet) {
@@ -831,7 +967,7 @@ function main(): void {
         let output: string;
         let recoveries: RecoveryEvent[];
         try {
-          ({ output, recoveries } = formatOneInput(input, opts.strict));
+          ({ output, recoveries } = formatOneInput(input, runtimeFormatOptions));
         } catch (err) {
           handleParseError(err, input);
         }
@@ -868,7 +1004,7 @@ function main(): void {
               console.error(red(`${file}: not formatted.`));
             }
             if (opts.diff && !opts.quiet) {
-              console.error(unifiedDiff(normalizedInput, output));
+              console.error(unifiedDiff(normalizedInput, output, `a/${file}`, `b/${file}`));
             }
           }
           continue;
@@ -891,12 +1027,16 @@ function main(): void {
     }
 
     if (checkFailures > 0) {
-      process.exit(1);
+      process.exit(EXIT_CHECK_FAILURE);
     }
   } catch (err) {
-    if (err instanceof CLIUsageError || err instanceof NoFilesMatchedError) {
+    if (err instanceof NoFilesMatchedError) {
       console.error(red(err.message));
-      process.exit(1);
+      process.exit(EXIT_CHECK_FAILURE);
+    }
+    if (err instanceof CLIUsageError) {
+      console.error(red(err.message));
+      process.exit(EXIT_USAGE_OR_IO_ERROR);
     }
 
     if (err instanceof ParseError || err instanceof TokenizeError) {
@@ -906,11 +1046,11 @@ function main(): void {
     const ioErr = err as NodeJS.ErrnoException | undefined;
     if (ioErr?.code === 'ENOENT' || ioErr?.code === 'EISDIR') {
       console.error(red(`I/O error: ${ioErr.message}`));
-      process.exit(1);
+      process.exit(EXIT_USAGE_OR_IO_ERROR);
     }
 
     console.error(red(`Unexpected error: ${err instanceof Error ? err.message : String(err)}`));
-    process.exit(1);
+    process.exit(EXIT_USAGE_OR_IO_ERROR);
   }
 }
 

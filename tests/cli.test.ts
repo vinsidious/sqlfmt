@@ -59,7 +59,7 @@ describe('cli flags and UX', () => {
 
   it('rejects unknown flags', () => {
     const res = runCli(['--definitely-not-a-real-flag']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('Unknown option');
     expect(res.err).toContain('--help');
   });
@@ -87,8 +87,8 @@ describe('cli flags and UX', () => {
     writeFileSync(file, 'select 1;', 'utf8');
     const res = runCli(['--check', '--diff', file]);
     expect(res.code).toBe(1);
-    expect(res.err).toContain('--- input');
-    expect(res.err).toContain('+++ formatted');
+    expect(res.err).toContain('--- a/');
+    expect(res.err).toContain('+++ b/');
     expect(res.err).toContain('@@');
   });
 
@@ -111,7 +111,7 @@ describe('cli flags and UX', () => {
 
     const res = runCli(['--dry-run', 'preview.sql'], dir);
     expect(res.code).toBe(1);
-    expect(res.err).toContain('--- input');
+    expect(res.err).toContain('--- a/preview.sql');
     expect(readFileSync(file, 'utf8')).toBe('select 1;');
   });
 
@@ -203,7 +203,7 @@ describe('--list-different flag', () => {
 
   it('requires file arguments', () => {
     const res = runCli(['--list-different']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('--list-different requires');
   });
 });
@@ -254,7 +254,7 @@ describe('--color flag', () => {
 
   it('rejects invalid --color values', () => {
     const res = runCli(['--color=rainbow']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('--color must be one of');
   });
 });
@@ -324,7 +324,7 @@ describe('--quiet flag', () => {
 
   it('is mutually exclusive with --verbose', () => {
     const res = runCli(['--verbose', '--quiet']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('--verbose and --quiet cannot be used together');
   });
 });
@@ -393,13 +393,13 @@ describe('--ignore flag', () => {
 
   it('rejects overly long --ignore patterns', () => {
     const res = runCli(['--ignore', 'x'.repeat(1025)]);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('pattern is too long');
   });
 
   it('errors when --ignore has no argument', () => {
     const res = runCli(['--ignore']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('--ignore requires');
   });
 });
@@ -459,7 +459,7 @@ describe('--stdin-filepath flag', () => {
 
   it('errors when --stdin-filepath has no argument', () => {
     const res = runCli(['--stdin-filepath']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('--stdin-filepath requires');
   });
 });
@@ -474,7 +474,42 @@ describe('--help flag', () => {
     expect(res.out).toContain('--stdin-filepath');
     expect(res.out).toContain('--color');
     expect(res.out).toContain('.sqlfmtignore');
-    expect(res.out).toContain('no .sqlfmtrc');
+    expect(res.out).toContain('.sqlfmtrc.json');
+  });
+});
+
+describe('.sqlfmtrc.json config support', () => {
+  const longSql = 'SELECT customer_identifier, product_identifier, order_identifier, shipment_identifier FROM very_long_table_name;';
+
+  it('loads maxLineLength from .sqlfmtrc.json in cwd', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-config-'));
+    writeFileSync(join(dir, '.sqlfmtrc.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
+    writeFileSync(join(dir, 'q.sql'), longSql, 'utf8');
+
+    const res = runCli(['q.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('SELECT customer_identifier, product_identifier, order_identifier, shipment_identifier');
+  });
+
+  it('supports explicit --config path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-config-'));
+    writeFileSync(join(dir, 'custom-config.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
+    writeFileSync(join(dir, 'q.sql'), longSql, 'utf8');
+
+    const res = runCli(['--config', 'custom-config.json', 'q.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('SELECT customer_identifier, product_identifier, order_identifier, shipment_identifier');
+  });
+
+  it('lets CLI flags override config values', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-config-'));
+    writeFileSync(join(dir, '.sqlfmtrc.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
+    writeFileSync(join(dir, 'q.sql'), longSql, 'utf8');
+
+    const res = runCli(['--max-line-length', '60', 'q.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('SELECT customer_identifier,');
+    expect(res.out).toContain('\n       product_identifier,');
   });
 });
 
@@ -499,7 +534,7 @@ describe('symlink path validation', () => {
 describe('ignore pattern validation', () => {
   it('rejects --ignore pattern with ../ traversal', () => {
     const res = runCli(['--ignore', '../etc/**', 'test.sql']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('../');
     expect(res.err).toContain('directory traversal');
   });
@@ -507,7 +542,7 @@ describe('ignore pattern validation', () => {
   it('rejects --ignore pattern with excessive ** segments', () => {
     const pattern = Array.from({ length: 12 }, () => '**').join('/');
     const res = runCli(['--ignore', pattern, 'test.sql']);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('too many **');
   });
 
@@ -525,7 +560,7 @@ describe('ignore pattern validation', () => {
     writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
 
     const res = runCli(['--check', 'query.sql'], dir);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('../');
     expect(res.err).toContain('directory traversal');
   });
@@ -537,7 +572,7 @@ describe('ignore pattern validation', () => {
     writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
 
     const res = runCli(['--check', 'query.sql'], dir);
-    expect(res.code).toBe(1);
+    expect(res.code).toBe(3);
     expect(res.err).toContain('too many **');
   });
 });

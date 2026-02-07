@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/npm/l/@vcoppola/sqlfmt)](https://github.com/vinsidious/sqlfmt/blob/main/LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/vinsidious/sqlfmt/ci.yml?branch=main&label=CI)](https://github.com/vinsidious/sqlfmt/actions)
 
-An opinionated, zero-config SQL formatter that implements [river alignment](https://www.sqlstyle.guide/) — right-aligning keywords so content flows along a consistent vertical column. No `.sqlfmtrc`, no `--init`, no style toggles.
+An opinionated SQL formatter that implements [river alignment](https://www.sqlstyle.guide/) — right-aligning keywords so content flows along a consistent vertical column. It defaults to a single deterministic style, with a small optional config surface for operational concerns like line width and safety limits.
 
 ## Quick Start
 
@@ -163,11 +163,21 @@ SELECT name,
 
 ## When NOT to use sqlfmt
 
-- **You need configurable styles** — sqlfmt is zero-config by design. If you need adjustable indentation, keyword casing options, or line-width limits, use [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) or [prettier-plugin-sql](https://github.com/JounQin/prettier-plugin-sql).
+- **You need highly configurable style output** — sqlfmt intentionally does not expose style knobs for indentation strategy, keyword casing, or alignment mode. If you need full style customization, use [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) or [prettier-plugin-sql](https://github.com/JounQin/prettier-plugin-sql).
 - **You exclusively target MySQL or SQL Server** — sqlfmt is PostgreSQL-first. Standard ANSI SQL works fine, but vendor-specific syntax (stored procedures, MySQL-only functions) may not be fully parsed.
 - **You need a language server** — sqlfmt is a formatter, not a linter or LSP. It does not provide diagnostics, completions, or semantic analysis.
 
 ## SQL Dialect Support
+
+| Dialect | Status | Notes |
+|---|---|---|
+| PostgreSQL | Primary / continuously tested | Full formatter/parser coverage target |
+| ANSI SQL core | Broad support | Most query/DDL patterns covered |
+| MySQL | Partial | Many ANSI queries work; MySQL-specific extensions may recover as raw |
+| SQL Server (T-SQL) | Partial | Many ANSI queries work; procedural T-SQL is limited |
+| SQLite | Partial | Common ANSI queries work; SQLite-specific extensions are limited |
+
+`sqlfmt` test coverage is PostgreSQL-first. If you rely on non-PostgreSQL vendor extensions, run `--check` in CI and prefer `--strict` where parse failures should block merges.
 
 ### PostgreSQL (Full Support)
 
@@ -215,7 +225,7 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 | | **sqlfmt** | sql-formatter | prettier-plugin-sql |
 |---|---|---|---|
 | **Formatting style** | River alignment ([sqlstyle.guide](https://www.sqlstyle.guide/)) | Indentation-based | Indentation-based |
-| **Configuration** | Zero-config, opinionated | Configurable | Configurable via Prettier |
+| **Configuration** | Opinionated defaults + small operational config (`.sqlfmtrc.json`) | Configurable | Configurable via Prettier |
 | **PostgreSQL support** | First-class (casts, JSON ops, dollar-quoting, arrays) | Partial | Partial |
 | **Runtime dependencies** | Zero | Several | Prettier + parser |
 | **Idempotent** | Yes | Yes | Yes |
@@ -223,11 +233,20 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 | **Identifier casing** | Lowercase (enforced) | Not modified | Not modified |
 | **Output** | Deterministic, single style | Depends on config | Depends on config |
 
-sqlfmt is the right choice when you want a formatter that produces consistent, readable SQL without any configuration decisions -- just run it and move on.
+sqlfmt is the right choice when you want consistent, readable SQL with minimal setup and deterministic style.
 
-### Zero-config philosophy
+### Configuration philosophy
 
-`sqlfmt` does not support `.sqlfmtrc`, `--init`, or style customization flags. This is deliberate: one deterministic style, the same output everywhere, no formatter tuning overhead.
+`sqlfmt` keeps style deterministic by design: no indentation/casing style matrix, no formatter presets.  
+It does support a focused optional config file (`.sqlfmtrc.json`) for operational settings:
+
+- `maxLineLength`
+- `maxDepth`
+- `maxInputSize`
+- `strict`
+- `recover`
+
+CLI flags still override config values.
 
 ## CLI Reference
 
@@ -250,6 +269,12 @@ npx @vcoppola/sqlfmt -l "migrations/*.sql"
 
 # Strict mode: fail on unparseable SQL instead of passing through
 npx @vcoppola/sqlfmt --strict --check "**/*.sql"
+
+# Tune output width
+npx @vcoppola/sqlfmt --max-line-length 100 query.sql
+
+# Use project config
+npx @vcoppola/sqlfmt --config .sqlfmtrc.json --check "**/*.sql"
 
 # Ignore files (can repeat --ignore)
 npx @vcoppola/sqlfmt --check --ignore "migrations/**" "**/*.sql"
@@ -275,8 +300,9 @@ When present, `.sqlfmtignore` is read from the current working directory and com
 | Code | Meaning |
 |------|---------|
 | `0` | Success (or all files already formatted with `--check`) |
-| `1` | Check failure, usage error, or I/O error |
+| `1` | Check failure |
 | `2` | Parse or tokenize error |
+| `3` | Usage or I/O error |
 
 ## API Guide
 
@@ -385,7 +411,7 @@ The key formatting concept is the **river**. For each statement, `sqlfmt` derive
 
 ### Long Lines
 
-sqlfmt targets 80-column output but does not break individual tokens (identifiers, string literals). Lines may exceed 80 columns when single tokens are long.
+sqlfmt targets 80-column output by default and supports `maxLineLength` (CLI flag or config file). It does not break individual tokens (identifiers, string literals), so single-token lines can still exceed the configured width.
 
 ### Comment Preservation
 
@@ -402,7 +428,7 @@ Formatting is idempotent: `formatSQL(formatSQL(x)) === formatSQL(x)` for all val
 ## FAQ
 
 **Q: Can I change the indentation style or keyword casing?**
-A: No. sqlfmt is zero-config by design, like Prettier. One style, everywhere.
+A: No. Style output is intentionally fixed. sqlfmt provides operational configuration (line length, strictness/safety), not style customization.
 
 **Q: What happens with SQL syntax sqlfmt doesn't understand?**
 A: In default (recovery) mode, unrecognized statements are passed through unchanged. Use `--strict` to fail instead.
@@ -414,10 +440,10 @@ A: ~5,000 statements/second on modern hardware. A typical migration file formats
 A: No. sqlfmt only changes whitespace and keyword casing. The semantic meaning is preserved.
 
 **Q: Does sqlfmt respect `.editorconfig`?**
-A: No. sqlfmt is zero-config — it does not read `.editorconfig`, `.sqlfmtrc`, or any configuration file. The output style is always the same.
+A: No. sqlfmt does not read `.editorconfig`. It does read `.sqlfmtrc.json` (or `--config`) for operational settings, but style output remains deterministic.
 
 **Q: Can I customize the river width?**
-A: No. The river width is automatically derived per statement from the longest top-level aligned keyword. This ensures consistent formatting without any manual tuning.
+A: Not directly. River width is derived automatically from statement structure. You can influence wrapping via `maxLineLength`, but keyword alignment behavior itself is fixed.
 
 **Q: Does formatting change SQL semantics?**
 A: sqlfmt only changes whitespace and casing. Specifically: SQL keywords are uppercased (`select` becomes `SELECT`), unquoted identifiers are lowercased (`MyTable` becomes `mytable`), and quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`). If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
