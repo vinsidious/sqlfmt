@@ -1,0 +1,4 @@
+{
+  "installCommand": "cd .. && bun install --frozen-lockfile && bun run build && cd website && bun install",
+  "framework": "nextjs"
+}

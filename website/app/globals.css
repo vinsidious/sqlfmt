@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-zinc-950 text-zinc-50;
+  }
+
+  ::selection {
+    @apply bg-indigo-500/30 text-zinc-50;
+  }
+
+  /* Scrollbar — thin, dark, subtle */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #27272a transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: #27272a;
+    border-radius: 3px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: #3f3f46;
+  }
+
+  /* Code/pre defaults */
+  code,
+  pre {
+    font-family: var(--font-mono), 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  pre {
+    @apply rounded-lg bg-zinc-900 border border-zinc-800 p-4 text-sm overflow-x-auto;
+  }
+
+  code {
+    @apply text-sm;
+  }
+
+  /* Inline code (not inside pre) */
+  :not(pre) > code {
+    @apply rounded bg-zinc-900 border border-zinc-800 px-1.5 py-0.5;
+  }
+}
