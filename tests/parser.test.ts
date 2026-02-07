@@ -365,3 +365,110 @@ describe('parser type cast with missing closing paren', () => {
     expect(stmt.columns[0].expr.type).toBe('cast');
   });
 });
+
+describe('parser GROUPS window frame', () => {
+  it('parses GROUPS window frame', () => {
+    const stmt = parseFirst('SELECT SUM(amount) OVER (ORDER BY date GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM sales;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('window_function');
+    expect(stmt.columns[0].expr.frame).toContain('GROUPS');
+  });
+
+  it('parses GROUPS UNBOUNDED PRECEDING', () => {
+    const stmt = parseFirst('SELECT AVG(x) OVER (ORDER BY y GROUPS UNBOUNDED PRECEDING) FROM t;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.frame).toContain('GROUPS');
+  });
+});
+
+describe('parser INTERVAL precision syntax', () => {
+  it('parses INTERVAL with DAY unit', () => {
+    const stmt = parseFirst("SELECT INTERVAL '1' DAY FROM t;");
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('interval');
+    expect(stmt.columns[0].expr.value).toContain('DAY');
+  });
+
+  it('parses INTERVAL with DAY TO SECOND range', () => {
+    const stmt = parseFirst("SELECT INTERVAL '1 12:00:00' DAY TO SECOND FROM t;");
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('interval');
+    expect(stmt.columns[0].expr.value).toContain('DAY TO SECOND');
+  });
+
+  it('parses INTERVAL without unit (backward compat)', () => {
+    const stmt = parseFirst("SELECT INTERVAL '1 day' FROM t;");
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('interval');
+    expect(stmt.columns[0].expr.value).toBe("'1 day'");
+  });
+
+  it('parses INTERVAL with YEAR TO MONTH', () => {
+    const stmt = parseFirst("SELECT INTERVAL '1-6' YEAR TO MONTH FROM t;");
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('interval');
+    expect(stmt.columns[0].expr.value).toContain('YEAR TO MONTH');
+  });
+});
+
+describe('parser InExpr discriminated union', () => {
+  it('produces subquery: true for IN (SELECT ...)', () => {
+    const stmt = parseFirst('SELECT * FROM t WHERE id IN (SELECT id FROM s);');
+    expect(stmt.where.condition.type).toBe('in');
+    expect(stmt.where.condition.subquery).toBe(true);
+    expect(stmt.where.condition.values.type).toBe('subquery');
+  });
+
+  it('produces subquery: false for IN (1, 2, 3)', () => {
+    const stmt = parseFirst('SELECT * FROM t WHERE id IN (1, 2, 3);');
+    expect(stmt.where.condition.type).toBe('in');
+    expect(stmt.where.condition.subquery).toBe(false);
+    expect(Array.isArray(stmt.where.condition.values)).toBe(true);
+  });
+});
+
+describe('parser consumeTypeSpecifier helper', () => {
+  it('handles pg_cast with array suffix', () => {
+    const stmt = parseFirst("SELECT x::INT[] FROM t;");
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('pg_cast');
+    expect(stmt.columns[0].expr.targetType).toBe('INT[]');
+  });
+
+  it('handles CAST with parameterized type', () => {
+    const stmt = parseFirst('SELECT CAST(x AS VARCHAR(255)) FROM t;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('cast');
+    expect(stmt.columns[0].expr.targetType).toContain('VARCHAR');
+  });
+});
+
+describe('parser shared parseOptionalAlias', () => {
+  it('parses SELECT column alias with AS', () => {
+    const stmt = parseFirst('SELECT id AS user_id FROM t;');
+    expect(stmt.columns[0].alias).toBe('user_id');
+  });
+
+  it('parses SELECT column alias without AS', () => {
+    const stmt = parseFirst('SELECT id user_id FROM t;');
+    expect(stmt.columns[0].alias).toBe('user_id');
+  });
+
+  it('parses RETURNING alias with AS', () => {
+    const stmt = parseFirst('UPDATE t SET x = 1 RETURNING x AS result;');
+    expect(stmt.returning[0].type).toBe('aliased');
+    expect(stmt.returning[0].alias).toBe('result');
+  });
+
+  it('parses RETURNING alias without AS', () => {
+    const stmt = parseFirst('UPDATE t SET x = 1 RETURNING x result;');
+    expect(stmt.returning[0].type).toBe('aliased');
+    expect(stmt.returning[0].alias).toBe('result');
+  });
+
+  it('parses FROM alias with column list', () => {
+    const stmt = parseFirst('SELECT * FROM generate_series(1, 3) AS g(n);');
+    expect(stmt.from.alias).toBe('g');
+    expect(stmt.from.aliasColumns).toEqual(['n']);
+  });
+});

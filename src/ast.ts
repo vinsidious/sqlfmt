@@ -62,75 +62,75 @@ export type Expression =
   | RawExpression;
 
 export interface SelectStatement {
-  type: 'select';
-  distinct: boolean;
-  columns: ColumnExpr[];
-  from?: FromClause;
-  additionalFromItems?: FromClause[];
-  joins: JoinClause[];
-  where?: WhereClause;
-  groupBy?: GroupByClause;
-  having?: HavingClause;
-  orderBy?: OrderByClause;
-  limit?: LimitClause;
-  offset?: OffsetClause;
-  fetch?: { count: Expression; withTies?: boolean };
-  lockingClause?: string;
-  windowClause?: { name: string; spec: WindowSpec }[];
-  leadingComments: CommentNode[];
-  parenthesized?: boolean;
+  readonly type: 'select';
+  readonly distinct: boolean;
+  readonly columns: readonly ColumnExpr[];
+  readonly from?: FromClause;
+  readonly additionalFromItems?: readonly FromClause[];
+  readonly joins: readonly JoinClause[];
+  readonly where?: WhereClause;
+  readonly groupBy?: GroupByClause;
+  readonly having?: HavingClause;
+  readonly orderBy?: OrderByClause;
+  readonly limit?: LimitClause;
+  readonly offset?: OffsetClause;
+  readonly fetch?: { readonly count: Expression; readonly withTies?: boolean };
+  readonly lockingClause?: string;
+  readonly windowClause?: readonly { readonly name: string; readonly spec: WindowSpec }[];
+  readonly leadingComments: readonly CommentNode[];
+  readonly parenthesized?: boolean;
 }
 
 export interface InsertStatement {
-  type: 'insert';
-  table: string;
-  columns: string[];
-  defaultValues?: boolean;
-  values?: ValuesList[];
-  selectQuery?: QueryExpression;
-  returning?: Expression[];
-  onConflict?: {
-    columns?: string[];
-    constraintName?: string;
-    action: 'nothing' | 'update';
-    setItems?: { column: string; value: Expression }[];
-    where?: Expression;
+  readonly type: 'insert';
+  readonly table: string;
+  readonly columns: readonly string[];
+  readonly defaultValues?: boolean;
+  readonly values?: readonly ValuesList[];
+  readonly selectQuery?: QueryExpression;
+  readonly returning?: readonly Expression[];
+  readonly onConflict?: {
+    readonly columns?: readonly string[];
+    readonly constraintName?: string;
+    readonly action: 'nothing' | 'update';
+    readonly setItems?: readonly { readonly column: string; readonly value: Expression }[];
+    readonly where?: Expression;
   };
-  leadingComments: CommentNode[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface UpdateStatement {
-  type: 'update';
-  table: string;
-  setItems: SetItem[];
-  from?: FromClause;
-  where?: WhereClause;
-  returning?: Expression[];
-  leadingComments: CommentNode[];
+  readonly type: 'update';
+  readonly table: string;
+  readonly setItems: readonly SetItem[];
+  readonly from?: FromClause;
+  readonly where?: WhereClause;
+  readonly returning?: readonly Expression[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface DeleteStatement {
-  type: 'delete';
-  from: string;
-  using?: FromClause[];
-  where?: WhereClause;
-  returning?: Expression[];
-  leadingComments: CommentNode[];
+  readonly type: 'delete';
+  readonly from: string;
+  readonly using?: readonly FromClause[];
+  readonly where?: WhereClause;
+  readonly returning?: readonly Expression[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface CreateTableStatement {
-  type: 'create_table';
-  tableName: string;
-  elements: TableElement[];
-  leadingComments: CommentNode[];
+  readonly type: 'create_table';
+  readonly tableName: string;
+  readonly elements: readonly TableElement[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface AlterTableStatement {
-  type: 'alter_table';
-  objectType: string;
-  objectName: string;
-  actions: AlterAction[];
-  leadingComments: CommentNode[];
+  readonly type: 'alter_table';
+  readonly objectType: string;
+  readonly objectName: string;
+  readonly actions: readonly AlterAction[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export type AlterAction =
@@ -143,480 +143,491 @@ export type AlterAction =
   | AlterRawAction;
 
 export interface AlterAddColumnAction {
-  type: 'add_column';
-  ifNotExists?: boolean;
-  columnName: string;
-  definition?: string;
+  readonly type: 'add_column';
+  readonly ifNotExists?: boolean;
+  readonly columnName: string;
+  readonly definition?: string;
 }
 
 export interface AlterDropColumnAction {
-  type: 'drop_column';
-  ifExists?: boolean;
-  columnName: string;
-  behavior?: 'CASCADE' | 'RESTRICT';
+  readonly type: 'drop_column';
+  readonly ifExists?: boolean;
+  readonly columnName: string;
+  readonly behavior?: 'CASCADE' | 'RESTRICT';
 }
 
 export interface AlterRenameToAction {
-  type: 'rename_to';
-  newName: string;
+  readonly type: 'rename_to';
+  readonly newName: string;
 }
 
 export interface AlterRenameColumnAction {
-  type: 'rename_column';
-  columnName: string;
-  newName: string;
+  readonly type: 'rename_column';
+  readonly columnName: string;
+  readonly newName: string;
 }
 
 export interface AlterSetSchemaAction {
-  type: 'set_schema';
-  schema: string;
+  readonly type: 'set_schema';
+  readonly schema: string;
 }
 
 export interface AlterSetTablespaceAction {
-  type: 'set_tablespace';
-  tablespace: string;
+  readonly type: 'set_tablespace';
+  readonly tablespace: string;
 }
 
 export interface AlterRawAction {
-  type: 'raw';
-  text: string;
+  readonly type: 'raw';
+  readonly text: string;
 }
 
 export interface DropTableStatement {
-  type: 'drop_table';
-  objectType: string;
-  ifExists: boolean;
-  objectName: string;
-  leadingComments: CommentNode[];
+  readonly type: 'drop_table';
+  readonly objectType: string;
+  readonly ifExists: boolean;
+  readonly objectName: string;
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface UnionStatement {
-  type: 'union';
-  members: { statement: SelectStatement; parenthesized: boolean }[];
-  operators: string[]; // 'UNION', 'UNION ALL', 'INTERSECT', 'EXCEPT'
-  leadingComments: CommentNode[];
+  readonly type: 'union';
+  readonly members: readonly { readonly statement: SelectStatement; readonly parenthesized: boolean }[];
+  readonly operators: readonly string[]; // 'UNION', 'UNION ALL', 'INTERSECT', 'EXCEPT'
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface CTEStatement {
-  type: 'cte';
-  recursive?: boolean;
-  ctes: CTEDefinition[];
-  mainQuery: SelectStatement | UnionStatement;
-  leadingComments: CommentNode[];
+  readonly type: 'cte';
+  readonly recursive?: boolean;
+  readonly ctes: readonly CTEDefinition[];
+  readonly mainQuery: SelectStatement | UnionStatement;
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface CTEDefinition {
-  name: string;
-  columnList?: string[];   // e.g., (revenue_date, amount)
-  materialized?: 'materialized' | 'not_materialized';
-  query: SelectStatement | UnionStatement | ValuesClause;
-  leadingComments?: CommentNode[];  // comments before this CTE definition
+  readonly name: string;
+  readonly columnList?: readonly string[];   // e.g., (revenue_date, amount)
+  readonly materialized?: 'materialized' | 'not_materialized';
+  readonly query: SelectStatement | UnionStatement | ValuesClause;
+  readonly leadingComments?: readonly CommentNode[];  // comments before this CTE definition
 }
 
 export interface MergeStatement {
-  type: 'merge';
-  target: { table: string; alias?: string };
-  source: { table: string; alias?: string };
-  on: Expression;
-  whenClauses: MergeWhenClause[];
-  leadingComments: CommentNode[];
+  readonly type: 'merge';
+  readonly target: { readonly table: string; readonly alias?: string };
+  readonly source: { readonly table: string; readonly alias?: string };
+  readonly on: Expression;
+  readonly whenClauses: readonly MergeWhenClause[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface MergeWhenClause {
-  matched: boolean;
-  condition?: Expression;
-  action: 'delete' | 'update' | 'insert';
-  setItems?: { column: string; value: Expression }[];
-  columns?: string[];
-  values?: Expression[];
+  readonly matched: boolean;
+  readonly condition?: Expression;
+  readonly action: 'delete' | 'update' | 'insert';
+  readonly setItems?: readonly { readonly column: string; readonly value: Expression }[];
+  readonly columns?: readonly string[];
+  readonly values?: readonly Expression[];
 }
 
 export interface CreateIndexStatement {
-  type: 'create_index';
-  unique?: boolean;
-  concurrently?: boolean;
-  ifNotExists?: boolean;
-  name: string;
-  table: string;
-  using?: string;
-  columns: Expression[];
-  where?: Expression;
-  leadingComments: CommentNode[];
+  readonly type: 'create_index';
+  readonly unique?: boolean;
+  readonly concurrently?: boolean;
+  readonly ifNotExists?: boolean;
+  readonly name: string;
+  readonly table: string;
+  readonly using?: string;
+  readonly columns: readonly Expression[];
+  readonly where?: Expression;
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface CreateViewStatement {
-  type: 'create_view';
-  orReplace?: boolean;
-  materialized?: boolean;
-  ifNotExists?: boolean;
-  name: string;
-  query: Statement;
-  withData?: boolean;
-  leadingComments: CommentNode[];
+  readonly type: 'create_view';
+  readonly orReplace?: boolean;
+  readonly materialized?: boolean;
+  readonly ifNotExists?: boolean;
+  readonly name: string;
+  readonly query: Statement;
+  readonly withData?: boolean;
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface GrantStatement {
-  type: 'grant';
-  kind: 'GRANT' | 'REVOKE';
-  grantOptionFor?: boolean;
-  privileges: string[];
-  object: string;
-  recipientKeyword: 'TO' | 'FROM';
-  recipients: string[];
-  withGrantOption?: boolean;
-  grantedBy?: string;
-  cascade?: boolean;
-  restrict?: boolean;
-  leadingComments: CommentNode[];
+  readonly type: 'grant';
+  readonly kind: 'GRANT' | 'REVOKE';
+  readonly grantOptionFor?: boolean;
+  readonly privileges: readonly string[];
+  readonly object: string;
+  readonly recipientKeyword: 'TO' | 'FROM';
+  readonly recipients: readonly string[];
+  readonly withGrantOption?: boolean;
+  readonly grantedBy?: string;
+  readonly cascade?: boolean;
+  readonly restrict?: boolean;
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface TruncateStatement {
-  type: 'truncate';
-  table: string;
-  tableKeyword?: boolean;
-  restartIdentity?: boolean;
-  cascade?: boolean;
-  leadingComments: CommentNode[];
+  readonly type: 'truncate';
+  readonly table: string;
+  readonly tableKeyword?: boolean;
+  readonly restartIdentity?: boolean;
+  readonly cascade?: boolean;
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface StandaloneValuesStatement {
-  type: 'standalone_values';
-  rows: ValuesRow[];
-  leadingComments: CommentNode[];
+  readonly type: 'standalone_values';
+  readonly rows: readonly ValuesRow[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface ValuesClause {
-  type: 'values';
-  rows: ValuesRow[];
-  leadingComments: CommentNode[];
+  readonly type: 'values';
+  readonly rows: readonly ValuesRow[];
+  readonly leadingComments: readonly CommentNode[];
 }
 
 export interface ValuesRow {
-  values: Expression[];
-  trailingComment?: CommentNode;
-  leadingComments?: CommentNode[];
+  readonly values: readonly Expression[];
+  readonly trailingComment?: CommentNode;
+  readonly leadingComments?: readonly CommentNode[];
 }
 
 export interface CommentNode {
-  type: 'comment';
-  style: 'line' | 'block';
-  text: string;
-  blankLinesBefore?: number;  // number of blank lines preceding this comment (0 = none)
+  readonly type: 'comment';
+  readonly style: 'line' | 'block';
+  readonly text: string;
+  readonly blankLinesBefore?: number;  // number of blank lines preceding this comment (0 = none)
 }
 
 // Expressions
 
 export interface IdentifierExpr {
-  type: 'identifier';
-  value: string;
-  // lowercase the identifier? Only for non-quoted identifiers
-  quoted: boolean;
+  readonly type: 'identifier';
+  readonly value: string;
+  readonly quoted: boolean;
 }
 
 export interface LiteralExpr {
-  type: 'literal';
-  value: string;
-  literalType: 'string' | 'number' | 'boolean';
+  readonly type: 'literal';
+  readonly value: string;
+  readonly literalType: 'string' | 'number' | 'boolean';
 }
 
 export interface NullLiteralExpr {
-  type: 'null';
+  readonly type: 'null';
 }
 
 export interface IntervalExpr {
-  type: 'interval';
-  value: string;
+  readonly type: 'interval';
+  readonly value: string;
 }
 
 export interface TypedStringExpr {
-  type: 'typed_string';
-  dataType: 'DATE' | 'TIME' | 'TIMESTAMP';
-  value: string;
+  readonly type: 'typed_string';
+  readonly dataType: 'DATE' | 'TIME' | 'TIMESTAMP';
+  readonly value: string;
 }
 
 export interface StarExpr {
-  type: 'star';
-  qualifier?: string; // e.g., "t" in "t.*"
+  readonly type: 'star';
+  readonly qualifier?: string; // e.g., "t" in "t.*"
 }
 
 export interface BinaryExpr {
-  type: 'binary';
-  left: Expression;
-  operator: string;
-  right: Expression;
+  readonly type: 'binary';
+  readonly left: Expression;
+  readonly operator: string;
+  readonly right: Expression;
 }
 
 export interface UnaryExpr {
-  type: 'unary';
-  operator: string;
-  operand: Expression;
+  readonly type: 'unary';
+  readonly operator: string;
+  readonly operand: Expression;
 }
 
 export interface FunctionCallExpr {
-  type: 'function_call';
-  name: string;
-  args: Expression[];
-  distinct?: boolean;
-  orderBy?: OrderByItem[];
-  filter?: Expression;
-  withinGroup?: { orderBy: OrderByItem[] };
+  readonly type: 'function_call';
+  readonly name: string;
+  readonly args: readonly Expression[];
+  readonly distinct?: boolean;
+  readonly orderBy?: readonly OrderByItem[];
+  readonly filter?: Expression;
+  readonly withinGroup?: { readonly orderBy: readonly OrderByItem[] };
 }
 
 export interface SubqueryExpr {
-  type: 'subquery';
-  query: QueryExpression;
+  readonly type: 'subquery';
+  readonly query: QueryExpression;
 }
 
 export interface CaseExpr {
-  type: 'case';
-  operand?: Expression;  // for simple CASE
-  whenClauses: { condition: Expression; result: Expression }[];
-  elseResult?: Expression;
+  readonly type: 'case';
+  readonly operand?: Expression;  // for simple CASE
+  readonly whenClauses: readonly { readonly condition: Expression; readonly result: Expression }[];
+  readonly elseResult?: Expression;
 }
 
 export interface BetweenExpr {
-  type: 'between';
-  expr: Expression;
-  low: Expression;
-  high: Expression;
-  negated: boolean;
+  readonly type: 'between';
+  readonly expr: Expression;
+  readonly low: Expression;
+  readonly high: Expression;
+  readonly negated: boolean;
 }
 
-export interface InExpr {
-  type: 'in';
-  expr: Expression;
-  values: Expression[] | SubqueryExpr;
-  negated: boolean;
+// InExpr discriminated union: list vs subquery
+export type InExpr = InExprList | InExprSubquery;
+
+export interface InExprList {
+  readonly type: 'in';
+  readonly expr: Expression;
+  readonly values: readonly Expression[];
+  readonly negated: boolean;
+  readonly subquery: false;
+}
+
+export interface InExprSubquery {
+  readonly type: 'in';
+  readonly expr: Expression;
+  readonly values: SubqueryExpr;
+  readonly negated: boolean;
+  readonly subquery: true;
 }
 
 export interface IsExpr {
-  type: 'is';
-  expr: Expression;
-  value: 'NULL' | 'NOT NULL' | 'TRUE' | 'FALSE' | 'NOT TRUE' | 'NOT FALSE';
+  readonly type: 'is';
+  readonly expr: Expression;
+  readonly value: 'NULL' | 'NOT NULL' | 'TRUE' | 'FALSE' | 'NOT TRUE' | 'NOT FALSE';
 }
 
 export interface LikeExpr {
-  type: 'like';
-  expr: Expression;
-  pattern: Expression;
-  negated: boolean;
-  escape?: Expression;
+  readonly type: 'like';
+  readonly expr: Expression;
+  readonly pattern: Expression;
+  readonly negated: boolean;
+  readonly escape?: Expression;
 }
 
 export interface IlikeExpr {
-  type: 'ilike';
-  expr: Expression;
-  pattern: Expression;
-  negated: boolean;
-  escape?: Expression;
+  readonly type: 'ilike';
+  readonly expr: Expression;
+  readonly pattern: Expression;
+  readonly negated: boolean;
+  readonly escape?: Expression;
 }
 
 export interface SimilarToExpr {
-  type: 'similar_to';
-  expr: Expression;
-  pattern: Expression;
-  negated: boolean;
+  readonly type: 'similar_to';
+  readonly expr: Expression;
+  readonly pattern: Expression;
+  readonly negated: boolean;
 }
 
 export interface ExistsExpr {
-  type: 'exists';
-  subquery: SubqueryExpr;
+  readonly type: 'exists';
+  readonly subquery: SubqueryExpr;
 }
 
 export interface ParenExpr {
-  type: 'paren';
-  expr: Expression;
+  readonly type: 'paren';
+  readonly expr: Expression;
 }
 
 export interface CastExpr {
-  type: 'cast';
-  expr: Expression;
-  targetType: string;
+  readonly type: 'cast';
+  readonly expr: Expression;
+  readonly targetType: string;
 }
 
 export interface PgCastExpr {
-  type: 'pg_cast';
-  expr: Expression;
-  targetType: string;
+  readonly type: 'pg_cast';
+  readonly expr: Expression;
+  readonly targetType: string;
 }
 
 export interface WindowSpec {
-  partitionBy?: Expression[];
-  orderBy?: OrderByItem[];
-  frame?: string;
-  exclude?: string;
+  readonly partitionBy?: readonly Expression[];
+  readonly orderBy?: readonly OrderByItem[];
+  readonly frame?: string;
+  readonly exclude?: string;
 }
 
 export interface WindowFunctionExpr {
-  type: 'window_function';
-  func: FunctionCallExpr;
-  partitionBy?: Expression[];
-  orderBy?: OrderByItem[];
-  frame?: string; // raw frame clause like "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-  exclude?: string;
-  windowName?: string;
+  readonly type: 'window_function';
+  readonly func: FunctionCallExpr;
+  readonly partitionBy?: readonly Expression[];
+  readonly orderBy?: readonly OrderByItem[];
+  readonly frame?: string; // raw frame clause like "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+  readonly exclude?: string;
+  readonly windowName?: string;
 }
 
 export interface ExtractExpr {
-  type: 'extract';
-  field: string;   // DAY, MONTH, YEAR, etc.
-  source: Expression;    // the expression to extract from
+  readonly type: 'extract';
+  readonly field: string;   // DAY, MONTH, YEAR, etc.
+  readonly source: Expression;    // the expression to extract from
 }
 
 export interface PositionExpr {
-  type: 'position';
-  substring: Expression;
-  source: Expression;
+  readonly type: 'position';
+  readonly substring: Expression;
+  readonly source: Expression;
 }
 
 export interface SubstringExpr {
-  type: 'substring';
-  source: Expression;
-  start: Expression;
-  length?: Expression;
+  readonly type: 'substring';
+  readonly source: Expression;
+  readonly start: Expression;
+  readonly length?: Expression;
 }
 
 export interface OverlayExpr {
-  type: 'overlay';
-  source: Expression;
-  replacement: Expression;
-  start: Expression;
-  length?: Expression;
+  readonly type: 'overlay';
+  readonly source: Expression;
+  readonly replacement: Expression;
+  readonly start: Expression;
+  readonly length?: Expression;
 }
 
 export interface TrimExpr {
-  type: 'trim';
-  side?: 'LEADING' | 'TRAILING' | 'BOTH';
-  trimChar?: Expression;
-  source: Expression;
-  fromSyntax: boolean;
+  readonly type: 'trim';
+  readonly side?: 'LEADING' | 'TRAILING' | 'BOTH';
+  readonly trimChar?: Expression;
+  readonly source: Expression;
+  readonly fromSyntax: boolean;
 }
 
 export interface ArrayConstructorExpr {
-  type: 'array_constructor';
-  elements: Expression[];
+  readonly type: 'array_constructor';
+  readonly elements: readonly Expression[];
 }
 
 export interface IsDistinctFromExpr {
-  type: 'is_distinct_from';
-  left: Expression;
-  right: Expression;
-  negated: boolean;
+  readonly type: 'is_distinct_from';
+  readonly left: Expression;
+  readonly right: Expression;
+  readonly negated: boolean;
 }
 
 export interface RegexExpr {
-  type: 'regex_match';
-  left: Expression;
-  operator: string;
-  right: Expression;
+  readonly type: 'regex_match';
+  readonly left: Expression;
+  readonly operator: string;
+  readonly right: Expression;
 }
 
 export interface AliasedExpr {
-  type: 'aliased';
-  expr: Expression;
-  alias: string;
+  readonly type: 'aliased';
+  readonly expr: Expression;
+  readonly alias: string;
 }
 
 export interface ArraySubscriptExpr {
-  type: 'array_subscript';
-  array: Expression;
-  isSlice: boolean;
-  lower?: Expression;
-  upper?: Expression;
+  readonly type: 'array_subscript';
+  readonly array: Expression;
+  readonly isSlice: boolean;
+  readonly lower?: Expression;
+  readonly upper?: Expression;
 }
 
 export interface OrderedExpr {
-  type: 'ordered_expr';
-  expr: Expression;
-  direction: 'ASC' | 'DESC';
+  readonly type: 'ordered_expr';
+  readonly expr: Expression;
+  readonly direction: 'ASC' | 'DESC';
 }
 
 export interface RawExpression {
-  type: 'raw';
-  text: string;
+  readonly type: 'raw';
+  readonly text: string;
 }
 
 // Column expression with optional alias and comment
 export interface ColumnExpr {
-  expr: Expression;
-  alias?: string;
-  trailingComment?: CommentNode;
+  readonly expr: Expression;
+  readonly alias?: string;
+  readonly trailingComment?: CommentNode;
 }
 
 export interface FromClause {
-  table: Expression;
-  alias?: string;
-  aliasColumns?: string[];
-  lateral?: boolean;
-  tablesample?: { method: string; args: Expression[]; repeatable?: Expression };
+  readonly table: Expression;
+  readonly alias?: string;
+  readonly aliasColumns?: readonly string[];
+  readonly lateral?: boolean;
+  readonly tablesample?: { readonly method: string; readonly args: readonly Expression[]; readonly repeatable?: Expression };
 }
 
 export interface JoinClause {
-  joinType: string; // 'INNER JOIN', 'LEFT JOIN', 'LEFT OUTER JOIN', etc.
-  table: Expression;
-  alias?: string;
-  aliasColumns?: string[];
-  lateral?: boolean;
-  on?: Expression;
-  usingClause?: string[];
-  trailingComment?: CommentNode;
+  readonly joinType: string; // 'INNER JOIN', 'LEFT JOIN', 'LEFT OUTER JOIN', etc.
+  readonly table: Expression;
+  readonly alias?: string;
+  readonly aliasColumns?: readonly string[];
+  readonly lateral?: boolean;
+  readonly on?: Expression;
+  readonly usingClause?: readonly string[];
+  readonly trailingComment?: CommentNode;
 }
 
 export interface WhereClause {
-  condition: Expression;
-  trailingComment?: CommentNode;
+  readonly condition: Expression;
+  readonly trailingComment?: CommentNode;
 }
 
 export interface GroupByClause {
-  items: Expression[];
-  groupingSets?: { type: 'grouping_sets' | 'rollup' | 'cube'; sets: Expression[][] }[];
+  readonly items: readonly Expression[];
+  readonly groupingSets?: readonly { readonly type: 'grouping_sets' | 'rollup' | 'cube'; readonly sets: readonly (readonly Expression[])[] }[];
 }
 
 export interface HavingClause {
-  condition: Expression;
+  readonly condition: Expression;
 }
 
 export interface OrderByClause {
-  items: OrderByItem[];
+  readonly items: readonly OrderByItem[];
 }
 
 export interface OrderByItem {
-  expr: Expression;
-  direction?: 'ASC' | 'DESC';
-  nulls?: 'FIRST' | 'LAST';
-  trailingComment?: CommentNode;
+  readonly expr: Expression;
+  readonly direction?: 'ASC' | 'DESC';
+  readonly nulls?: 'FIRST' | 'LAST';
+  readonly trailingComment?: CommentNode;
 }
 
 export interface LimitClause {
-  count: Expression;
+  readonly count: Expression;
 }
 
 export interface OffsetClause {
-  count: Expression;
-  rowsKeyword?: boolean;
+  readonly count: Expression;
+  readonly rowsKeyword?: boolean;
 }
 
 export interface SetItem {
-  column: string;
-  value: Expression;
+  readonly column: string;
+  readonly value: Expression;
 }
 
 export interface ValuesList {
-  values: Expression[];
+  readonly values: readonly Expression[];
 }
 
 export interface TableElement {
-  elementType: 'column' | 'primary_key' | 'constraint' | 'foreign_key';
-  raw: string; // We'll store structured data for formatting
-  name?: string;
-  dataType?: string;
-  constraints?: string;
-  constraintName?: string;
-  constraintBody?: string;
-  constraintType?: 'check' | 'raw';
-  checkExpr?: Expression;
-  fkColumns?: string;
-  fkRefTable?: string;
-  fkRefColumns?: string;
-  fkActions?: string;
+  readonly elementType: 'column' | 'primary_key' | 'constraint' | 'foreign_key';
+  readonly raw: string;
+  readonly name?: string;
+  readonly dataType?: string;
+  readonly constraints?: string;
+  readonly constraintName?: string;
+  readonly constraintBody?: string;
+  readonly constraintType?: 'check' | 'raw';
+  readonly checkExpr?: Expression;
+  readonly fkColumns?: string;
+  readonly fkRefTable?: string;
+  readonly fkRefColumns?: string;
+  readonly fkActions?: string;
 }

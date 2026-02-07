@@ -310,7 +310,8 @@ export class Parser {
 
   private parseUnionOrSelect(comments: AST.CommentNode[]): AST.Node {
     const first = this.parseSelectOrParenSelect();
-    first.leadingComments = comments;
+    // Parser constructs AST nodes incrementally; type-assert to assign readonly field
+    (first as any).leadingComments = comments;
 
     if (this.checkUnionKeyword()) {
       const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
@@ -385,7 +386,7 @@ export class Parser {
     if (this.check('(')) {
       this.advance(); // consume (
       const select = this.parseSelect();
-      select.parenthesized = true;
+      (select as { parenthesized: boolean }).parenthesized = true;
       this.expect(')');
       return select;
     }
@@ -420,11 +421,12 @@ export class Parser {
       from = this.parseFromItem();
 
       // Parse comma-separated additional FROM items
+      const extraFromItems: AST.FromClause[] = [];
       while (this.check(',')) {
         this.advance();
-        if (!additionalFromItems) additionalFromItems = [];
-        additionalFromItems.push(this.parseFromItem());
+        extraFromItems.push(this.parseFromItem());
       }
+      if (extraFromItems.length > 0) additionalFromItems = extraFromItems;
 
       // Parse JOINs
       while (this.isJoinKeyword()) {
@@ -434,15 +436,13 @@ export class Parser {
 
     if (this.peekUpper() === 'WHERE') {
       this.advance();
-      where = { condition: this.parseExpression() };
+      const condition = this.parseExpression();
+      let whereComment: AST.CommentNode | undefined;
       if (this.peekType() === 'line_comment') {
         const t = this.advance();
-        where.trailingComment = {
-          type: 'comment',
-          style: 'line',
-          text: t.value,
-        };
+        whereComment = { type: 'comment', style: 'line', text: t.value };
       }
+      where = { condition, trailingComment: whereComment };
     }
 
     if (this.peekUpper() === 'GROUP' && this.peekUpperAt(1) === 'BY') {
@@ -471,13 +471,13 @@ export class Parser {
 
     if (this.peekUpper() === 'OFFSET') {
       this.advance();
+      const offsetCount = this.parsePrimary();
       let rowsKeyword = false;
-      offset = { count: this.parsePrimary(), rowsKeyword };
-      // consume optional ROWS keyword
       if (this.peekUpper() === 'ROWS') {
         this.advance();
-        offset.rowsKeyword = true;
+        rowsKeyword = true;
       }
+      offset = { count: offsetCount, rowsKeyword };
     }
 
     if (this.peekUpper() === 'FETCH') {
@@ -488,11 +488,12 @@ export class Parser {
       lockingClause = this.parseForClause();
     }
 
-    const result: AST.SelectStatement = {
+    return {
       type: 'select',
       distinct,
       columns,
       from,
+      additionalFromItems,
       joins,
       where,
       groupBy,
@@ -505,10 +506,6 @@ export class Parser {
       windowClause,
       leadingComments: [],
     };
-
-    if (additionalFromItems) result.additionalFromItems = additionalFromItems;
-
-    return result;
   }
 
   private parseFromItem(): AST.FromClause {
@@ -538,22 +535,22 @@ export class Parser {
       tablesample = { method, args, repeatable };
     }
 
-    const { alias, aliasColumns } = this.parseOptionalAlias(['TABLESAMPLE']);
+    const { alias, aliasColumns } = this.parseOptionalAlias({ allowColumnList: true, stopKeywords: ['TABLESAMPLE'] });
 
     return { table, alias, aliasColumns, lateral, tablesample };
   }
 
-  // Shared alias parsing for FROM items and JOINs.
-  // Parses optional AS alias (col1, col2) or bare alias after a table expression.
-  // extraStopKeywords: additional keywords that prevent implicit alias detection.
-  private parseOptionalAlias(extraStopKeywords: string[] = []): { alias?: string; aliasColumns?: string[] } {
+  // Shared alias parsing for FROM items, JOINs, SELECT columns, and RETURNING.
+  // opts.allowColumnList: whether to parse (col1, col2) after alias (FROM/JOIN only)
+  // opts.stopKeywords: additional keywords that prevent implicit alias detection
+  private parseOptionalAlias(opts: { allowColumnList?: boolean; stopKeywords?: string[] } = {}): { alias?: string; aliasColumns?: string[] } {
     let alias: string | undefined;
     let aliasColumns: string[] | undefined;
 
     if (this.peekUpper() === 'AS') {
       this.advance();
       alias = this.advance().value;
-      aliasColumns = this.tryParseAliasColumnList();
+      if (opts.allowColumnList) aliasColumns = this.tryParseAliasColumnList();
     } else if (
       this.peekType() === 'identifier'
       && !CLAUSE_KEYWORDS.has(this.peekUpper())
@@ -561,10 +558,10 @@ export class Parser {
       && !this.check(',')
       && !this.check(')')
       && !this.check(';')
-      && !extraStopKeywords.includes(this.peekUpper())
+      && !(opts.stopKeywords && opts.stopKeywords.includes(this.peekUpper()))
     ) {
       alias = this.advance().value;
-      aliasColumns = this.tryParseAliasColumnList();
+      if (opts.allowColumnList) aliasColumns = this.tryParseAliasColumnList();
     }
 
     return { alias, aliasColumns };
@@ -644,7 +641,7 @@ export class Parser {
 
     const table = this.parseTableExpr();
     // ON and USING are already in CLAUSE_KEYWORDS, so no extra stop keywords needed
-    const { alias, aliasColumns } = this.parseOptionalAlias();
+    const { alias, aliasColumns } = this.parseOptionalAlias({ allowColumnList: true });
 
     let on: AST.Expression | undefined;
     let usingClause: string[] | undefined;
@@ -678,19 +675,16 @@ export class Parser {
 
   private parseGroupByClause(): AST.GroupByClause {
     const items: AST.Expression[] = [];
-    let groupingSets: AST.GroupByClause['groupingSets'];
+    const groupingSetsArr: { type: 'grouping_sets' | 'rollup' | 'cube'; sets: AST.Expression[][] }[] = [];
 
     // Check for GROUPING SETS, ROLLUP, CUBE
     const kw = this.peekUpper();
     if (kw === 'GROUPING' && this.peekUpperAt(1) === 'SETS') {
-      groupingSets = [];
-      groupingSets.push(this.parseGroupingSetsSpec('grouping_sets'));
+      groupingSetsArr.push(this.parseGroupingSetsSpec('grouping_sets'));
     } else if (kw === 'ROLLUP') {
-      groupingSets = [];
-      groupingSets.push(this.parseGroupingSetsSpec('rollup'));
+      groupingSetsArr.push(this.parseGroupingSetsSpec('rollup'));
     } else if (kw === 'CUBE') {
-      groupingSets = [];
-      groupingSets.push(this.parseGroupingSetsSpec('cube'));
+      groupingSetsArr.push(this.parseGroupingSetsSpec('cube'));
     } else {
       // Normal GROUP BY items
       items.push(this.parseExpression());
@@ -699,16 +693,15 @@ export class Parser {
         // Check if next is GROUPING SETS, ROLLUP, or CUBE
         const nextKw = this.peekUpper();
         if ((nextKw === 'GROUPING' && this.peekUpperAt(1) === 'SETS') || nextKw === 'ROLLUP' || nextKw === 'CUBE') {
-          if (!groupingSets) groupingSets = [];
           const specType = nextKw === 'GROUPING' ? 'grouping_sets' : nextKw.toLowerCase() as 'rollup' | 'cube';
-          groupingSets.push(this.parseGroupingSetsSpec(specType));
+          groupingSetsArr.push(this.parseGroupingSetsSpec(specType));
         } else {
           items.push(this.parseExpression());
         }
       }
     }
 
-    return { items, groupingSets };
+    return { items, groupingSets: groupingSetsArr.length > 0 ? groupingSetsArr : undefined };
   }
 
   private parseGroupingSetsSpec(specType: 'grouping_sets' | 'rollup' | 'cube'): { type: 'grouping_sets' | 'rollup' | 'cube'; sets: AST.Expression[][] } {
@@ -783,7 +776,7 @@ export class Parser {
     }
 
     // Frame clause
-    if (this.peekUpper() === 'ROWS' || this.peekUpper() === 'RANGE') {
+    if (this.peekUpper() === 'ROWS' || this.peekUpper() === 'RANGE' || this.peekUpper() === 'GROUPS') {
       let frameStr = this.advance().upper;
       if (this.peekUpper() === 'BETWEEN') {
         frameStr += ' ' + this.advance().upper;
@@ -884,11 +877,8 @@ export class Parser {
       this.advance();
       if (this.peekType() === 'line_comment' && !items[items.length - 1].trailingComment) {
         const t = this.advance();
-        items[items.length - 1].trailingComment = {
-          type: 'comment',
-          style: 'line',
-          text: t.value,
-        };
+        const last = items[items.length - 1];
+        items[items.length - 1] = { ...last, trailingComment: { type: 'comment', style: 'line', text: t.value } };
       }
       items.push(this.parseOrderByItem());
     }
@@ -1082,27 +1072,7 @@ export class Parser {
     // Handle :: casts (can be chained)
     while (this.peek().type === 'operator' && this.peek().value === '::') {
       this.advance();
-      let targetType = this.consumeTypeNameToken();
-      // Handle parameterized types like NUMERIC(10, 2)
-      if (this.check('(')) {
-        targetType += this.advance().value;
-        while (!this.check(')') && !this.isAtEnd()) {
-          const t = this.advance();
-          targetType += t.value;
-          if (this.check(',')) {
-            targetType += this.advance().value;
-            targetType += ' ';
-          }
-        }
-        targetType += this.expect(')').value;
-      }
-      // Handle array suffix []
-      if (this.check('[')) {
-        targetType += this.advance().value;
-        if (this.check(']')) {
-          targetType += this.advance().value;
-        }
-      }
+      const targetType = this.consumeTypeSpecifier();
       expr = { type: 'pg_cast', expr, targetType } as AST.PgCastExpr;
     }
 
@@ -1219,22 +1189,18 @@ export class Parser {
 
       this.expect(')');
 
-      const funcExpr: AST.FunctionCallExpr = { type: 'function_call', name: fullName, args, distinct };
-
-      if (innerOrderBy) {
-        funcExpr.orderBy = innerOrderBy;
-      }
-
       // FILTER (WHERE ...)
+      let filter: AST.Expression | undefined;
       if (this.peekUpper() === 'FILTER') {
         this.advance();
         this.expect('(');
         this.expect('WHERE');
-        funcExpr.filter = this.parseExpression();
+        filter = this.parseExpression();
         this.expect(')');
       }
 
       // WITHIN GROUP (ORDER BY ...)
+      let withinGroup: { orderBy: AST.OrderByItem[] } | undefined;
       if (this.peekUpper() === 'WITHIN') {
         this.advance();
         this.expect('GROUP');
@@ -1243,8 +1209,18 @@ export class Parser {
         this.expect('BY');
         const withinOrderBy = this.parseOrderByItems();
         this.expect(')');
-        funcExpr.withinGroup = { orderBy: withinOrderBy };
+        withinGroup = { orderBy: withinOrderBy };
       }
+
+      const funcExpr: AST.FunctionCallExpr = {
+        type: 'function_call',
+        name: fullName,
+        args,
+        distinct,
+        orderBy: innerOrderBy,
+        filter,
+        withinGroup,
+      };
 
       // Window function: OVER (...)
       if (this.peekUpper() === 'OVER') {
@@ -1312,19 +1288,7 @@ export class Parser {
     this.expect('(');
     const expr = this.parseExpression();
     this.expect('AS');
-    let targetType = this.consumeTypeNameToken();
-    if (this.check('(')) {
-      targetType += this.advance().value;
-      while (!this.check(')')) {
-        const t = this.advance();
-        targetType += t.value;
-        if (this.check(',')) {
-          targetType += this.advance().value;
-          targetType += ' ';
-        }
-      }
-      targetType += this.advance().value; // closing )
-    }
+    const targetType = this.consumeTypeSpecifier();
     this.expect(')');
     return { type: 'cast', expr, targetType };
   }
@@ -1445,18 +1409,10 @@ export class Parser {
 
   private parseReturningItem(): AST.Expression {
     const expr = this.parseExpression();
-
-    if (this.peekUpper() === 'AS') {
-      this.advance();
-      const alias = this.advance().value;
+    const { alias } = this.parseOptionalAlias();
+    if (alias) {
       return { type: 'aliased', expr, alias } as AST.AliasedExpr;
     }
-
-    if (this.peekType() === 'identifier' && !this.check(',') && !this.check(';')) {
-      const alias = this.advance().value;
-      return { type: 'aliased', expr, alias } as AST.AliasedExpr;
-    }
-
     return expr;
   }
 
@@ -1468,11 +1424,8 @@ export class Parser {
       this.advance();
       if (this.peekType() === 'line_comment' && !columns[columns.length - 1].trailingComment) {
         const t = this.advance();
-        columns[columns.length - 1].trailingComment = {
-          type: 'comment',
-          style: 'line',
-          text: t.value,
-        };
+        const last = columns[columns.length - 1];
+        columns[columns.length - 1] = { ...last, trailingComment: { type: 'comment', style: 'line', text: t.value } };
       }
       columns.push(this.parseColumnExpr());
     }
@@ -1482,15 +1435,9 @@ export class Parser {
 
   private parseColumnExpr(): AST.ColumnExpr {
     const expr = this.parseExpression();
-    let alias: string | undefined;
     let trailingComment: AST.CommentNode | undefined;
 
-    if (this.peekUpper() === 'AS') {
-      this.advance();
-      alias = this.advance().value;
-    } else if (this.peekType() === 'identifier' && !CLAUSE_KEYWORDS.has(this.peekUpper()) && !this.check(',') && !this.check(')')) {
-      alias = this.advance().value;
-    }
+    const { alias } = this.parseOptionalAlias();
 
     if (this.peekType() === 'line_comment') {
       trailingComment = {
@@ -2247,7 +2194,7 @@ export class Parser {
         mainQuery = result;
       } else {
         const first = this.parseSelect();
-        first.leadingComments = mainComments;
+        (first as any).leadingComments = mainComments;
 
         if (this.checkUnionKeyword()) {
           const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
@@ -2266,7 +2213,7 @@ export class Parser {
       }
     } else {
       const first = this.parseSelect();
-      first.leadingComments = mainComments;
+      (first as any).leadingComments = mainComments;
 
       if (this.checkUnionKeyword()) {
         const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
@@ -2404,9 +2351,6 @@ export class Parser {
         if (this.check(',')) this.advance();
       } else if (this.check(')')) {
         if (rows.length > 0 && rowComments.length > 0) {
-          if (!rows[rows.length - 1].leadingComments) {
-            rows[rows.length - 1].leadingComments = [];
-          }
           rows.push({ values: [], leadingComments: rowComments });
         }
         break;
@@ -2434,6 +2378,30 @@ export class Parser {
     }
 
     return parts.join(' ');
+  }
+
+  // Consume a full type specifier: type name + optional (params) + optional []
+  private consumeTypeSpecifier(): string {
+    let typeName = this.consumeTypeNameToken();
+    if (this.check('(')) {
+      typeName += this.advance().value;
+      while (!this.check(')') && !this.isAtEnd()) {
+        const t = this.advance();
+        typeName += t.value;
+        if (this.check(',')) {
+          typeName += this.advance().value;
+          typeName += ' ';
+        }
+      }
+      typeName += this.expect(')').value;
+    }
+    if (this.check('[')) {
+      typeName += this.advance().value;
+      if (this.check(']')) {
+        typeName += this.advance().value;
+      }
+    }
+    return typeName;
   }
 
   private collectTokensUntilTopLevelKeyword(stopKeywords: Set<string>): Token[] {

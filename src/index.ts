@@ -4,6 +4,7 @@ export { tokenize, TokenizeError } from './tokenizer';
 export type { Token, TokenType } from './tokenizer';
 export { Parser, parse, ParseError, MaxDepthError } from './parser';
 export type { ParseOptions } from './parser';
+export { formatStatements } from './formatter';
 export type {
   Statement,
   Node,
