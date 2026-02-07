@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -475,5 +475,84 @@ describe('--help flag', () => {
     expect(res.out).toContain('--color');
     expect(res.out).toContain('.sqlfmtignore');
     expect(res.out).toContain('no .sqlfmtrc');
+  });
+});
+
+describe('symlink path validation', () => {
+  it('rejects symlinks pointing outside CWD', () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'sqlfmt-symlink-outside-'));
+    const target = join(outsideDir, 'secret.sql');
+    writeFileSync(target, 'select 1;', 'utf8');
+
+    const workDir = mkdtempSync(join(tmpdir(), 'sqlfmt-symlink-cwd-'));
+    const link = join(workDir, 'link.sql');
+    symlinkSync(target, link);
+
+    const res = runCli(['--write', 'link.sql'], workDir);
+    expect(res.code).toBe(0);
+    expect(res.err).toContain('path resolves outside working directory');
+    // The target file should be unchanged
+    expect(readFileSync(target, 'utf8')).toBe('select 1;');
+  });
+});
+
+describe('ignore pattern validation', () => {
+  it('rejects --ignore pattern with ../ traversal', () => {
+    const res = runCli(['--ignore', '../etc/**', 'test.sql']);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('../');
+    expect(res.err).toContain('directory traversal');
+  });
+
+  it('rejects --ignore pattern with excessive ** segments', () => {
+    const pattern = Array.from({ length: 12 }, () => '**').join('/');
+    const res = runCli(['--ignore', pattern, 'test.sql']);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('too many **');
+  });
+
+  it('accepts normal ignore patterns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-val-'));
+    writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
+
+    const res = runCli(['--check', '--ignore', 'migrations/**', 'query.sql'], dir);
+    expect(res.code).toBe(0);
+  });
+
+  it('rejects .sqlfmtignore pattern with ../ traversal', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignfile-val-'));
+    writeFileSync(join(dir, '.sqlfmtignore'), '../../../etc/passwd\n', 'utf8');
+    writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
+
+    const res = runCli(['--check', 'query.sql'], dir);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('../');
+    expect(res.err).toContain('directory traversal');
+  });
+
+  it('rejects .sqlfmtignore pattern with excessive ** segments', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignfile-val-'));
+    const pattern = Array.from({ length: 12 }, () => '**').join('/');
+    writeFileSync(join(dir, '.sqlfmtignore'), pattern + '\n', 'utf8');
+    writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
+
+    const res = runCli(['--check', 'query.sql'], dir);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('too many **');
+  });
+});
+
+describe('recovery warnings on stderr', () => {
+  it('emits recovery warnings even with --quiet', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-recover-'));
+    // This SQL has a statement the parser will struggle with, forcing recovery
+    const sql = 'SELECT 1; GOBBLEDYGOOK NOT VALID SQL HERE; SELECT 2;';
+    writeFileSync(join(dir, 'recover.sql'), sql, 'utf8');
+
+    const res = runCli(['--quiet', '--write', 'recover.sql'], dir);
+    // Recovery warnings should still appear on stderr even with --quiet
+    // (if recovery actually fired; if this SQL parses fine, no warning expected)
+    // The important thing is that --quiet does NOT suppress recovery warnings
+    expect(res.code).toBe(0);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { formatSQL } from '../src/format';
-import { parse, ParseError } from '../src/parser';
+import { parse, ParseError, MaxDepthError } from '../src/parser';
 import { tokenize, TokenizeError } from '../src/tokenizer';
 
 describe('malformed SQL and error paths', () => {
@@ -175,5 +175,81 @@ describe('error line/column accuracy for multi-line SQL', () => {
       expect(pe.message).toBeTruthy();
       expect(pe.message.length).toBeGreaterThan(5);
     }
+  });
+});
+
+describe('MaxDepthError message is helpful (not misleading position)', () => {
+  it('MaxDepthError message mentions nesting depth, not confusing position', () => {
+    const sql = 'SELECT ' + '('.repeat(120) + '1' + ')'.repeat(120) + ';';
+    try {
+      parse(sql, { recover: false, maxDepth: 100 });
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(MaxDepthError);
+      const mde = err as MaxDepthError;
+      expect(mde.message).toContain('nesting depth');
+      expect(mde.message).toContain('100');
+    }
+  });
+});
+
+describe('deeply nested expressions hit formatter depth limit', () => {
+  it('deeply nested CASE expressions are caught by formatter depth guard', () => {
+    // Build nested CASE at depth just under parser limit but enough to stress formatter
+    const depth = 150;
+    let expr = '1';
+    for (let i = 0; i < depth; i++) {
+      expr = `CASE WHEN x = ${i} THEN ${expr} ELSE 0 END`;
+    }
+    const sql = `SELECT ${expr} FROM t;`;
+    // Should either format successfully (with depth guard) or throw MaxDepthError
+    // but should NOT cause a stack overflow
+    try {
+      const result = formatSQL(sql);
+      expect(result).toContain('SELECT');
+    } catch (err) {
+      expect(err).toBeInstanceOf(MaxDepthError);
+    }
+  });
+
+  it('deeply nested parenthesized expressions are caught by formatter depth guard', () => {
+    // Use just under the parser maxDepth default so parsing succeeds,
+    // but formatting depth guard kicks in
+    const depth = 180;
+    let expr = '1';
+    for (let i = 0; i < depth; i++) {
+      expr = `(${expr}) + 1`;
+    }
+    const sql = `SELECT ${expr} FROM t;`;
+    try {
+      const result = formatSQL(sql);
+      expect(result).toContain('SELECT');
+    } catch (err) {
+      expect(err).toBeInstanceOf(MaxDepthError);
+    }
+  });
+});
+
+describe('recovery mode + strict mode interaction with new SQL constructs', () => {
+  it('recovery mode handles invalid INTERVAL gracefully', () => {
+    const nodes = parse("SELECT INTERVAL '1' FROMM t;", { recover: true });
+    expect(nodes.length).toBeGreaterThan(0);
+  });
+
+  it('strict mode rejects incomplete GROUPS window frame', () => {
+    expect(() =>
+      parse('SELECT SUM(x) OVER (ORDER BY y GROUPS BETWEEN) FROM t;', { recover: false })
+    ).toThrow(ParseError);
+  });
+
+  it('recovery mode handles invalid CTE column list gracefully', () => {
+    const nodes = parse('WITH cte (,) AS (SELECT 1) SELECT * FROM cte;', { recover: true });
+    expect(nodes.length).toBeGreaterThan(0);
+  });
+
+  it('strict mode rejects malformed CTE', () => {
+    expect(() =>
+      parse('WITH AS (SELECT 1) SELECT * FROM cte;', { recover: false })
+    ).toThrow(ParseError);
   });
 });

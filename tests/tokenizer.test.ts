@@ -290,3 +290,52 @@ describe('tokenizer unterminated dollar-quoted string details', () => {
     }
   });
 });
+
+describe('scientific notation backtracking with sign characters', () => {
+  it('backtracks 1e+ correctly: SELECT 1e+ FROM t', () => {
+    const tokens = tokenize('SELECT 1e+ FROM t').filter(t => t.type !== 'whitespace');
+    expect(tokens[1].value).toBe('1');
+    expect(tokens[1].type).toBe('number');
+    expect(tokens[2].value).toBe('e');
+    expect(tokens[2].type).toBe('identifier');
+    expect(tokens[3].value).toBe('+');
+    expect(tokens[3].type).toBe('operator');
+    expect(tokens[4].upper).toBe('FROM');
+    expect(tokens[5].value).toBe('t');
+  });
+
+  it('backtracks 1e- correctly: SELECT 1e- FROM t', () => {
+    const tokens = tokenize('SELECT 1e- FROM t').filter(t => t.type !== 'whitespace');
+    expect(tokens[1].value).toBe('1');
+    expect(tokens[1].type).toBe('number');
+    expect(tokens[2].value).toBe('e');
+    expect(tokens[2].type).toBe('identifier');
+    expect(tokens[3].value).toBe('-');
+    expect(tokens[3].type).toBe('operator');
+    expect(tokens[4].upper).toBe('FROM');
+  });
+
+  it('backtracks 1e (no sign, no digit) correctly: SELECT 1e FROM t', () => {
+    const tokens = tokenize('SELECT 1e FROM t').filter(t => t.type !== 'whitespace');
+    expect(tokens[1].value).toBe('1');
+    expect(tokens[1].type).toBe('number');
+    expect(tokens[2].value).toBe('e');
+    expect(tokens[3].upper).toBe('FROM');
+    expect(tokens[4].value).toBe('t');
+  });
+});
+
+describe('identifier length check runs after loop', () => {
+  it('still rejects identifiers exceeding MAX_IDENTIFIER_LENGTH', () => {
+    const longIdent = 'a'.repeat(10_001);
+    expect(() => tokenize(`SELECT ${longIdent};`)).toThrow(TokenizeError);
+  });
+
+  it('allows identifiers at exactly MAX_IDENTIFIER_LENGTH', () => {
+    const ident = 'a'.repeat(10_000);
+    const tokens = tokenize(`SELECT ${ident};`);
+    const ids = tokens.filter(t => t.type === 'identifier');
+    expect(ids).toHaveLength(1);
+    expect(ids[0].value).toBe(ident);
+  });
+});

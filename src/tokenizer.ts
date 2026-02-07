@@ -631,16 +631,16 @@ export function tokenize(input: string): Token[] {
     if (isIdentifierStart(ch)) {
       while (pos < len && isIdentifierContinuation(input[pos])) {
         pos++;
-        // Fail fast: check length inside the loop to avoid consuming a huge identifier
-        if (pos - start > MAX_IDENTIFIER_LENGTH) {
-          const { line: eLine, column: eCol } = lc(start);
-          throw new TokenizeError(
-            `Identifier exceeds maximum length of ${MAX_IDENTIFIER_LENGTH} characters`,
-            start,
-            eLine,
-            eCol,
-          );
-        }
+      }
+      // Single check after loop instead of N checks for N-character identifiers
+      if (pos - start > MAX_IDENTIFIER_LENGTH) {
+        const { line: eLine, column: eCol } = lc(start);
+        throw new TokenizeError(
+          `Identifier exceeds maximum length of ${MAX_IDENTIFIER_LENGTH} characters`,
+          start,
+          eLine,
+          eCol,
+        );
       }
       const val = input.slice(start, pos);
       const upper = val.toUpperCase();

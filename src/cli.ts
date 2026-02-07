@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, renameSync, unlinkSync, globSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, unlinkSync, globSync, lstatSync, realpathSync } from 'fs';
 import { dirname, join, resolve, isAbsolute, relative } from 'path';
 import { formatSQL } from './format';
 import { ParseError } from './parser';
@@ -253,6 +253,7 @@ function parseArgs(args: string[]): CLIOptions {
           `--ignore pattern is too long (${normalized.length} > ${MAX_IGNORE_PATTERN_LENGTH})`
         );
       }
+      validateIgnorePattern(normalized, '--ignore');
       opts.ignore.push(next);
       i++;
       continue;
@@ -371,7 +372,26 @@ type IgnoreGlobToken =
   | { type: 'question' };
 
 const MAX_IGNORE_PATTERN_LENGTH = 1024;
+const MAX_DOUBLE_STAR_SEGMENTS = 10;
 const IGNORE_FILE_NAME = '.sqlfmtignore';
+
+function validateIgnorePattern(pattern: string, source: string): void {
+  if (pattern.includes('../')) {
+    throw new CLIUsageError(
+      `${source} pattern must not contain '../' (directory traversal): '${pattern}'`
+    );
+  }
+  const segments = pattern.split('/');
+  let doubleStarCount = 0;
+  for (const seg of segments) {
+    if (seg === '**') doubleStarCount++;
+  }
+  if (doubleStarCount > MAX_DOUBLE_STAR_SEGMENTS) {
+    throw new CLIUsageError(
+      `${source} pattern has too many ** segments (${doubleStarCount} > ${MAX_DOUBLE_STAR_SEGMENTS}): '${pattern}'`
+    );
+  }
+}
 
 function normalizeGlobPath(input: string): string {
   return input
@@ -417,6 +437,7 @@ function readIgnorePatternsFromFile(ignoreFilePath: string): string[] {
         `${IGNORE_FILE_NAME} contains a pattern that is too long (${normalized.length} > ${MAX_IGNORE_PATTERN_LENGTH})`
       );
     }
+    validateIgnorePattern(normalized, IGNORE_FILE_NAME);
     patterns.push(normalized);
   }
   return patterns;
@@ -520,12 +541,25 @@ function isInsideDirectory(baseDir: string, targetPath: string): boolean {
 // Validate that a file path doesn't escape the current working directory via traversal.
 // Returns the resolved absolute path, or null if the path resolves outside CWD.
 // Both relative and absolute paths are checked for CWD containment.
+// Symlinks inside CWD that point outside CWD are also rejected.
 function validateWritePath(file: string): string | null {
   const resolved = resolve(file);
   const cwd = process.cwd();
   // Enforce CWD containment for both relative and absolute paths.
   if (!isInsideDirectory(cwd, resolved)) {
     return null;
+  }
+  // Detect symlinks that escape CWD
+  try {
+    const stats = lstatSync(resolved);
+    if (stats.isSymbolicLink()) {
+      const realTarget = realpathSync(resolved);
+      if (!isInsideDirectory(cwd, realTarget)) {
+        return null; // Symlink points outside CWD
+      }
+    }
+  } catch {
+    // File doesn't exist yet; safe to write
   }
   return resolved;
 }
@@ -656,42 +690,57 @@ function formatErrorExcerpt(
   return red(location) + '\n\n' + contextLines.join('\n') + '\n  ' + message;
 }
 
+// Sanitize token values in error messages to avoid leaking sensitive data (passwords, API keys).
+// Replaces string literal and parameter token values with placeholders.
+function sanitizeErrorMessage(err: ParseError | TokenizeError): string {
+  if (err instanceof ParseError && (err.token.type === 'string' || err.token.type === 'parameter')) {
+    const placeholder = `<${err.token.type}>`;
+    const got = `"${placeholder}" (${err.token.type})`;
+    return `Expected ${err.expected}, got ${got}`;
+  }
+  return err.message;
+}
+
 // Check if an error message already contains position info like "at line X, column Y"
 const POSITION_INFO_RE = /at line \d+,? column \d+/i;
 
 function handleParseError(err: unknown, input?: string, filepath?: string | null): never {
   if (err instanceof ParseError) {
+    const safeMessage = sanitizeErrorMessage(err);
     if (input) {
-      console.error(formatErrorExcerpt(input, err.line, err.column, err.message, filepath));
+      console.error(formatErrorExcerpt(input, err.line, err.column, safeMessage, filepath));
     } else {
-      console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${err.message}`));
+      console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${safeMessage}`));
     }
     process.exit(2);
   }
   if (err instanceof TokenizeError) {
+    const safeMessage = sanitizeErrorMessage(err);
     if (input) {
       // TokenizeError message may already include position info; use the message as-is
       // but show the excerpt with context at the correct location
-      const displayMessage = POSITION_INFO_RE.test(err.message)
-        ? err.message
-        : `${err.message} at line ${err.line}, column ${err.column}`;
+      const displayMessage = POSITION_INFO_RE.test(safeMessage)
+        ? safeMessage
+        : `${safeMessage} at line ${err.line}, column ${err.column}`;
       console.error(formatErrorExcerpt(input, err.line, err.column, displayMessage, filepath));
     } else {
-      console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${err.message}`));
+      console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${safeMessage}`));
     }
     process.exit(2);
   }
   throw err;
 }
 
-function printRecoveryWarnings(recoveries: RecoveryEvent[], quiet: boolean): void {
-  if (quiet || recoveries.length === 0) return;
+// Recovery warnings always go to stderr, even with --quiet, because they indicate
+// that the output may not faithfully represent the input SQL.
+function printRecoveryWarnings(recoveries: RecoveryEvent[]): void {
+  if (recoveries.length === 0) return;
 
   for (const r of recoveries) {
     if (r.dropped) {
-      console.error(`Warning: Could not recover statement at line ${r.line} (dropped in recovery mode)`);
+      console.error(`Warning: Statement at line ${r.line} was dropped (could not recover)`);
     } else {
-      console.error(`Warning: Could not parse statement at line ${r.line} (passed through unchanged)`);
+      console.error(`Warning: Statement at line ${r.line} could not be parsed and was passed through as-is`);
     }
   }
   const droppedCount = recoveries.filter(r => r.dropped).length;
@@ -746,7 +795,7 @@ function main(): void {
         handleParseError(err, input, opts.stdinFilepath);
       }
 
-      printRecoveryWarnings(recoveries, opts.quiet);
+      printRecoveryWarnings(recoveries);
 
       if (opts.check) {
         const normalizedInput = normalizeForComparison(input);
@@ -787,7 +836,7 @@ function main(): void {
           handleParseError(err, input);
         }
 
-        printRecoveryWarnings(recoveries, opts.quiet);
+        printRecoveryWarnings(recoveries);
 
         if (opts.write) {
           if (input !== output) {
