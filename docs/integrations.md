@@ -82,22 +82,9 @@ sqlfmt:
 
 ## VS Code
 
-### Extension (recommended)
+### Run on Save (recommended)
 
-Install the `vscode-sqlfmt` extension from source (see `vscode-sqlfmt/README.md` in this repo) and set it as your default SQL formatter:
-
-```json
-{
-  "[sql]": {
-    "editor.defaultFormatter": "vcoppola.sqlfmt",
-    "editor.formatOnSave": true
-  }
-}
-```
-
-### Manual: Run on Save
-
-If you prefer not to use the extension, you can use the [Run on Save](https://marketplace.visualstudio.com/items?itemName=emeraldwalk.RunOnSave) extension:
+Use the [Run on Save](https://marketplace.visualstudio.com/items?itemName=emeraldwalk.RunOnSave) extension to format SQL files automatically:
 
 ```json
 {

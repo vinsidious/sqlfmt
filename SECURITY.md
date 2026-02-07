@@ -45,6 +45,13 @@ When running `sqlfmt` in CI/CD or multi-tenant automation:
 - Keep formatting jobs inside an isolated workspace with least-privilege filesystem access.
 - Disable colorized output in machine logs unless explicitly needed (`--color=never`).
 
+## CVE Assignment
+
+For critical vulnerabilities, we will:
+1. Request a CVE ID from GitHub Security Advisories
+2. Credit the reporter in the CVE description
+3. Publish a security advisory before releasing the patch
+
 ## Dependencies
 
 sqlfmt has **zero runtime dependencies**. The only dependencies are build-time dev dependencies (TypeScript, tsup, Bun test types). This minimizes supply chain risk.
