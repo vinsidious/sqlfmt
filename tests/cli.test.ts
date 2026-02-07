@@ -8,10 +8,10 @@ const cliPath = join(root, 'src', 'cli.ts');
 const bunPath = process.execPath;
 const decoder = new TextDecoder();
 
-function runCli(args: string[]) {
+function runCli(args: string[], cwd: string = root) {
   const proc = Bun.spawnSync({
     cmd: [bunPath, cliPath, ...args],
-    cwd: root,
+    cwd,
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -25,10 +25,10 @@ function runCli(args: string[]) {
   };
 }
 
-function runCliWithStdin(args: string[], stdinContent: string) {
+function runCliWithStdin(args: string[], stdinContent: string, cwd: string = root) {
   const proc = Bun.spawnSync({
     cmd: [bunPath, cliPath, ...args],
-    cwd: root,
+    cwd,
     stdin: new TextEncoder().encode(stdinContent),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -212,6 +212,34 @@ describe('--no-color flag', () => {
   });
 });
 
+describe('--color flag', () => {
+  it('accepts --color=always and forces ANSI output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-color-'));
+    const file = join(dir, 'q.sql');
+    writeFileSync(file, 'select 1;', 'utf8');
+
+    const res = runCli(['--color=always', '--check', file]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('\x1b[');
+  });
+
+  it('accepts --color never form and disables ANSI output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-color-'));
+    const file = join(dir, 'q.sql');
+    writeFileSync(file, 'select 1;', 'utf8');
+
+    const res = runCli(['--color', 'never', '--check', file]);
+    expect(res.code).toBe(1);
+    expect(res.err).not.toContain('\x1b[');
+  });
+
+  it('rejects invalid --color values', () => {
+    const res = runCli(['--color=rainbow']);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('--color must be one of');
+  });
+});
+
 describe('--verbose flag', () => {
   it('prints file progress to stderr', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
@@ -314,10 +342,70 @@ describe('--ignore flag', () => {
     expect(readFileSync(join(migrations, 'v1.sql'), 'utf8')).toBe('select 3;');
   });
 
+  it('supports ? wildcard in ignore patterns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-'));
+    const keep = join(dir, 'keep.sql');
+    const skipSingle = join(dir, 'skip1.sql');
+    const skipDouble = join(dir, 'skip10.sql');
+    writeFileSync(keep, 'select 1;', 'utf8');
+    writeFileSync(skipSingle, 'select 2;', 'utf8');
+    writeFileSync(skipDouble, 'select 3;', 'utf8');
+
+    const res = runCli([
+      '--write',
+      '--ignore', 'skip?.sql',
+      join(dir, '*.sql'),
+    ]);
+    expect(res.code).toBe(0);
+    expect(readFileSync(keep, 'utf8')).toBe('SELECT 1;\n');
+    expect(readFileSync(skipSingle, 'utf8')).toBe('select 2;');
+    expect(readFileSync(skipDouble, 'utf8')).toBe('SELECT 3;\n');
+  });
+
+  it('rejects overly long --ignore patterns', () => {
+    const res = runCli(['--ignore', 'x'.repeat(1025)]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('pattern is too long');
+  });
+
   it('errors when --ignore has no argument', () => {
     const res = runCli(['--ignore']);
     expect(res.code).toBe(1);
     expect(res.err).toContain('--ignore requires');
+  });
+});
+
+describe('.sqlfmtignore support', () => {
+  it('loads ignore patterns from .sqlfmtignore in cwd', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignorefile-'));
+    const migrations = join(dir, 'migrations');
+    mkdirSync(migrations);
+    writeFileSync(join(dir, '.sqlfmtignore'), 'migrations/**\n', 'utf8');
+    writeFileSync(join(dir, 'query.sql'), 'select 1;', 'utf8');
+    writeFileSync(join(migrations, 'v1.sql'), 'select 2;', 'utf8');
+
+    const res = runCli(['--write', '**/*.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(readFileSync(join(dir, 'query.sql'), 'utf8')).toBe('SELECT 1;\n');
+    expect(readFileSync(join(migrations, 'v1.sql'), 'utf8')).toBe('select 2;');
+  });
+
+  it('combines .sqlfmtignore and --ignore patterns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignorefile-'));
+    const migrations = join(dir, 'migrations');
+    const vendor = join(dir, 'vendor');
+    mkdirSync(migrations);
+    mkdirSync(vendor);
+    writeFileSync(join(dir, '.sqlfmtignore'), 'migrations/**\n', 'utf8');
+    writeFileSync(join(dir, 'query.sql'), 'select 1;', 'utf8');
+    writeFileSync(join(migrations, 'v1.sql'), 'select 2;', 'utf8');
+    writeFileSync(join(vendor, 'v2.sql'), 'select 3;', 'utf8');
+
+    const res = runCli(['--write', '--ignore', 'vendor/**', '**/*.sql'], dir);
+    expect(res.code).toBe(0);
+    expect(readFileSync(join(dir, 'query.sql'), 'utf8')).toBe('SELECT 1;\n');
+    expect(readFileSync(join(migrations, 'v1.sql'), 'utf8')).toBe('select 2;');
+    expect(readFileSync(join(vendor, 'v2.sql'), 'utf8')).toBe('select 3;');
   });
 });
 
@@ -355,5 +443,8 @@ describe('--help flag', () => {
     expect(res.out).toContain('--quiet');
     expect(res.out).toContain('--ignore');
     expect(res.out).toContain('--stdin-filepath');
+    expect(res.out).toContain('--color');
+    expect(res.out).toContain('.sqlfmtignore');
+    expect(res.out).toContain('no .sqlfmtrc');
   });
 });

@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { readFileSync, writeFileSync, renameSync, unlinkSync, globSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, resolve, isAbsolute, relative } from 'path';
 import { formatSQL } from './format';
 import { ParseError } from './parser';
 import { TokenizeError } from './tokenizer';
@@ -12,6 +12,8 @@ class CLIUsageError extends Error {
   }
 }
 
+type ColorMode = 'auto' | 'always' | 'never';
+
 interface CLIOptions {
   check: boolean;
   write: boolean;
@@ -19,7 +21,7 @@ interface CLIOptions {
   help: boolean;
   version: boolean;
   listDifferent: boolean;
-  noColor: boolean;
+  colorMode: ColorMode;
   verbose: boolean;
   quiet: boolean;
   ignore: string[];
@@ -36,9 +38,15 @@ const BOLD = '\x1b[1m';
 let colorEnabled = true;
 
 function initColor(opts: CLIOptions): void {
-  if (opts.noColor || process.env.NO_COLOR !== undefined || !process.stderr.isTTY) {
-    colorEnabled = false;
+  if (opts.colorMode === 'always') {
+    colorEnabled = true;
+    return;
   }
+  if (opts.colorMode === 'never') {
+    colorEnabled = false;
+    return;
+  }
+  colorEnabled = process.env.NO_COLOR === undefined && !!process.stderr.isTTY;
 }
 
 function red(s: string): string {
@@ -71,6 +79,7 @@ function printHelp(): void {
   SQL style guide at https://www.sqlstyle.guide/. Keywords
   are right-aligned to form a "river" of whitespace, making
   queries easier to scan.
+  Zero-config by design: no .sqlfmtrc, no --init, no style flags.
 
 Usage: sqlfmt [options] [file ...]
 
@@ -88,12 +97,14 @@ Formatting:
 
 File selection:
   --ignore <pattern>    Exclude files matching glob pattern (repeatable)
+                        Also reads patterns from .sqlfmtignore if present
   --stdin-filepath <p>  Path shown in error messages when reading stdin
 
 Output:
   --verbose             Print progress details to stderr
   --quiet               Suppress all output except errors
-  --no-color            Disable colored output
+  --no-color            Alias for --color=never
+  --color <mode>        Colorize output: auto|always|never (default: auto)
 
 Examples:
   sqlfmt query.sql
@@ -118,6 +129,13 @@ Exit codes:
 Docs: https://github.com/vinsidious/sqlfmt`);
 }
 
+function parseColorModeArg(value: string): ColorMode {
+  if (value === 'auto' || value === 'always' || value === 'never') {
+    return value;
+  }
+  throw new CLIUsageError(`--color must be one of: auto, always, never (got '${value}')`);
+}
+
 function parseArgs(args: string[]): CLIOptions {
   const opts: CLIOptions = {
     check: false,
@@ -126,7 +144,7 @@ function parseArgs(args: string[]): CLIOptions {
     help: false,
     version: false,
     listDifferent: false,
-    noColor: false,
+    colorMode: 'auto',
     verbose: false,
     quiet: false,
     ignore: [],
@@ -161,8 +179,21 @@ function parseArgs(args: string[]): CLIOptions {
       opts.listDifferent = true;
       continue;
     }
+    if (arg.startsWith('--color=')) {
+      opts.colorMode = parseColorModeArg(arg.slice('--color='.length));
+      continue;
+    }
+    if (arg === '--color') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--color requires one of: auto, always, never');
+      }
+      opts.colorMode = parseColorModeArg(next);
+      i++;
+      continue;
+    }
     if (arg === '--no-color') {
-      opts.noColor = true;
+      opts.colorMode = 'never';
       continue;
     }
     if (arg === '--verbose') {
@@ -177,6 +208,12 @@ function parseArgs(args: string[]): CLIOptions {
       const next = args[i + 1];
       if (next === undefined || next.startsWith('-')) {
         throw new CLIUsageError('--ignore requires a glob pattern argument');
+      }
+      const normalized = normalizeGlobPath(next);
+      if (normalized.length > MAX_IGNORE_PATTERN_LENGTH) {
+        throw new CLIUsageError(
+          `--ignore pattern is too long (${normalized.length} > ${MAX_IGNORE_PATTERN_LENGTH})`
+        );
       }
       opts.ignore.push(next);
       i++;
@@ -280,25 +317,157 @@ function expandGlobs(files: string[]): string[] {
   return result;
 }
 
+type IgnoreGlobToken =
+  | { type: 'literal'; value: string }
+  | { type: 'star' }
+  | { type: 'doubleStar' }
+  | { type: 'question' };
+
+const MAX_IGNORE_PATTERN_LENGTH = 1024;
+const IGNORE_FILE_NAME = '.sqlfmtignore';
+
+function normalizeGlobPath(input: string): string {
+  return input
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/+/g, '/');
+}
+
+function tokenizeIgnorePattern(pattern: string): IgnoreGlobToken[] {
+  const normalized = normalizeGlobPath(pattern);
+  const tokens: IgnoreGlobToken[] = [];
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === '*') {
+      if (normalized[i + 1] === '*') {
+        tokens.push({ type: 'doubleStar' });
+        i++;
+        while (normalized[i + 1] === '*') i++;
+      } else {
+        tokens.push({ type: 'star' });
+      }
+      continue;
+    }
+    if (ch === '?') {
+      tokens.push({ type: 'question' });
+      continue;
+    }
+    tokens.push({ type: 'literal', value: ch });
+  }
+  return tokens;
+}
+
+function readIgnorePatternsFromFile(ignoreFilePath: string): string[] {
+  const fileContent = readFileSync(ignoreFilePath, 'utf8');
+  const patterns: string[] = [];
+  for (const rawLine of fileContent.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const normalized = normalizeGlobPath(line);
+    if (!normalized) continue;
+    if (normalized.length > MAX_IGNORE_PATTERN_LENGTH) {
+      throw new CLIUsageError(
+        `${IGNORE_FILE_NAME} contains a pattern that is too long (${normalized.length} > ${MAX_IGNORE_PATTERN_LENGTH})`
+      );
+    }
+    patterns.push(normalized);
+  }
+  return patterns;
+}
+
+function loadIgnorePatterns(cwd: string): string[] {
+  const ignoreFilePath = join(cwd, IGNORE_FILE_NAME);
+  try {
+    return readIgnorePatternsFromFile(ignoreFilePath);
+  } catch (err) {
+    const ioErr = err as NodeJS.ErrnoException;
+    if (ioErr?.code === 'ENOENT') return [];
+    if (err instanceof CLIUsageError) throw err;
+    throw new CLIUsageError(`Failed to read ${IGNORE_FILE_NAME}: ${ioErr?.message ?? String(err)}`);
+  }
+}
+
+function matchGlobTokens(path: string, tokens: IgnoreGlobToken[]): boolean {
+  const memo = new Map<string, boolean>();
+  const normalizedPath = normalizeGlobPath(path);
+
+  const dfs = (pathIndex: number, tokenIndex: number): boolean => {
+    const key = `${pathIndex}:${tokenIndex}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+
+    if (tokenIndex >= tokens.length) {
+      const done = pathIndex >= normalizedPath.length;
+      memo.set(key, done);
+      return done;
+    }
+
+    const token = tokens[tokenIndex];
+    let matched = false;
+
+    if (token.type === 'literal') {
+      matched =
+        pathIndex < normalizedPath.length
+        && normalizedPath[pathIndex] === token.value
+        && dfs(pathIndex + 1, tokenIndex + 1);
+    } else if (token.type === 'question') {
+      matched =
+        pathIndex < normalizedPath.length
+        && normalizedPath[pathIndex] !== '/'
+        && dfs(pathIndex + 1, tokenIndex + 1);
+    } else if (token.type === 'star') {
+      matched = dfs(pathIndex, tokenIndex + 1);
+      if (!matched && pathIndex < normalizedPath.length && normalizedPath[pathIndex] !== '/') {
+        matched = dfs(pathIndex + 1, tokenIndex);
+      }
+    } else {
+      matched = dfs(pathIndex, tokenIndex + 1);
+      if (!matched && pathIndex < normalizedPath.length) {
+        matched = dfs(pathIndex + 1, tokenIndex);
+      }
+    }
+
+    memo.set(key, matched);
+    return matched;
+  };
+
+  return dfs(0, 0);
+}
+
+function splitPathSuffixes(filepath: string): string[] {
+  const normalized = normalizeGlobPath(filepath);
+  const segments = normalized.split('/');
+  if (segments.length === 0) return [''];
+
+  const suffixes: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const subpath = segments.slice(i).join('/');
+    if (subpath) suffixes.push(subpath);
+  }
+  return suffixes.length > 0 ? suffixes : [''];
+}
+
 function matchesAnyIgnorePattern(filepath: string, patterns: string[]): boolean {
+  const suffixes = splitPathSuffixes(filepath);
   for (const pattern of patterns) {
-    // Simple glob matching: convert glob pattern to regex.
-    // Supports *, **, and ?. Uses non-greedy .*? for ** to avoid catastrophic backtracking.
-    const regexStr = pattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // escape regex special chars (except * and ?)
-      .replace(/\*\*/g, '\0DOUBLESTAR\0')       // placeholder for **
-      .replace(/\*/g, '[^/]*?')                  // * matches anything except / (non-greedy)
-      .replace(/\0DOUBLESTAR\0/g, '.*?')         // ** matches anything including / (non-greedy)
-      .replace(/\?/g, '[^/]');                    // ? matches single non-/ char
-    const regex = new RegExp(`^${regexStr}$`);
-    // Test against the full path and also against each suffix of path segments
-    const segments = filepath.replace(/^\.\//, '').split('/');
-    for (let i = 0; i < segments.length; i++) {
-      const subpath = segments.slice(i).join('/');
-      if (regex.test(subpath)) return true;
+    const normalizedPattern = normalizeGlobPath(pattern);
+    if (!normalizedPattern) continue;
+    if (normalizedPattern.length > MAX_IGNORE_PATTERN_LENGTH) {
+      throw new CLIUsageError(
+        `Ignore pattern is too long (${normalizedPattern.length} > ${MAX_IGNORE_PATTERN_LENGTH})`
+      );
+    }
+    const tokens = tokenizeIgnorePattern(normalizedPattern);
+    for (const subpath of suffixes) {
+      if (matchGlobTokens(subpath, tokens)) return true;
     }
   }
   return false;
+}
+
+function isInsideDirectory(baseDir: string, targetPath: string): boolean {
+  const relPath = relative(baseDir, targetPath);
+  return relPath === '' || (!relPath.startsWith('..') && !isAbsolute(relPath));
 }
 
 // Validate that a relative file path doesn't escape the current working directory via traversal.
@@ -307,9 +476,9 @@ function validateWritePath(file: string): string | null {
   const resolved = resolve(file);
   // Only enforce CWD containment for relative paths, where ".." traversal is a concern.
   // Absolute paths (from glob expansion or explicit user input) are trusted as-is.
-  if (!file.startsWith('/')) {
+  if (!isAbsolute(file)) {
     const cwd = process.cwd();
-    if (!resolved.startsWith(cwd + '/') && resolved !== cwd) {
+    if (!isInsideDirectory(cwd, resolved)) {
       return null;
     }
   }
@@ -450,12 +619,19 @@ function main(): void {
     }
 
     initColor(opts);
+    const cwd = process.cwd();
+    const fileIgnorePatterns = loadIgnorePatterns(cwd);
 
     let expandedFiles = expandGlobs(opts.files);
+    const allIgnorePatterns = [...fileIgnorePatterns, ...opts.ignore];
 
-    // Apply --ignore patterns
-    if (opts.ignore.length > 0 && expandedFiles.length > 0) {
-      expandedFiles = expandedFiles.filter(f => !matchesAnyIgnorePattern(f, opts.ignore));
+    if (opts.verbose && fileIgnorePatterns.length > 0) {
+      console.error(`Loaded ${fileIgnorePatterns.length} pattern(s) from ${IGNORE_FILE_NAME}`);
+    }
+
+    // Apply .sqlfmtignore and --ignore patterns
+    if (allIgnorePatterns.length > 0 && expandedFiles.length > 0) {
+      expandedFiles = expandedFiles.filter(f => !matchesAnyIgnorePattern(f, allIgnorePatterns));
     }
 
     let checkFailures = 0;
