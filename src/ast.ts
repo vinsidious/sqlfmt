@@ -304,7 +304,7 @@ export interface InExpr {
 export interface IsExpr {
   type: 'is';
   expr: Expr;
-  value: 'NULL' | 'NOT NULL' | 'TRUE' | 'FALSE';
+  value: 'NULL' | 'NOT NULL' | 'TRUE' | 'FALSE' | 'NOT TRUE' | 'NOT FALSE';
 }
 
 export interface LikeExpr {
