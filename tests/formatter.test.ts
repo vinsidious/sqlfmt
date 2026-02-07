@@ -515,6 +515,12 @@ SELECT 2;`
  WHERE "Order Date" > '2024-01-01';`
   );
 
+  assertFormat('12.8b — Escaped quoted identifiers',
+    `select "a""b", "schema""x"."weird""col" from "T""A";`,
+    `SELECT "a""b", "schema""x"."weird""col"
+  FROM "T""A";`
+  );
+
   assertFormat('12.9 — DISTINCT keyword',
     `select distinct department, city from employees where country = 'US' order by department;`,
     `SELECT DISTINCT department, city
