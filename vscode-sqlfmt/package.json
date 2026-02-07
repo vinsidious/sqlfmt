@@ -1,5 +1,5 @@
 {
-  "name": "vscode-sqlfmt",
+  "name": "sqlfmt",
   "displayName": "sqlfmt",
   "description": "Format SQL files using sqlfmt (river-aligned, sqlstyle.guide)",
   "version": "0.0.1",
