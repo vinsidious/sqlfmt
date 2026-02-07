@@ -25,7 +25,7 @@ To make sqlfmt the default SQL formatter, add this to your VS Code `settings.jso
 ```json
 {
   "[sql]": {
-    "editor.defaultFormatter": "vcoppola.vscode-sqlfmt"
+    "editor.defaultFormatter": "vcoppola.sqlfmt"
   }
 }
 ```
@@ -35,7 +35,7 @@ To format on save:
 ```json
 {
   "[sql]": {
-    "editor.defaultFormatter": "vcoppola.vscode-sqlfmt",
+    "editor.defaultFormatter": "vcoppola.sqlfmt",
     "editor.formatOnSave": true
   }
 }
