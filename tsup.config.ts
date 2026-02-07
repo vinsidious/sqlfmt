@@ -1,4 +1,7 @@
 import { defineConfig } from 'tsup';
+import { readFileSync } from 'fs';
+
+const { version } = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
 export default defineConfig([
   {
@@ -8,6 +11,9 @@ export default defineConfig([
     sourcemap: true,
     clean: true,
     outDir: 'dist',
+    define: {
+      '__SQLFMT_VERSION__': JSON.stringify(version),
+    },
   },
   {
     entry: ['src/cli.ts'],
