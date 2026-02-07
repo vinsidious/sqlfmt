@@ -11,31 +11,18 @@ const CLAUSE_KEYWORDS = new Set([
   'RETURNING', 'FETCH', 'WINDOW', 'LATERAL', 'FOR', 'USING', 'ESCAPE',
 ]);
 
-const TYPE_CONTINUATION_RULES: ReadonlyArray<{
-  predicate: (parts: string[], next: string) => boolean;
-}> = [
-  {
-    predicate: (parts, next) => parts[parts.length - 1] === 'DOUBLE' && next === 'PRECISION',
-  },
-  {
-    predicate: (parts, next) => (parts[parts.length - 1] === 'CHARACTER' || parts[parts.length - 1] === 'CHAR') && next === 'VARYING',
-  },
-  {
-    predicate: (parts, next) => parts[parts.length - 1] === 'NATIONAL' && next === 'CHARACTER',
-  },
-  {
-    predicate: (parts, next) => (parts[parts.length - 1] === 'TIMESTAMP' || parts[parts.length - 1] === 'TIME') && (next === 'WITH' || next === 'WITHOUT'),
-  },
-  {
-    predicate: (parts, next) => parts[parts.length - 1] === 'WITH' && next === 'TIME',
-  },
-  {
-    predicate: (parts, next) => parts[parts.length - 1] === 'WITHOUT' && next === 'TIME',
-  },
-  {
-    predicate: (parts, next) => parts[parts.length - 1] === 'TIME' && (next === 'ZONE' || next === 'PRECISION'),
-  },
-];
+// Lookup table for multi-word SQL type names.
+// Key = last consumed word, value = set of valid next words.
+const TYPE_CONTINUATIONS: Record<string, Set<string>> = {
+  DOUBLE: new Set(['PRECISION']),
+  CHARACTER: new Set(['VARYING']),
+  CHAR: new Set(['VARYING']),
+  NATIONAL: new Set(['CHARACTER']),
+  TIMESTAMP: new Set(['WITH', 'WITHOUT']),
+  TIME: new Set(['WITH', 'WITHOUT', 'ZONE']),
+  WITH: new Set(['TIME']),
+  WITHOUT: new Set(['TIME']),
+};
 
 export interface ParseOptions {
   recover?: boolean;
@@ -45,6 +32,8 @@ export interface ParseOptions {
 export class ParseError extends Error {
   readonly token: Token;
   readonly expected: string;
+  readonly line: number;
+  readonly column: number;
 
   constructor(expected: string, token: Token) {
     const got = token.type === 'eof' ? 'EOF' : `${token.type} "${token.value}"`;
@@ -52,9 +41,32 @@ export class ParseError extends Error {
     this.name = 'ParseError';
     this.expected = expected;
     this.token = token;
+    this.line = token.line;
+    this.column = token.column;
   }
 }
 
+/**
+ * Recursive-descent SQL parser.
+ *
+ * Consumes an array of {@link Token} objects (produced by {@link tokenize}) and
+ * builds an AST of {@link AST.Node} trees. Supports SELECT, INSERT, UPDATE,
+ * DELETE, MERGE, CTEs, DDL (CREATE/ALTER/DROP TABLE, CREATE INDEX, CREATE VIEW),
+ * GRANT/REVOKE, and PostgreSQL-specific syntax.
+ *
+ * The parser can operate in two modes controlled by {@link ParseOptions.recover}:
+ * - **Recover mode** (default): unparseable statements are preserved as
+ *   `RawStatement` nodes so the formatter can pass them through unchanged.
+ * - **Strict mode**: parsing failures throw a {@link ParseError}.
+ *
+ * @example
+ * import { tokenize, Parser } from '@vcoppola/sqlfmt';
+ *
+ * const tokens = tokenize('SELECT 1; SELECT 2;');
+ * const parser = new Parser(tokens);
+ * const ast = parser.parseStatements();
+ * // ast is an array of AST.Node (two SelectStatement nodes)
+ */
 export class Parser {
   private tokens: Token[];
   private pos: number = 0;
@@ -245,7 +257,7 @@ export class Parser {
   }
 
   private parseSelect(): AST.SelectStatement {
-    this.expectKeyword('SELECT');
+    this.expect('SELECT');
 
     let distinct = false;
     if (this.peekUpper() === 'DISTINCT') {
@@ -406,7 +418,7 @@ export class Parser {
         this.expect(')');
         aliasColumns = cols;
       }
-    } else if (this.peekType() === 'identifier' && !this.isClauseKeyword() && !this.isJoinKeyword() && !this.check(',') && !this.check(')') && !this.check(';') && this.peekUpper() !== 'TABLESAMPLE') {
+    } else if (this.peekType() === 'identifier' && !CLAUSE_KEYWORDS.has(this.peekUpper()) && !this.isJoinKeyword() && !this.check(',') && !this.check(')') && !this.check(';') && this.peekUpper() !== 'TABLESAMPLE') {
       alias = this.advance().value;
       // Check for column alias list
       if (this.check('(')) {
@@ -507,7 +519,7 @@ export class Parser {
         this.expect(')');
         aliasColumns = cols;
       }
-    } else if (this.peekType() === 'identifier' && !this.isClauseKeyword() && !this.isJoinKeyword() && this.peekUpper() !== 'ON' && this.peekUpper() !== 'USING' && !this.check(',') && !this.check(')') && !this.check(';')) {
+    } else if (this.peekType() === 'identifier' && !CLAUSE_KEYWORDS.has(this.peekUpper()) && !this.isJoinKeyword() && this.peekUpper() !== 'ON' && this.peekUpper() !== 'USING' && !this.check(',') && !this.check(')') && !this.check(';')) {
       alias = this.advance().value;
       if (this.check('(')) {
         this.advance();
@@ -624,7 +636,7 @@ export class Parser {
 
   private parseWindowDef(): { name: string; spec: AST.WindowSpec } {
     const name = this.advance().value;
-    this.expectKeyword('AS');
+    this.expect('AS');
     this.expect('(');
     const spec = this.parseWindowSpec();
     this.expect(')');
@@ -710,7 +722,7 @@ export class Parser {
   }
 
   private parseForClause(): string {
-    this.expectKeyword('FOR');
+    this.expect('FOR');
 
     const parts: string[] = [];
     if (this.peekUpper() === 'UPDATE' || this.peekUpper() === 'SHARE') {
@@ -866,7 +878,7 @@ export class Parser {
     if (this.peekUpper() === 'BETWEEN') {
       this.advance();
       const low = this.parseAddSub();
-      this.expectKeyword('AND');
+      this.expect('AND');
       const high = this.parseAddSub();
       return { type: 'between', expr: left, low, high, negated };
     }
@@ -1307,7 +1319,7 @@ export class Parser {
     }
 
     // Function call
-    if (this.check('(') && !this.isClauseKeywordValue(name.upper)) {
+    if (this.check('(') && !CLAUSE_KEYWORDS.has(name.upper)) {
       this.advance(); // consume (
 
       let distinct = false;
@@ -1349,7 +1361,7 @@ export class Parser {
       if (this.peekUpper() === 'FILTER') {
         this.advance();
         this.expect('(');
-        this.expectKeyword('WHERE');
+        this.expect('WHERE');
         funcExpr.filter = this.parseExpression();
         this.expect(')');
       }
@@ -1357,10 +1369,10 @@ export class Parser {
       // WITHIN GROUP (ORDER BY ...)
       if (this.peekUpper() === 'WITHIN') {
         this.advance();
-        this.expectKeyword('GROUP');
+        this.expect('GROUP');
         this.expect('(');
-        this.expectKeyword('ORDER');
-        this.expectKeyword('BY');
+        this.expect('ORDER');
+        this.expect('BY');
         const withinOrderBy = this.parseOrderByItems();
         this.expect(')');
         funcExpr.withinGroup = { orderBy: withinOrderBy };
@@ -1378,7 +1390,7 @@ export class Parser {
   }
 
   private parseWindowFunction(func: AST.FunctionCallExpr): AST.WindowFunctionExpr {
-    this.expectKeyword('OVER');
+    this.expect('OVER');
 
     // Check for named window reference: OVER window_name
     if (!this.check('(')) {
@@ -1401,7 +1413,7 @@ export class Parser {
   }
 
   private parseCaseExpr(): AST.CaseExpr {
-    this.expectKeyword('CASE');
+    this.expect('CASE');
 
     let operand: AST.Expression | undefined;
     if (this.peekUpper() !== 'WHEN') {
@@ -1412,7 +1424,7 @@ export class Parser {
     while (this.peekUpper() === 'WHEN') {
       this.advance();
       const condition = this.parseExpression();
-      this.expectKeyword('THEN');
+      this.expect('THEN');
       const result = this.parseExpression();
       whenClauses.push({ condition, result });
     }
@@ -1423,15 +1435,15 @@ export class Parser {
       elseResult = this.parseExpression();
     }
 
-    this.expectKeyword('END');
+    this.expect('END');
     return { type: 'case', operand, whenClauses, elseResult };
   }
 
   private parseCast(): AST.CastExpr {
-    this.expectKeyword('CAST');
+    this.expect('CAST');
     this.expect('(');
     const expr = this.parseExpression();
-    this.expectKeyword('AS');
+    this.expect('AS');
     let targetType = this.consumeTypeNameToken();
     if (this.check('(')) {
       targetType += this.advance().value;
@@ -1450,10 +1462,10 @@ export class Parser {
   }
 
   private parseExtract(): AST.ExtractExpr {
-    this.expectKeyword('EXTRACT');
+    this.expect('EXTRACT');
     this.expect('(');
     const field = this.advance().upper;
-    this.expectKeyword('FROM');
+    this.expect('FROM');
     const source = this.parseExpression();
     this.expect(')');
     return { type: 'extract', field, source };
@@ -1463,7 +1475,7 @@ export class Parser {
     this.advance(); // POSITION
     this.expect('(');
     const substr = this.parseAddSub();
-    this.expectKeyword('IN');
+    this.expect('IN');
     const str = this.parseAddSub();
     this.expect(')');
     return { type: 'position', substring: substr, source: str } as AST.PositionExpr;
@@ -1473,7 +1485,7 @@ export class Parser {
     this.advance(); // SUBSTRING
     this.expect('(');
     const str = this.parseExpression();
-    this.expectKeyword('FROM');
+    this.expect('FROM');
     const start = this.parseExpression();
     let len: AST.Expression | undefined;
     if (this.peekUpper() === 'FOR') {
@@ -1488,9 +1500,9 @@ export class Parser {
     this.advance(); // OVERLAY
     this.expect('(');
     const str = this.parseExpression();
-    this.expectKeyword('PLACING');
+    this.expect('PLACING');
     const replacement = this.parseExpression();
-    this.expectKeyword('FROM');
+    this.expect('FROM');
     const start = this.parseExpression();
     let len: AST.Expression | undefined;
     if (this.peekUpper() === 'FOR') {
@@ -1608,7 +1620,7 @@ export class Parser {
     if (this.peekUpper() === 'AS') {
       this.advance();
       alias = this.advance().value;
-    } else if (this.peekType() === 'identifier' && !this.isClauseKeyword() && !this.check(',') && !this.check(')')) {
+    } else if (this.peekType() === 'identifier' && !CLAUSE_KEYWORDS.has(this.peekUpper()) && !this.check(',') && !this.check(')')) {
       alias = this.advance().value;
     }
 
@@ -1625,8 +1637,8 @@ export class Parser {
 
   // INSERT INTO table (cols) VALUES (...), (...) | SELECT ...
   private parseInsert(comments: AST.CommentNode[]): AST.InsertStatement {
-    this.expectKeyword('INSERT');
-    this.expectKeyword('INTO');
+    this.expect('INSERT');
+    this.expect('INTO');
     const table = this.advance().value;
 
     let columns: string[] = [];
@@ -1704,7 +1716,7 @@ export class Parser {
       this.expect(')');
     }
 
-    this.expectKeyword('DO');
+    this.expect('DO');
 
     if (this.peekUpper() === 'NOTHING') {
       this.advance();
@@ -1712,8 +1724,8 @@ export class Parser {
     }
 
     // DO UPDATE
-    this.expectKeyword('UPDATE');
-    this.expectKeyword('SET');
+    this.expect('UPDATE');
+    this.expect('SET');
     const setItems: { column: string; value: AST.Expression }[] = [];
     setItems.push(this.parseSetItem());
     while (this.check(',')) {
@@ -1739,10 +1751,10 @@ export class Parser {
 
   // UPDATE table SET col = val, ... [FROM ...] WHERE ...
   private parseUpdate(comments: AST.CommentNode[]): AST.UpdateStatement {
-    this.expectKeyword('UPDATE');
+    this.expect('UPDATE');
     const table = this.advance().value;
 
-    this.expectKeyword('SET');
+    this.expect('SET');
     const setItems: AST.SetItem[] = [];
     setItems.push(this.parseSetItem());
     while (this.check(',')) {
@@ -1780,8 +1792,8 @@ export class Parser {
 
   // DELETE FROM table WHERE ...
   private parseDelete(comments: AST.CommentNode[]): AST.DeleteStatement {
-    this.expectKeyword('DELETE');
-    this.expectKeyword('FROM');
+    this.expect('DELETE');
+    this.expect('FROM');
     const table = this.advance().value;
 
     let using: AST.FromClause[] | undefined;
@@ -1860,7 +1872,7 @@ export class Parser {
   }
 
   private parseCreateTable(comments: AST.CommentNode[]): AST.CreateTableStatement {
-    this.expectKeyword('TABLE');
+    this.expect('TABLE');
 
     let ifNotExists = false;
     if (this.peekUpper() === 'IF' && this.peekUpperAt(1) === 'NOT' && this.peekUpperAt(2) === 'EXISTS') {
@@ -1895,7 +1907,7 @@ export class Parser {
 
     const name = this.advance().value;
 
-    this.expectKeyword('ON');
+    this.expect('ON');
     const table = this.advance().value;
 
     let using: string | undefined;
@@ -1943,10 +1955,13 @@ export class Parser {
 
     const name = this.advance().value;
 
-    this.expectKeyword('AS');
+    this.expect('AS');
 
-    // Parse the query
+    // Parse the query — must be a SELECT, UNION, or CTE
     const query = this.parseStatement();
+    if (query && query.type !== 'select' && query.type !== 'union' && query.type !== 'cte') {
+      throw new ParseError('SELECT, UNION, or WITH query in CREATE VIEW', this.peek());
+    }
 
     let withData: boolean | undefined;
     if (this.peekUpper() === 'WITH') {
@@ -1965,7 +1980,7 @@ export class Parser {
 
   private parseMerge(comments: AST.CommentNode[]): AST.MergeStatement {
     this.advance(); // MERGE
-    this.expectKeyword('INTO');
+    this.expect('INTO');
     const targetTable = this.advance().value;
     let targetAlias: string | undefined;
     if (this.peekUpper() === 'AS') {
@@ -1975,7 +1990,7 @@ export class Parser {
       targetAlias = this.advance().value;
     }
 
-    this.expectKeyword('USING');
+    this.expect('USING');
     const sourceTable = this.advance().value;
     let sourceAlias: string | undefined;
     if (this.peekUpper() === 'AS') {
@@ -1985,7 +2000,7 @@ export class Parser {
       sourceAlias = this.advance().value;
     }
 
-    this.expectKeyword('ON');
+    this.expect('ON');
     const onExpr = this.parseExpression();
 
     const whenClauses: AST.MergeWhenClause[] = [];
@@ -1997,7 +2012,7 @@ export class Parser {
         this.advance();
         matched = false;
       }
-      this.expectKeyword('MATCHED');
+      this.expect('MATCHED');
 
       let condition: AST.Expression | undefined;
       if (this.peekUpper() === 'AND') {
@@ -2005,7 +2020,7 @@ export class Parser {
         condition = this.parseExpression();
       }
 
-      this.expectKeyword('THEN');
+      this.expect('THEN');
 
       const actionKw = this.peekUpper();
       if (actionKw === 'DELETE') {
@@ -2013,7 +2028,7 @@ export class Parser {
         whenClauses.push({ matched, condition, action: 'delete' });
       } else if (actionKw === 'UPDATE') {
         this.advance();
-        this.expectKeyword('SET');
+        this.expect('SET');
         const setItems: { column: string; value: AST.Expression }[] = [];
         setItems.push(this.parseSetItem());
         while (this.check(',')) {
@@ -2033,7 +2048,7 @@ export class Parser {
           }
           this.expect(')');
         }
-        this.expectKeyword('VALUES');
+        this.expect('VALUES');
         this.expect('(');
         const insertVals = this.parseExpressionList();
         this.expect(')');
@@ -2067,10 +2082,10 @@ export class Parser {
     }
 
     const privilegeTokens = this.collectTokensUntilTopLevelKeyword(new Set(['ON']));
-    this.expectKeyword('ON');
+    this.expect('ON');
     const recipientKeyword = kind === 'GRANT' ? 'TO' : 'FROM';
     const objectTokens = this.collectTokensUntilTopLevelKeyword(new Set([recipientKeyword]));
-    this.expectKeyword(recipientKeyword);
+    this.expect(recipientKeyword);
 
     const recipientTokens: Token[] = [];
     while (!this.isAtEnd() && !this.check(';')) {
@@ -2159,7 +2174,7 @@ export class Parser {
 
     if (this.peekUpper() === 'RESTART') {
       this.advance();
-      this.expectKeyword('IDENTITY');
+      this.expect('IDENTITY');
       restartIdentity = true;
     }
     if (this.peekUpper() === 'CASCADE') {
@@ -2248,7 +2263,7 @@ export class Parser {
         }
         this.expect(')');
 
-        this.expectKeyword('REFERENCES');
+        this.expect('REFERENCES');
         const refTable = this.advance().value;
         this.expect('(');
         const refCols: string[] = [];
@@ -2321,7 +2336,7 @@ export class Parser {
 
   // ALTER TABLE
   private parseAlter(comments: AST.CommentNode[]): AST.AlterTableStatement {
-    this.expectKeyword('ALTER');
+    this.expect('ALTER');
     const objectTypeToken = this.advance();
     if (objectTypeToken.type !== 'keyword' && objectTypeToken.type !== 'identifier') {
       throw new ParseError('object type', objectTypeToken);
@@ -2386,7 +2401,7 @@ export class Parser {
     if (this.peekUpper() === 'COLUMN') {
       this.advance();
       const columnName = this.advance().value;
-      this.expectKeyword('TO');
+      this.expect('TO');
       const newName = this.advance().value;
       return { type: 'rename_column', columnName, newName };
     }
@@ -2505,7 +2520,7 @@ export class Parser {
 
   // DROP TABLE [IF EXISTS] name
   private parseDrop(comments: AST.CommentNode[]): AST.DropTableStatement {
-    this.expectKeyword('DROP');
+    this.expect('DROP');
     const objectTypeToken = this.advance();
     if (objectTypeToken.type !== 'keyword' && objectTypeToken.type !== 'identifier') {
       throw new ParseError('object type', objectTypeToken);
@@ -2532,7 +2547,7 @@ export class Parser {
 
   // CTE: WITH [RECURSIVE] name AS (...), name AS (...) SELECT ...
   private parseCTE(comments: AST.CommentNode[]): AST.CTEStatement {
-    this.expectKeyword('WITH');
+    this.expect('WITH');
 
     let recursive = false;
     if (this.peekUpper() === 'RECURSIVE') {
@@ -2615,7 +2630,7 @@ export class Parser {
       this.expect(')');
     }
 
-    this.expectKeyword('AS');
+    this.expect('AS');
 
     // MATERIALIZED / NOT MATERIALIZED hints
     let materializedHint: 'materialized' | 'not_materialized' | undefined;
@@ -2662,7 +2677,12 @@ export class Parser {
       if (t.value === '(') { depth++; continue; }
       if (depth === 1) {
         if (t.upper === 'SELECT' || t.upper === 'VALUES') return true;
+        if (t.value === ')') { depth--; continue; }
         return false;
+      }
+      if (depth > 1) {
+        if (t.value === ')') { depth--; continue; }
+        continue;
       }
       if (t.value === ')') return false;
     }
@@ -2732,7 +2752,8 @@ export class Parser {
       const nextToken = this.peek();
       if (nextToken.type !== 'keyword' && nextToken.type !== 'identifier') break;
       const nextUpper = nextToken.upper;
-      const shouldConsume = TYPE_CONTINUATION_RULES.some(rule => rule.predicate(parts, nextUpper));
+      const validNext = TYPE_CONTINUATIONS[parts[parts.length - 1]];
+      const shouldConsume = validNext !== undefined && validNext.has(nextUpper);
       if (!shouldConsume) break;
       const consumed = this.advance();
       parts.push(consumed.type === 'keyword' ? consumed.upper : consumed.value);
@@ -2840,45 +2861,32 @@ export class Parser {
     return comments;
   }
 
-  private isClauseKeyword(): boolean {
-    return this.isClauseKeywordValue(this.peekUpper());
-  }
+  private static readonly EOF_TOKEN: Token = { type: 'eof', value: '', upper: '', position: -1, line: 0, column: 0 };
 
-  private isClauseKeywordValue(val: string): boolean {
-    return CLAUSE_KEYWORDS.has(val);
-  }
-
-  private peek(): Token {
-    if (this.pos >= this.tokens.length) {
-      return { type: 'eof', value: '', upper: '', position: -1 };
-    }
-    return this.tokens[this.pos];
-  }
-
-  private peekAt(offset: number): Token | undefined {
+  private peekAt(offset: number): Token {
     const idx = this.pos + offset;
-    if (idx >= this.tokens.length) return undefined;
+    if (idx < 0 || idx >= this.tokens.length) return Parser.EOF_TOKEN;
     return this.tokens[idx];
   }
 
+  private peek(): Token {
+    return this.peekAt(0);
+  }
+
   private peekType(): string {
-    return this.peek().type;
+    return this.peekAt(0).type;
   }
 
   private peekUpper(): string {
-    return this.peek().upper;
+    return this.peekAt(0).upper;
   }
 
   private peekUpperAt(offset: number): string {
-    const idx = this.pos + offset;
-    if (idx >= this.tokens.length) return '';
-    return this.tokens[idx].upper;
+    return this.peekAt(offset).upper;
   }
 
   private peekTypeAt(offset: number): string {
-    const idx = this.pos + offset;
-    if (idx >= this.tokens.length) return 'eof';
-    return this.tokens[idx].type;
+    return this.peekAt(offset).type;
   }
 
   private check(value: string): boolean {
@@ -2887,12 +2895,9 @@ export class Parser {
   }
 
   private advance(): Token {
-    if (this.pos >= this.tokens.length) {
-      throw new ParseError('more input', this.peek());
-    }
-    const token = this.tokens[this.pos];
+    const token = this.peek();
     if (token.type === 'eof') {
-      throw new ParseError('more input', token);
+      throw new ParseError('unexpected end of input', token);
     }
     this.pos++;
     return token;
@@ -2902,14 +2907,6 @@ export class Parser {
     const token = this.peek();
     if (token.value !== value && token.upper !== value) {
       throw new ParseError(value, token);
-    }
-    return this.advance();
-  }
-
-  private expectKeyword(keyword: string): Token {
-    const token = this.peek();
-    if (token.type !== 'keyword' || token.upper !== keyword) {
-      throw new ParseError(keyword, token);
     }
     return this.advance();
   }
@@ -2932,6 +2929,30 @@ export class Parser {
   }
 }
 
+/**
+ * Parse a SQL string into an array of AST nodes.
+ *
+ * This is a convenience wrapper that tokenizes the input and runs the
+ * {@link Parser}. Each top-level SQL statement becomes one node in the
+ * returned array.
+ *
+ * @param input    Raw SQL text containing one or more statements.
+ * @param options  Parser options (recovery mode, max nesting depth).
+ * @returns An array of {@link AST.Node} trees, one per statement. Returns an
+ *   empty array for blank input.
+ * @throws {TokenizeError} When the input contains unterminated literals or comments.
+ * @throws {ParseError} When `recover` is `false` and a statement cannot be parsed.
+ *
+ * @example
+ * import { parse } from '@vcoppola/sqlfmt';
+ *
+ * const ast = parse('SELECT id, name FROM users WHERE active = TRUE;');
+ * // ast[0].type === 'select_statement'
+ *
+ * @example
+ * // Strict mode -- throws on parse errors instead of recovering
+ * const ast = parse('SELECT ...', { recover: false });
+ */
 export function parse(input: string, options: ParseOptions = {}): AST.Node[] {
   if (!input.trim()) return [];
   const parser = new Parser(tokenize(input), options);

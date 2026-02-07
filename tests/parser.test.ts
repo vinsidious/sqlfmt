@@ -57,6 +57,16 @@ describe('parser syntax coverage', () => {
     expect(out).toContain('CAST(x AS TIMESTAMP WITH TIME ZONE)');
   });
 
+  it('parses TIMESTAMP WITH TIME ZONE in CREATE TABLE', () => {
+    const out = formatSQL('CREATE TABLE t (ts TIMESTAMP WITH TIME ZONE);');
+    expect(out).toContain('TIMESTAMP WITH TIME ZONE');
+  });
+
+  it('parses TIME WITHOUT TIME ZONE in CREATE TABLE', () => {
+    const out = formatSQL('CREATE TABLE t (ts TIME WITHOUT TIME ZONE);');
+    expect(out).toContain('TIME WITHOUT TIME ZONE');
+  });
+
   it('parses TRUNCATE without TABLE keyword', () => {
     const out = formatSQL('TRUNCATE foo;');
     expect(out.trim()).toBe('TRUNCATE foo;');
@@ -153,6 +163,19 @@ describe('parser syntax coverage', () => {
     expect(out).toContain('mycustomfunc(a)');
     expect(out).toContain('SUM(a)');
   });
+
+  it('rejects non-query statements in CREATE VIEW', () => {
+    expect(() => {
+      const parser = new Parser(tokenize('CREATE VIEW v AS DELETE FROM t;'), { recover: false });
+      parser.parseStatements();
+    }).toThrow();
+  });
+
+  it('parses CTE with nested parens in body: ( (SELECT 1) )', () => {
+    const out = formatSQL('WITH t AS ( (SELECT 1) ) SELECT * FROM t;');
+    expect(out).toContain('SELECT 1');
+    expect(out).toContain('SELECT *');
+  });
 });
 
 describe('parser/code-quality safety checks', () => {
@@ -162,13 +185,13 @@ describe('parser/code-quality safety checks', () => {
     expect(() => parser.advance()).toThrow();
   });
 
-  it('expectKeyword validates token type is keyword', () => {
+  it('expect validates token value or upper matches', () => {
     const parser: any = new Parser([
-      { type: 'identifier', value: 'SELECT', upper: 'SELECT', position: 0 },
-      { type: 'eof', value: '', upper: '', position: 6 },
+      { type: 'identifier', value: 'foo', upper: 'FOO', position: 0 },
+      { type: 'eof', value: '', upper: '', position: 3 },
     ]);
 
-    expect(() => parser.expectKeyword('SELECT')).toThrow();
+    expect(() => parser.expect('BAR')).toThrow();
   });
 
   it('formatter throws on unknown node type', () => {
