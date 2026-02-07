@@ -97,25 +97,213 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
-    // Multi-char operators
-    if (pos + 1 < len) {
-      const two = input.slice(pos, pos + 2);
-      if (['<>', '!=', '<=', '>=', '||'].includes(two)) {
-        pos += 2;
-        tokens.push({ type: 'operator', value: two, upper: two, position: start });
-        continue;
-      }
+    // Operator scanning — longest match first
+    // We handle multi-char operators by checking the current char and looking ahead.
+
+    // :: — PostgreSQL type cast
+    if (ch === ':' && pos + 1 < len && input[pos + 1] === ':') {
+      pos += 2;
+      tokens.push({ type: 'operator', value: '::', upper: '::', position: start });
+      continue;
     }
 
-    // Single-char operators
-    if ('=<>+-*/'.includes(ch)) {
+    // ! operators: !~* then !~ then !=
+    if (ch === '!') {
+      if (pos + 2 < len && input[pos + 1] === '~' && input[pos + 2] === '*') {
+        pos += 3;
+        tokens.push({ type: 'operator', value: '!~*', upper: '!~*', position: start });
+        continue;
+      }
+      if (pos + 1 < len && input[pos + 1] === '~') {
+        pos += 2;
+        tokens.push({ type: 'operator', value: '!~', upper: '!~', position: start });
+        continue;
+      }
+      if (pos + 1 < len && input[pos + 1] === '=') {
+        pos += 2;
+        tokens.push({ type: 'operator', value: '!=', upper: '!=', position: start });
+        continue;
+      }
+      // bare ! (not standard SQL but consume it)
+      pos++;
+      tokens.push({ type: 'operator', value: '!', upper: '!', position: start });
+      continue;
+    }
+
+    // < operators: <@ then <> then << then <= then <
+    if (ch === '<') {
+      if (pos + 1 < len) {
+        const next = input[pos + 1];
+        if (next === '@') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '<@', upper: '<@', position: start });
+          continue;
+        }
+        if (next === '>') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '<>', upper: '<>', position: start });
+          continue;
+        }
+        if (next === '<') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '<<', upper: '<<', position: start });
+          continue;
+        }
+        if (next === '=') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '<=', upper: '<=', position: start });
+          continue;
+        }
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '<', upper: '<', position: start });
+      continue;
+    }
+
+    // > operators: >= then >> then >
+    if (ch === '>') {
+      if (pos + 1 < len) {
+        const next = input[pos + 1];
+        if (next === '=') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '>=', upper: '>=', position: start });
+          continue;
+        }
+        if (next === '>') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '>>', upper: '>>', position: start });
+          continue;
+        }
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '>', upper: '>', position: start });
+      continue;
+    }
+
+    // - operators: ->> then -> then - (line comment already handled above)
+    if (ch === '-') {
+      if (pos + 2 < len && input[pos + 1] === '>' && input[pos + 2] === '>') {
+        pos += 3;
+        tokens.push({ type: 'operator', value: '->>', upper: '->>', position: start });
+        continue;
+      }
+      if (pos + 1 < len && input[pos + 1] === '>') {
+        pos += 2;
+        tokens.push({ type: 'operator', value: '->', upper: '->', position: start });
+        continue;
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '-', upper: '-', position: start });
+      continue;
+    }
+
+    // # operators: #>> then #> then #
+    if (ch === '#') {
+      if (pos + 2 < len && input[pos + 1] === '>' && input[pos + 2] === '>') {
+        pos += 3;
+        tokens.push({ type: 'operator', value: '#>>', upper: '#>>', position: start });
+        continue;
+      }
+      if (pos + 1 < len && input[pos + 1] === '>') {
+        pos += 2;
+        tokens.push({ type: 'operator', value: '#>', upper: '#>', position: start });
+        continue;
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '#', upper: '#', position: start });
+      continue;
+    }
+
+    // @ operators: @> then @? then @@ then bare @
+    if (ch === '@') {
+      if (pos + 1 < len) {
+        const next = input[pos + 1];
+        if (next === '>') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '@>', upper: '@>', position: start });
+          continue;
+        }
+        if (next === '?') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '@?', upper: '@?', position: start });
+          continue;
+        }
+        if (next === '@') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '@@', upper: '@@', position: start });
+          continue;
+        }
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '@', upper: '@', position: start });
+      continue;
+    }
+
+    // ? operators: ?| then ?& then ?
+    if (ch === '?') {
+      if (pos + 1 < len) {
+        const next = input[pos + 1];
+        if (next === '|') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '?|', upper: '?|', position: start });
+          continue;
+        }
+        if (next === '&') {
+          pos += 2;
+          tokens.push({ type: 'operator', value: '?&', upper: '?&', position: start });
+          continue;
+        }
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '?', upper: '?', position: start });
+      continue;
+    }
+
+    // ~ operators: ~* then ~
+    if (ch === '~') {
+      if (pos + 1 < len && input[pos + 1] === '*') {
+        pos += 2;
+        tokens.push({ type: 'operator', value: '~*', upper: '~*', position: start });
+        continue;
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '~', upper: '~', position: start });
+      continue;
+    }
+
+    // & operators: && then &
+    if (ch === '&') {
+      if (pos + 1 < len && input[pos + 1] === '&') {
+        pos += 2;
+        tokens.push({ type: 'operator', value: '&&', upper: '&&', position: start });
+        continue;
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '&', upper: '&', position: start });
+      continue;
+    }
+
+    // | operators: || then |
+    if (ch === '|') {
+      if (pos + 1 < len && input[pos + 1] === '|') {
+        pos += 2;
+        tokens.push({ type: 'operator', value: '||', upper: '||', position: start });
+        continue;
+      }
+      pos++;
+      tokens.push({ type: 'operator', value: '|', upper: '|', position: start });
+      continue;
+    }
+
+    // Remaining simple single-char operators: = + * /
+    if ('=+*/'.includes(ch)) {
       pos++;
       tokens.push({ type: 'operator', value: ch, upper: ch, position: start });
       continue;
     }
 
-    // Punctuation
-    if ('(),;.'.includes(ch)) {
+    // Punctuation (including [ and ])
+    if ('(),;.[]'.includes(ch)) {
       pos++;
       tokens.push({ type: 'punctuation', value: ch, upper: ch, position: start });
       continue;
