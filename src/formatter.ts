@@ -1098,12 +1098,80 @@ type ParsedFrameClause =
   | { kind: 'between'; unit: string; low: string; high: string }
   | { kind: 'simple'; text: string };
 
+function findTopLevelAnd(frameTail: string): number {
+  let depth = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < frameTail.length; i++) {
+    const ch = frameTail[i];
+
+    if (inSingleQuote) {
+      if (ch === "'" && frameTail[i + 1] === "'") {
+        i++;
+        continue;
+      }
+      if (ch === "'") inSingleQuote = false;
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      if (ch === '"' && frameTail[i + 1] === '"') {
+        i++;
+        continue;
+      }
+      if (ch === '"') inDoubleQuote = false;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingleQuote = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDoubleQuote = true;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      continue;
+    }
+    if (ch === ')' && depth > 0) {
+      depth--;
+      continue;
+    }
+
+    if (depth === 0 && frameTail.startsWith(' AND ', i)) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
 function parseFrameClause(frame: string): ParsedFrameClause {
-  const betweenMatch = frame.match(/^([A-Z]+)\s+BETWEEN\s+(.+?)\s+AND\s+(.+)$/);
-  if (betweenMatch) {
-    const [, unit, low, high] = betweenMatch;
+  const betweenIdx = frame.indexOf(' BETWEEN ');
+  if (betweenIdx <= 0) {
+    return { kind: 'simple', text: frame };
+  }
+
+  const unit = frame.slice(0, betweenIdx).trim();
+  if (!/^[A-Z]+$/.test(unit)) {
+    return { kind: 'simple', text: frame };
+  }
+
+  const tail = frame.slice(betweenIdx + ' BETWEEN '.length);
+  const andIdx = findTopLevelAnd(tail);
+  if (andIdx <= 0) {
+    return { kind: 'simple', text: frame };
+  }
+
+  const low = tail.slice(0, andIdx).trim();
+  const high = tail.slice(andIdx + ' AND '.length).trim();
+  if (low && high) {
     return { kind: 'between', unit, low, high };
   }
+
   return { kind: 'simple', text: frame };
 }
 

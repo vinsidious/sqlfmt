@@ -222,6 +222,26 @@ describe('glob filtering', () => {
   });
 });
 
+describe('ignore pattern safety', () => {
+  it('handles complex wildcard patterns without regex backtracking', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-safe-'));
+    const file = join(dir, 'query.sql');
+    writeFileSync(file, 'select 1;', 'utf8');
+    const pattern = 'unlikely-prefix-' + '*'.repeat(300) + '?.sql';
+
+    const res = runCli(['--write', '--ignore', pattern, file]);
+    expect(res.code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
+  });
+
+  it('handles window frames with quoted AND text safely', () => {
+    const sql = `select value, sum(value) over (order by measurement_date range between interval 'A AND B' preceding and current row) as rolling from sensor_data;`;
+    const formatted = formatSQL(sql);
+    expect(formatted).toContain(`RANGE BETWEEN INTERVAL 'A AND B' PRECEDING`);
+    expect(formatted).toContain('AND CURRENT ROW');
+  });
+});
+
 describe('identifier length limit', () => {
   it('throws TokenizeError for identifiers exceeding 10000 characters', () => {
     const longIdent = 'a'.repeat(10_001);
