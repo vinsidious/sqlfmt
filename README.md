@@ -6,6 +6,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/vinsidious/sqlfmt/ci.yml?branch=main&label=CI)](https://github.com/vinsidious/sqlfmt/actions)
 
 An opinionated, zero-config SQL formatter that implements the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/) ([GitHub](https://github.com/treffynnon/sqlstyle.guide)).
+It is intentionally zero-config: no `.sqlfmtrc`, no `--init`, and no style toggles.
 
 ## What it does
 
@@ -153,10 +154,20 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 
 sqlfmt is the right choice when you want a formatter that produces consistent, readable SQL without any configuration decisions -- just run it and move on.
 
+### Zero-config philosophy
+
+`sqlfmt` does not support `.sqlfmtrc`, `--init`, or style customization flags. This is deliberate: one deterministic style, the same output everywhere, no formatter tuning overhead.
+
 ## Install
 
 ```bash
 npm install @vcoppola/sqlfmt
+```
+
+## Try it now
+
+```bash
+echo "select id, email from users where active = true;" | npx @vcoppola/sqlfmt
 ```
 
 ## Usage
@@ -177,11 +188,28 @@ npx sqlfmt --check query.sql
 npx sqlfmt --list-different "src/**/*.sql"
 npx sqlfmt -l "migrations/*.sql"
 
+# Ignore files (can repeat --ignore)
+npx sqlfmt --check --ignore "migrations/**" "**/*.sql"
+
+# Or store ignore patterns in .sqlfmtignore (one pattern per line)
+npx sqlfmt --check "**/*.sql"
+
+# Control color in CI/logs
+npx sqlfmt --color=always --check query.sql
+
 # Pipe patterns
 pbpaste | npx sqlfmt | pbcopy          # Format clipboard (macOS)
 pg_dump mydb --schema-only | npx sqlfmt > schema.sql
 echo "select 1" | npx sqlfmt
 ```
+
+When present, `.sqlfmtignore` is read from the current working directory and combined with any `--ignore` flags.
+
+CLI exit codes:
+
+- `0` Success (or all files already formatted with `--check`)
+- `1` Check failure, usage error, or I/O error
+- `2` Parse or tokenize error
 
 ### As a library
 
@@ -202,6 +230,7 @@ console.log(formatted);
 
 - [Integrations](docs/integrations.md) -- Pre-commit hooks, CI pipelines, and editor setup recipes
 - [Style Guide Mapping](docs/style-guide.md) -- How sqlfmt maps to each rule in the Simon Holywell SQL Style Guide
+- [Migration Guide](docs/migration-guide.md) -- Rolling out sqlfmt in existing codebases with minimal churn
 - [Contributing](CONTRIBUTING.md) -- Development setup, running tests, and submitting changes
 
 ## Error Handling
@@ -209,7 +238,7 @@ console.log(formatted);
 `formatSQL` throws typed errors that you can catch and handle:
 
 ```typescript
-import { formatSQL, TokenizeError, ParseError } from '@vcoppola/sqlfmt';
+import { formatSQL, TokenizeError, ParseError, MaxDepthError } from '@vcoppola/sqlfmt';
 
 try {
   const result = formatSQL(input);
@@ -217,11 +246,14 @@ try {
   if (err instanceof TokenizeError) {
     // Invalid token encountered during lexing (e.g., unterminated string)
     console.error(`Tokenize error at position ${err.position}: ${err.message}`);
+  } else if (err instanceof MaxDepthError) {
+    // Parser nesting exceeded configured maxDepth
+    console.error(`Parse depth exceeded: ${err.message}`);
   } else if (err instanceof ParseError) {
     // Structural error in the SQL (e.g., unmatched parentheses)
     console.error(`Parse error: ${err.message}`);
-  } else if (err instanceof RangeError) {
-    // Input exceeded size limits
+  } else if (err instanceof Error && err.message.includes('Input exceeds maximum size')) {
+    // Input exceeded maxInputSize
     console.error(`Input too large: ${err.message}`);
   } else {
     throw err;

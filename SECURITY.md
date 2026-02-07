@@ -24,7 +24,7 @@ sqlfmt is a **formatter only**. It transforms SQL text into formatted SQL text. 
 - **Make network requests** -- sqlfmt has zero runtime dependencies and performs no I/O beyond reading input and writing output.
 - **Evaluate expressions** -- SQL content is parsed structurally but never interpreted or executed.
 
-This means sqlfmt is safe to run on untrusted SQL input in the same way a text reformatter is safe -- it only manipulates strings.
+This reduces risk substantially versus tools that execute SQL, but it does **not** eliminate denial-of-service risk from adversarially large or complex input. For multi-tenant or hostile environments, run sqlfmt with CPU/memory/time limits in a sandboxed process.
 
 ## Input Constraints
 

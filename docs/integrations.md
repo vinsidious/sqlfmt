@@ -57,7 +57,7 @@ jobs:
 
 ### Extension (recommended)
 
-Install the `vscode-sqlfmt` extension (see `vscode-sqlfmt/README.md` in this repo) and set it as your default SQL formatter:
+Install the `vscode-sqlfmt` extension from source (see `vscode-sqlfmt/README.md` in this repo) and set it as your default SQL formatter:
 
 ```json
 {
