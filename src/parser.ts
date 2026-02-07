@@ -1,5 +1,13 @@
 import { tokenize, Token } from './tokenizer';
 import * as AST from './ast';
+import { parseComparisonExpression, parsePrimaryExpression } from './parser/expressions';
+import {
+  type DmlContext,
+  parseDeleteStatement,
+  parseInsertStatement,
+  parseSetItem as parseDmlSetItem,
+  parseUpdateStatement,
+} from './parser/dml';
 
 const DEFAULT_MAX_DEPTH = 100;
 const CLAUSE_KEYWORDS = new Set([
@@ -43,6 +51,15 @@ export interface ParseOptions {
    * @default 100
    */
   maxDepth?: number;
+
+  /**
+   * Optional callback invoked when recovery mode captures an unparseable
+   * statement as a `RawExpression`.
+   *
+   * Not called when `recover` is `false` or when parsing fails with
+   * `MaxDepthError` (which always throws).
+   */
+  onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
 }
 
 /**
@@ -130,6 +147,7 @@ export class Parser {
   private blankLinesBeforeToken = new Map<number, number>();
   private readonly recover: boolean;
   private readonly maxDepth: number;
+  private readonly onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
   private depth: number = 0;
 
   constructor(tokens: Token[], options: ParseOptions = {}) {
@@ -149,6 +167,7 @@ export class Parser {
     this.tokens = tokens.filter(t => t.type !== 'whitespace');
     this.recover = options.recover ?? true;
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
+    this.onRecover = options.onRecover;
   }
 
   /**
@@ -190,6 +209,7 @@ export class Parser {
         // Recovery: rewind and consume as raw text until next semicolon
         this.pos = stmtStart;
         const raw = this.parseRawStatement();
+        this.onRecover?.(err, raw);
         if (raw) stmts.push(raw);
       }
       this.skipSemicolons();
@@ -893,143 +913,17 @@ export class Parser {
   }
 
   private parseComparison(): AST.Expression {
-    let left = this.parseAddSub();
-
-    // IS [NOT] NULL / IS [NOT] TRUE / IS [NOT] FALSE
-    // IS [NOT] DISTINCT FROM
-    if (this.peekUpper() === 'IS') {
-      this.advance();
-      if (this.peekUpper() === 'NOT') {
-        this.advance();
-        if (this.peekUpper() === 'NULL') {
-          this.advance();
-          return { type: 'is', expr: left, value: 'NOT NULL' };
-        }
-        if (this.peekUpper() === 'DISTINCT' && this.peekUpperAt(1) === 'FROM') {
-          this.advance(); this.advance();
-          const right = this.parseAddSub();
-          return { type: 'is_distinct_from', left, right, negated: true } as AST.IsDistinctFromExpr;
-        }
-        if (this.peekUpper() === 'TRUE') {
-          this.advance();
-          return { type: 'is', expr: left, value: 'NOT TRUE' };
-        }
-        if (this.peekUpper() === 'FALSE') {
-          this.advance();
-          return { type: 'is', expr: left, value: 'NOT FALSE' };
-        }
-      } else if (this.peekUpper() === 'NULL') {
-        this.advance();
-        return { type: 'is', expr: left, value: 'NULL' };
-      } else if (this.peekUpper() === 'TRUE') {
-        this.advance();
-        return { type: 'is', expr: left, value: 'TRUE' };
-      } else if (this.peekUpper() === 'FALSE') {
-        this.advance();
-        return { type: 'is', expr: left, value: 'FALSE' };
-      } else if (this.peekUpper() === 'DISTINCT' && this.peekUpperAt(1) === 'FROM') {
-        this.advance(); this.advance();
-        const right = this.parseAddSub();
-        return { type: 'is_distinct_from', left, right, negated: false } as AST.IsDistinctFromExpr;
-      }
-    }
-
-    // [NOT] BETWEEN
-    let negated = false;
-    if (this.peekUpper() === 'NOT' && this.peekUpperAt(1) === 'BETWEEN') {
-      this.advance();
-      negated = true;
-    }
-    if (this.peekUpper() === 'BETWEEN') {
-      this.advance();
-      const low = this.parseAddSub();
-      this.expect('AND');
-      const high = this.parseAddSub();
-      return { type: 'between', expr: left, low, high, negated };
-    }
-
-    // [NOT] IN
-    negated = false;
-    if (this.peekUpper() === 'NOT' && this.peekUpperAt(1) === 'IN') {
-      this.advance();
-      negated = true;
-    }
-    if (this.peekUpper() === 'IN') {
-      this.advance();
-      this.expect('(');
-      const query = this.tryParseQueryExpressionAtCurrent();
-      if (query) {
-        this.expect(')');
-        return { type: 'in', expr: left, values: { type: 'subquery', query }, negated };
-      }
-      const values = this.parseExpressionList();
-      this.expect(')');
-      return { type: 'in', expr: left, values, negated };
-    }
-
-    // [NOT] LIKE
-    negated = false;
-    if (this.peekUpper() === 'NOT' && this.peekUpperAt(1) === 'LIKE') {
-      this.advance();
-      negated = true;
-    }
-    if (this.peekUpper() === 'LIKE') {
-      this.advance();
-      const pattern = this.parseAddSub();
-      let escape: AST.Expression | undefined;
-      if (this.peekUpper() === 'ESCAPE') {
-        this.advance();
-        escape = this.parseAddSub();
-      }
-      return { type: 'like', expr: left, pattern, negated, escape };
-    }
-
-    // [NOT] ILIKE
-    negated = false;
-    if (this.peekUpper() === 'NOT' && this.peekUpperAt(1) === 'ILIKE') {
-      this.advance();
-      negated = true;
-    }
-    if (this.peekUpper() === 'ILIKE') {
-      this.advance();
-      const pattern = this.parseAddSub();
-      let escape: AST.Expression | undefined;
-      if (this.peekUpper() === 'ESCAPE') {
-        this.advance();
-        escape = this.parseAddSub();
-      }
-      return { type: 'ilike', expr: left, pattern, negated, escape };
-    }
-
-    // [NOT] SIMILAR TO
-    negated = false;
-    if (this.peekUpper() === 'NOT' && this.peekUpperAt(1) === 'SIMILAR') {
-      this.advance();
-      negated = true;
-    }
-    if (this.peekUpper() === 'SIMILAR' && this.peekUpperAt(1) === 'TO') {
-      this.advance(); this.advance();
-      const pattern = this.parseAddSub();
-      return { type: 'similar_to', expr: left, pattern, negated };
-    }
-
-    // Regex operators: ~, ~*, !~, !~*
-    if (this.isRegexOperator()) {
-      const op = this.advance().value;
-      const right = this.parseAddSub();
-      return { type: 'regex_match', left, operator: op, right } as AST.RegexExpr;
-    }
-
-    // JSON/Array/JSONB/Bitwise operators at comparison level
-    // These need to be at a lower precedence than comparison operators
-    // Actually, comparison operators should be handled here
-    if (this.checkComparisonOperator()) {
-      const op = this.advance().value;
-      const right = this.parseAddSub();
-      return { type: 'binary', left, operator: op, right };
-    }
-
-    return left;
+    return parseComparisonExpression({
+      parseAddSub: () => this.parseAddSub(),
+      peekUpper: () => this.peekUpper(),
+      peekUpperAt: (offset: number) => this.peekUpperAt(offset),
+      advance: () => this.advance(),
+      expect: (value: string) => this.expect(value),
+      tryParseQueryExpressionAtCurrent: () => this.tryParseQueryExpressionAtCurrent(),
+      parseExpressionList: () => this.parseExpressionList(),
+      isRegexOperator: () => this.isRegexOperator(),
+      checkComparisonOperator: () => this.checkComparisonOperator(),
+    });
   }
 
   private isRegexOperator(): boolean {
@@ -1200,171 +1094,26 @@ export class Parser {
   }
 
   private parsePrimary(): AST.Expression {
-    const token = this.peek();
-
-    // EXISTS subquery
-    if (token.upper === 'EXISTS') {
-      this.advance();
-      const subq = this.parseSubquery();
-      return { type: 'exists', subquery: subq };
-    }
-
-    // NOT EXISTS
-    if (token.upper === 'NOT' && this.peekUpperAt(1) === 'EXISTS') {
-      this.advance();
-      this.advance();
-      const subq = this.parseSubquery();
-      return { type: 'unary', operator: 'NOT', operand: { type: 'exists', subquery: subq } };
-    }
-
-    // CASE expression
-    if (token.upper === 'CASE') {
-      return this.parseCaseExpr();
-    }
-
-    // CAST expression
-    if (token.upper === 'CAST') {
-      return this.parseCast();
-    }
-
-    // EXTRACT(field FROM expr)
-    if (token.upper === 'EXTRACT' && this.peekAt(1)?.value === '(') {
-      return this.parseExtract();
-    }
-
-    // POSITION(substr IN str)
-    if (token.upper === 'POSITION' && this.peekAt(1)?.value === '(') {
-      return this.parsePositionExpr();
-    }
-
-    // SUBSTRING(str FROM start FOR len)
-    if (token.upper === 'SUBSTRING' && this.peekAt(1)?.value === '(') {
-      return this.parseSubstringExpr();
-    }
-
-    // OVERLAY(str PLACING replacement FROM start FOR len)
-    if (token.upper === 'OVERLAY' && this.peekAt(1)?.value === '(') {
-      return this.parseOverlayExpr();
-    }
-
-    // TRIM([LEADING|TRAILING|BOTH] char FROM str)
-    if (token.upper === 'TRIM' && this.peekAt(1)?.value === '(') {
-      return this.parseTrimExpr();
-    }
-
-    // INTERVAL 'value'
-    if (token.upper === 'INTERVAL' && this.peekTypeAt(1) === 'string') {
-      this.advance();
-      const strToken = this.advance();
-      return { type: 'interval', value: strToken.value };
-    }
-
-    // ARRAY[...] constructor
-    if (token.upper === 'ARRAY' && this.peekAt(1)?.value === '[') {
-      this.advance(); // consume ARRAY
-      this.advance(); // consume [
-      const elements: AST.Expression[] = [];
-      if (!this.check(']')) {
-        elements.push(this.parseExpression());
-        while (this.check(',')) {
-          this.advance();
-          elements.push(this.parseExpression());
-        }
-      }
-      this.expect(']');
-      return { type: 'array_constructor', elements } as AST.ArrayConstructorExpr;
-    }
-
-    // ROW(...) constructor
-    if (token.upper === 'ROW' && this.peekAt(1)?.value === '(') {
-      this.advance(); // consume ROW
-      this.advance(); // consume (
-      const args: AST.Expression[] = [];
-      if (!this.check(')')) {
-        args.push(this.parseExpression());
-        while (this.check(',')) {
-          this.advance();
-          args.push(this.parseExpression());
-        }
-      }
-      this.expect(')');
-      return { type: 'function_call', name: 'ROW', args, distinct: false } as AST.FunctionCallExpr;
-    }
-
-    // Paren expression or subquery
-    if (token.value === '(') {
-      const subquery = this.tryParseSubqueryAtCurrent();
-      if (subquery) {
-        return subquery;
-      }
-      this.advance();
-      const expr = this.parseExpression();
-      this.expect(')');
-      return { type: 'paren', expr };
-    }
-
-    // Star
-    if (token.value === '*') {
-      this.advance();
-      return { type: 'star' };
-    }
-
-    // Boolean literals
-    if (token.upper === 'TRUE' || token.upper === 'FALSE') {
-      this.advance();
-      return { type: 'literal', value: token.upper, literalType: 'boolean' };
-    }
-
-    // NULL literal
-    if (token.upper === 'NULL') {
-      this.advance();
-      return { type: 'null' };
-    }
-
-    // Number literal
-    if (token.type === 'number') {
-      this.advance();
-      return { type: 'literal', value: token.value, literalType: 'number' };
-    }
-
-    // String literal
-    if (token.type === 'string') {
-      this.advance();
-      return { type: 'literal', value: token.value, literalType: 'string' };
-    }
-
-    // Positional parameter: $1, $2, ...
-    if (token.type === 'parameter') {
-      this.advance();
-      return { type: 'raw', text: token.value };
-    }
-
-    // DATE/TIME/TIMESTAMP type constructor: DATE 'YYYY-MM-DD'
-    if ((token.upper === 'DATE' || token.upper === 'TIME' || token.upper === 'TIMESTAMP')
-        && this.peekTypeAt(1) === 'string') {
-      this.advance();
-      const strToken = this.advance();
-      return {
-        type: 'typed_string',
-        dataType: token.upper as 'DATE' | 'TIME' | 'TIMESTAMP',
-        value: strToken.value,
-      };
-    }
-
-    // CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP (no parens needed)
-    if (token.upper === 'CURRENT_DATE' || token.upper === 'CURRENT_TIME' || token.upper === 'CURRENT_TIMESTAMP') {
-      this.advance();
-      return { type: 'raw', text: token.upper };
-    }
-
-    // Identifier (possibly qualified: a.b, possibly function call: f(...))
-    if (token.type === 'identifier' || token.type === 'keyword') {
-      return this.parseIdentifierOrFunction();
-    }
-
-    // Fallback: consume the token as raw
-    this.advance();
-    return { type: 'raw', text: token.value };
+    return parsePrimaryExpression({
+      peek: () => this.peek(),
+      peekUpperAt: (offset: number) => this.peekUpperAt(offset),
+      peekAt: (offset: number) => this.peekAt(offset),
+      peekTypeAt: (offset: number) => this.peekTypeAt(offset),
+      advance: () => this.advance(),
+      check: (value: string) => this.check(value),
+      expect: (value: string) => this.expect(value),
+      parseSubquery: () => this.parseSubquery(),
+      tryParseSubqueryAtCurrent: () => this.tryParseSubqueryAtCurrent(),
+      parseExpression: () => this.parseExpression(),
+      parseCaseExpr: () => this.parseCaseExpr(),
+      parseCast: () => this.parseCast(),
+      parseExtract: () => this.parseExtract(),
+      parsePositionExpr: () => this.parsePositionExpr(),
+      parseSubstringExpr: () => this.parseSubstringExpr(),
+      parseOverlayExpr: () => this.parseOverlayExpr(),
+      parseTrimExpr: () => this.parseTrimExpr(),
+      parseIdentifierOrFunction: () => this.parseIdentifierOrFunction(),
+    });
   }
 
   private parseIdentifierOrFunction(): AST.Expression {
@@ -1700,190 +1449,39 @@ export class Parser {
     return { expr, alias, trailingComment };
   }
 
-  // INSERT INTO table (cols) VALUES (...), (...) | SELECT ...
-  private parseInsert(comments: AST.CommentNode[]): AST.InsertStatement {
-    this.expect('INSERT');
-    this.expect('INTO');
-    const table = this.advance().value;
-
-    let columns: string[] = [];
-    if (this.check('(')) {
-      this.advance();
-      while (!this.check(')')) {
-        columns.push(this.advance().value);
-        if (this.check(',')) this.advance();
-      }
-      this.expect(')');
-    }
-
-    let defaultValues = false;
-    let values: AST.ValuesList[] | undefined;
-    let selectQuery: AST.QueryExpression | undefined;
-
-    if (this.peekUpper() === 'DEFAULT' && this.peekUpperAt(1) === 'VALUES') {
-      this.advance();
-      this.advance();
-      defaultValues = true;
-    } else if (this.peekUpper() === 'VALUES') {
-      this.advance();
-      values = [];
-      values.push(this.parseValuesTuple());
-      while (this.check(',')) {
-        this.advance();
-        values.push(this.parseValuesTuple());
-      }
-    } else if (this.peekUpper() === 'SELECT' || this.peekUpper() === 'WITH' || this.check('(')) {
-      selectQuery = this.parseQueryExpression();
-    }
-
-    // ON CONFLICT
-    let onConflict: AST.InsertStatement['onConflict'];
-    if (this.peekUpper() === 'ON' && this.peekUpperAt(1) === 'CONFLICT') {
-      this.advance(); this.advance();
-      onConflict = this.parseOnConflict();
-    }
-
-    // RETURNING
-    let returning: AST.Expression[] | undefined;
-    if (this.peekUpper() === 'RETURNING') {
-      this.advance();
-      returning = this.parseReturningList();
-    }
-
+  private createDmlContext(): DmlContext {
     return {
-      type: 'insert',
-      table,
-      columns,
-      defaultValues,
-      values,
-      selectQuery,
-      onConflict,
-      returning,
-      leadingComments: comments,
+      expect: (value: string) => this.expect(value),
+      advance: () => this.advance(),
+      check: (value: string) => this.check(value),
+      peekUpper: () => this.peekUpper(),
+      peekUpperAt: (offset: number) => this.peekUpperAt(offset),
+      isAtEnd: () => this.isAtEnd(),
+      parseExpression: () => this.parseExpression(),
+      parseExpressionList: () => this.parseExpressionList(),
+      parseReturningList: () => this.parseReturningList(),
+      parseFromItem: () => this.parseFromItem(),
+      parseQueryExpression: () => this.parseQueryExpression(),
     };
   }
 
-  private parseOnConflict(): AST.InsertStatement['onConflict'] {
-    let conflictColumns: string[] | undefined;
-    let constraintName: string | undefined;
-
-    if (this.peekUpper() === 'ON' && this.peekUpperAt(1) === 'CONSTRAINT') {
-      this.advance(); // ON
-      this.advance(); // CONSTRAINT
-      constraintName = this.advance().value;
-    } else if (this.check('(')) {
-      this.advance();
-      conflictColumns = [];
-      while (!this.check(')') && !this.isAtEnd()) {
-        conflictColumns.push(this.advance().value);
-        if (this.check(',')) this.advance();
-      }
-      this.expect(')');
-    }
-
-    this.expect('DO');
-
-    if (this.peekUpper() === 'NOTHING') {
-      this.advance();
-      return { columns: conflictColumns, constraintName, action: 'nothing' };
-    }
-
-    // DO UPDATE
-    this.expect('UPDATE');
-    this.expect('SET');
-    const setItems: { column: string; value: AST.Expression }[] = [];
-    setItems.push(this.parseSetItem());
-    while (this.check(',')) {
-      this.advance();
-      setItems.push(this.parseSetItem());
-    }
-
-    let where: AST.Expression | undefined;
-    if (this.peekUpper() === 'WHERE') {
-      this.advance();
-      where = this.parseExpression();
-    }
-
-    return { columns: conflictColumns, constraintName, action: 'update', setItems, where };
-  }
-
-  private parseValuesTuple(): AST.ValuesList {
-    this.expect('(');
-    const values = this.parseExpressionList();
-    this.expect(')');
-    return { values };
+  // INSERT INTO table (cols) VALUES (...), (...) | SELECT ...
+  private parseInsert(comments: AST.CommentNode[]): AST.InsertStatement {
+    return parseInsertStatement(this.createDmlContext(), comments);
   }
 
   // UPDATE table SET col = val, ... [FROM ...] WHERE ...
   private parseUpdate(comments: AST.CommentNode[]): AST.UpdateStatement {
-    this.expect('UPDATE');
-    const table = this.advance().value;
-
-    this.expect('SET');
-    const setItems: AST.SetItem[] = [];
-    setItems.push(this.parseSetItem());
-    while (this.check(',')) {
-      this.advance();
-      setItems.push(this.parseSetItem());
-    }
-
-    let from: AST.FromClause | undefined;
-    if (this.peekUpper() === 'FROM') {
-      this.advance();
-      from = this.parseFromItem();
-    }
-
-    let where: AST.WhereClause | undefined;
-    if (this.peekUpper() === 'WHERE') {
-      this.advance();
-      where = { condition: this.parseExpression() };
-    }
-
-    let returning: AST.Expression[] | undefined;
-    if (this.peekUpper() === 'RETURNING') {
-      this.advance();
-      returning = this.parseReturningList();
-    }
-
-    return { type: 'update', table, setItems, from, where, returning, leadingComments: comments };
+    return parseUpdateStatement(this.createDmlContext(), comments);
   }
 
   private parseSetItem(): AST.SetItem {
-    const column = this.advance().value;
-    this.expect('=');
-    const value = this.parseExpression();
-    return { column, value };
+    return parseDmlSetItem(this.createDmlContext());
   }
 
   // DELETE FROM table WHERE ...
   private parseDelete(comments: AST.CommentNode[]): AST.DeleteStatement {
-    this.expect('DELETE');
-    this.expect('FROM');
-    const table = this.advance().value;
-
-    let using: AST.FromClause[] | undefined;
-    if (this.peekUpper() === 'USING') {
-      this.advance();
-      using = [this.parseFromItem()];
-      while (this.check(',')) {
-        this.advance();
-        using.push(this.parseFromItem());
-      }
-    }
-
-    let where: AST.WhereClause | undefined;
-    if (this.peekUpper() === 'WHERE') {
-      this.advance();
-      where = { condition: this.parseExpression() };
-    }
-
-    let returning: AST.Expression[] | undefined;
-    if (this.peekUpper() === 'RETURNING') {
-      this.advance();
-      returning = this.parseReturningList();
-    }
-
-    return { type: 'delete', from: table, using, where, returning, leadingComments: comments };
+    return parseDeleteStatement(this.createDmlContext(), comments);
   }
 
   // CREATE TABLE | CREATE INDEX | CREATE VIEW
@@ -2938,7 +2536,7 @@ export class Parser {
     return this.peekAt(0);
   }
 
-  private peekType(): string {
+  private peekType(): Token['type'] {
     return this.peekAt(0).type;
   }
 
@@ -2950,7 +2548,7 @@ export class Parser {
     return this.peekAt(offset).upper;
   }
 
-  private peekTypeAt(offset: number): string {
+  private peekTypeAt(offset: number): Token['type'] {
     return this.peekAt(offset).type;
   }
 

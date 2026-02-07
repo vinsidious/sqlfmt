@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { formatSQL } from '../src/format';
-import { Parser } from '../src/parser';
+import { Parser, parse, ParseError } from '../src/parser';
 import { tokenize } from '../src/tokenizer';
 import { formatStatements } from '../src/formatter';
 
@@ -201,5 +201,38 @@ describe('parser/code-quality safety checks', () => {
   it('enforces maximum nesting depth', () => {
     const deep = 'SELECT ' + '('.repeat(130) + '1' + ')'.repeat(130) + ';';
     expect(() => formatSQL(deep)).toThrow();
+  });
+});
+
+describe('parser recovery callback', () => {
+  it('invokes onRecover for malformed statements in recovery mode', () => {
+    const recovered: string[] = [];
+    const messages: string[] = [];
+
+    const nodes = parse('SELECT 1; SELECT (; SELECT 2;', {
+      recover: true,
+      onRecover: (error, raw) => {
+        messages.push(error.message);
+        recovered.push(raw?.text ?? '');
+      },
+    });
+
+    expect(messages.length).toBe(1);
+    expect(messages[0]).toContain('Expected');
+    expect(recovered[0]).toContain('SELECT (;');
+    expect(nodes.some(node => node.type === 'raw')).toBe(true);
+  });
+
+  it('does not call onRecover when recover is disabled', () => {
+    let called = false;
+    expect(() =>
+      parse('SELECT (;', {
+        recover: false,
+        onRecover: () => {
+          called = true;
+        },
+      })
+    ).toThrow(ParseError);
+    expect(called).toBe(false);
   });
 });
