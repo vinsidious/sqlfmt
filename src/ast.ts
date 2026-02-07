@@ -56,6 +56,9 @@ export type Expression =
   | ArrayConstructorExpr
   | IsDistinctFromExpr
   | RegexExpr
+  | AliasedExpr
+  | ArraySubscriptExpr
+  | OrderedExpr
   | RawExpression;
 
 // Keep Expr as an alias for backward compatibility.
@@ -132,7 +135,57 @@ export interface AlterTableStatement {
   // Backward compatibility for existing code paths/tests
   tableName: string;
   action: string; // raw text like "ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"
+  actions: AlterAction[];
   leadingComments: CommentNode[];
+}
+
+export type AlterAction =
+  | AlterAddColumnAction
+  | AlterDropColumnAction
+  | AlterRenameToAction
+  | AlterRenameColumnAction
+  | AlterSetSchemaAction
+  | AlterSetTablespaceAction
+  | AlterRawAction;
+
+export interface AlterAddColumnAction {
+  type: 'add_column';
+  ifNotExists?: boolean;
+  columnName: string;
+  definition?: string;
+}
+
+export interface AlterDropColumnAction {
+  type: 'drop_column';
+  ifExists?: boolean;
+  columnName: string;
+  behavior?: 'CASCADE' | 'RESTRICT';
+}
+
+export interface AlterRenameToAction {
+  type: 'rename_to';
+  newName: string;
+}
+
+export interface AlterRenameColumnAction {
+  type: 'rename_column';
+  columnName: string;
+  newName: string;
+}
+
+export interface AlterSetSchemaAction {
+  type: 'set_schema';
+  schema: string;
+}
+
+export interface AlterSetTablespaceAction {
+  type: 'set_tablespace';
+  tablespace: string;
+}
+
+export interface AlterRawAction {
+  type: 'raw';
+  text: string;
 }
 
 export interface DropTableStatement {
@@ -212,7 +265,18 @@ export interface CreateViewStatement {
 
 export interface GrantStatement {
   type: 'grant';
-  raw: string;
+  kind: 'GRANT' | 'REVOKE';
+  grantOptionFor?: boolean;
+  privileges: string[];
+  object: string;
+  recipientKeyword: 'TO' | 'FROM';
+  recipients: string[];
+  withGrantOption?: boolean;
+  grantedBy?: string;
+  cascade?: boolean;
+  restrict?: boolean;
+  // Backward compatibility for existing code paths/tests
+  raw?: string;
   leadingComments: CommentNode[];
 }
 
@@ -457,6 +521,26 @@ export interface RegexExpr {
   right: Expression;
 }
 
+export interface AliasedExpr {
+  type: 'aliased';
+  expr: Expression;
+  alias: string;
+}
+
+export interface ArraySubscriptExpr {
+  type: 'array_subscript';
+  array: Expression;
+  isSlice: boolean;
+  lower?: Expression;
+  upper?: Expression;
+}
+
+export interface OrderedExpr {
+  type: 'ordered_expr';
+  expr: Expression;
+  direction: 'ASC' | 'DESC';
+}
+
 export interface RawExpression {
   type: 'raw';
   text: string;
@@ -537,6 +621,8 @@ export interface TableElement {
   constraints?: string;
   constraintName?: string;
   constraintBody?: string;
+  constraintType?: 'check' | 'raw';
+  checkExpr?: Expression;
   fkColumns?: string;
   fkRefTable?: string;
   fkRefColumns?: string;
