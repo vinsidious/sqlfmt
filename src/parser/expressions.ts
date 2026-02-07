@@ -334,11 +334,22 @@ function tryParseLiteralPrimary(ctx: PrimaryExpressionParser, token: Token): AST
   }
   if (token.type === 'string') {
     ctx.advance();
-    return { type: 'literal', value: token.value, literalType: 'string' };
+    let expr: AST.Expression = { type: 'literal', value: token.value, literalType: 'string' };
+    // SQL standard implicit concatenation: 'a' 'b' => 'ab'
+    while (ctx.peekTypeAt(0) === 'string') {
+      const nextToken = ctx.advance();
+      expr = {
+        type: 'binary',
+        left: expr,
+        operator: '||',
+        right: { type: 'literal', value: nextToken.value, literalType: 'string' },
+      };
+    }
+    return expr;
   }
   if (token.type === 'parameter') {
     ctx.advance();
-    return { type: 'raw', text: token.value };
+    return { type: 'raw', text: token.value, reason: 'verbatim' };
   }
   return null;
 }
@@ -369,7 +380,7 @@ function tryParseCurrentDatetimePrimary(ctx: PrimaryExpressionParser, token: Tok
     || token.upper === 'CURRENT_TIMESTAMP'
   ) {
     ctx.advance();
-    return { type: 'raw', text: token.upper };
+    return { type: 'raw', text: token.upper, reason: 'verbatim' };
   }
   return null;
 }
@@ -383,5 +394,5 @@ function tryParseIdentifierPrimary(ctx: PrimaryExpressionParser, token: Token): 
 
 function parseFallbackPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression {
   ctx.advance();
-  return { type: 'raw', text: token.value };
+  return { type: 'raw', text: token.value, reason: 'unsupported' };
 }
