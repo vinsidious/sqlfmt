@@ -62,7 +62,7 @@ Install the `vscode-sqlfmt` extension (see `vscode-sqlfmt/README.md` in this rep
 ```json
 {
   "[sql]": {
-    "editor.defaultFormatter": "vcoppola.vscode-sqlfmt",
+    "editor.defaultFormatter": "vcoppola.sqlfmt",
     "editor.formatOnSave": true
   }
 }
