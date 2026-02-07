@@ -7,38 +7,57 @@
 
 An opinionated, zero-config SQL formatter that implements [river alignment](https://www.sqlstyle.guide/) — right-aligning keywords so content flows along a consistent vertical column. No `.sqlfmtrc`, no `--init`, no style toggles.
 
-## Try it now
+## Quick Start
+
+### Install
 
 ```bash
-echo "select id, email from users where active = true;" | npx @vcoppola/sqlfmt
+npm install @vcoppola/sqlfmt
+```
+
+### CLI Usage
+
+```bash
+# Format a file
+npx sqlfmt query.sql
+
+# Format all SQL files
+npx sqlfmt "**/*.sql"
+
+# Check formatting (CI mode)
+npx sqlfmt --check "**/*.sql"
+
+# Format in place
+npx sqlfmt --write "**/*.sql"
+```
+
+### Programmatic Usage
+
+```typescript
+import { formatSQL } from '@vcoppola/sqlfmt';
+
+const formatted = formatSQL('select id, name from users where active = true;');
+// Output:
+// SELECT id, name
+//   FROM users
+//  WHERE active = TRUE;
 ```
 
 ## Table of Contents
 
-- [Key Features](#key-features)
 - [What it does](#what-it-does)
 - [When NOT to use sqlfmt](#when-not-to-use-sqlfmt)
-- [Install](#install)
-- [Usage](#usage)
+- [SQL Dialect Support](#sql-dialect-support)
+- [CLI Reference](#cli-reference)
+- [API Guide](#api-guide)
 - [How the formatter works](#how-the-formatter-works)
+- [Edge Cases & Behavior](#edge-cases--behavior)
 - [FAQ](#faq)
 - [Documentation](#documentation)
-- [Error Handling](#error-handling)
 - [Development](#development)
 - [Performance](#performance)
 - [Limitations](#limitations)
 - [License](#license)
-
-## Key Features
-
-- **Zero dependencies** — no runtime dependencies, single package install
-- **Zero config** — one deterministic style, same output everywhere
-- **Idempotent** — formatting already-formatted SQL produces the same output
-- **PostgreSQL-first** — first-class support for casts, JSON ops, dollar-quoting, arrays
-- **Works with other dialects** — ANSI SQL, MySQL, SQL Server, and SQLite queries that use standard syntax are formatted correctly
-- **CLI with `--check` / `--write` / glob patterns** — fits into any CI pipeline
-- **Pre-commit ready** — works with Husky, pre-commit framework, and lint-staged
-- **Typed errors** — `TokenizeError`, `ParseError`, `MaxDepthError` for programmatic handling
 
 ## What it does
 
@@ -148,6 +167,37 @@ SELECT name,
 - **You exclusively target MySQL or SQL Server** — sqlfmt is PostgreSQL-first. Standard ANSI SQL works fine, but vendor-specific syntax (stored procedures, MySQL-only functions) may not be fully parsed.
 - **You need a language server** — sqlfmt is a formatter, not a linter or LSP. It does not provide diagnostics, completions, or semantic analysis.
 
+## SQL Dialect Support
+
+### PostgreSQL (Full Support)
+
+- Type casts (`::integer`), JSON operators (`->`, `->>`), dollar-quoting (`$$...$$`)
+- Array constructors, window functions, CTEs, LATERAL joins
+- ON CONFLICT (UPSERT), RETURNING clauses
+- **Note:** PL/pgSQL function bodies are preserved verbatim (not reformatted)
+
+### ANSI SQL (Full Support)
+
+- SELECT, INSERT, UPDATE, DELETE, MERGE
+- JOINs (INNER, LEFT, RIGHT, FULL, CROSS, NATURAL)
+- CTEs (WITH, WITH RECURSIVE)
+- Window functions (PARTITION BY, ORDER BY, frame clauses)
+- DDL (CREATE TABLE, ALTER TABLE, DROP, CREATE INDEX, CREATE VIEW)
+
+### MySQL (Partial)
+
+- Standard ANSI SQL queries format correctly
+- Backtick identifiers, LIMIT offset syntax, and storage engine clauses are not yet supported
+
+### SQL Server (Partial)
+
+- Standard ANSI SQL queries format correctly
+- T-SQL procedural syntax (BEGIN/END blocks, DECLARE, @@variables) is not yet supported
+
+### Recovery Mode
+
+Unsupported syntax is passed through unchanged rather than causing errors. Use `--strict` to fail on unparseable SQL.
+
 ## Style Guide
 
 This formatter is inspired by and makes every attempt to conform to the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/). Key principles from the guide that `sqlfmt` enforces:
@@ -179,15 +229,7 @@ sqlfmt is the right choice when you want a formatter that produces consistent, r
 
 `sqlfmt` does not support `.sqlfmtrc`, `--init`, or style customization flags. This is deliberate: one deterministic style, the same output everywhere, no formatter tuning overhead.
 
-## Install
-
-```bash
-npm install @vcoppola/sqlfmt
-```
-
-## Usage
-
-### As a CLI
+## CLI Reference
 
 ```bash
 # Format a file (prints to stdout by default)
@@ -205,6 +247,9 @@ npx @vcoppola/sqlfmt --check query.sql
 # List files that would change (useful in CI)
 npx @vcoppola/sqlfmt --list-different "src/**/*.sql"
 npx @vcoppola/sqlfmt -l "migrations/*.sql"
+
+# Strict mode: fail on unparseable SQL instead of passing through
+npx @vcoppola/sqlfmt --strict --check "**/*.sql"
 
 # Ignore files (can repeat --ignore)
 npx @vcoppola/sqlfmt --check --ignore "migrations/**" "**/*.sql"
@@ -233,68 +278,71 @@ When present, `.sqlfmtignore` is read from the current working directory and com
 | `1` | Check failure, usage error, or I/O error |
 | `2` | Parse or tokenize error |
 
-### As a library
+## API Guide
+
+### Basic Usage
 
 ```typescript
 import { formatSQL } from '@vcoppola/sqlfmt';
 
-const formatted = formatSQL(`
-  select name, email from users where active = true
-`);
-
-console.log(formatted);
-// SELECT name, email
-//   FROM users
-//  WHERE active = TRUE;
+const formatted = formatSQL('SELECT * FROM users;');
 ```
 
-## How the formatter works
+### Error Recovery
 
-```mermaid
-graph LR
-    A[SQL Text] --> B[Tokenizer] --> C[Parser] --> D[AST] --> E[Formatter] --> F[Formatted SQL]
+By default, unparseable SQL is passed through unchanged:
+
+```typescript
+const warnings: string[] = [];
+const formatted = formatSQL(sql, {
+  onRecover: (error, raw) => {
+    warnings.push(`Line ${error.token.line}: ${error.message}`);
+  }
+});
 ```
 
-1. **Tokenizer** (`src/tokenizer.ts`) — Splits SQL text into tokens (keywords, identifiers, literals, operators, comments)
-2. **Parser** (`src/parser.ts`) — Builds an AST from the token stream
-3. **Formatter** (`src/formatter.ts`) — Walks the AST and produces formatted output
+### Strict Mode (throw on parse errors)
 
-The key formatting concept is the **river**. For each statement, `sqlfmt` derives a river width from the longest top-level aligned keyword in that statement (for example, `RETURNING` can widen DML alignment). Clause/logical keywords are then right-aligned to that width so content starts in a consistent column. Nested blocks may use their own derived widths. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
+```typescript
+import { formatSQL, ParseError } from '@vcoppola/sqlfmt';
 
-## FAQ
+try {
+  formatSQL(sql, { recover: false });
+} catch (err) {
+  if (err instanceof ParseError) {
+    console.error(`Parse error: ${err.message}`);
+  }
+}
+```
 
-**Does sqlfmt respect `.editorconfig`?**
+### Depth Limits
 
-No. sqlfmt is zero-config — it does not read `.editorconfig`, `.sqlfmtrc`, or any configuration file. The output style is always the same.
+```typescript
+formatSQL(sql, { maxDepth: 300 }); // Increase for deeply nested CTEs
+```
 
-**Can I customize the river width?**
+### Input Size Limits
 
-No. The river width is automatically derived per statement from the longest top-level aligned keyword. This ensures consistent formatting without any manual tuning.
+```typescript
+formatSQL(sql, { maxInputSize: 5_000_000 }); // 5MB limit (default: 10MB)
+```
 
-**Does formatting change SQL semantics?**
+### Low-Level Access
 
-sqlfmt only changes whitespace and casing. Specifically:
-- SQL keywords are uppercased (`select` becomes `SELECT`)
-- Unquoted identifiers are lowercased (`MyTable` becomes `mytable`)
-- Quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`)
+```typescript
+import { tokenize, parse, formatStatements } from '@vcoppola/sqlfmt';
 
-If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
+// Tokenize SQL into a token stream
+const tokens = tokenize(sql);
 
-**Does sqlfmt work with MySQL / SQL Server / SQLite?**
+// Parse SQL into an AST
+const ast = parse(sql);
 
-sqlfmt is PostgreSQL-first, but any query written in standard ANSI SQL will format correctly regardless of your target database. Vendor-specific extensions (stored procedures, MySQL-only syntax) may not be fully parsed.
+// Format AST nodes back to SQL
+const output = formatStatements(ast);
+```
 
-## Documentation
-
-- [Integrations](docs/integrations.md) -- Pre-commit hooks, CI pipelines, and editor setup recipes
-- [Style Guide Mapping](docs/style-guide.md) -- How sqlfmt maps to each rule in the Simon Holywell SQL Style Guide
-- [Migration Guide](docs/migration-guide.md) -- Rolling out sqlfmt in existing codebases with minimal churn
-- [Contributing](CONTRIBUTING.md) -- Development setup, running tests, and submitting changes
-- [Changelog](CHANGELOG.md) -- Release history
-
-## Error Handling
-
-`formatSQL` throws typed errors that you can catch and handle:
+### Error Types
 
 ```typescript
 import { formatSQL, TokenizeError, ParseError, MaxDepthError } from '@vcoppola/sqlfmt';
@@ -319,6 +367,72 @@ try {
   }
 }
 ```
+
+## How the formatter works
+
+```mermaid
+graph LR
+    A[SQL Text] --> B[Tokenizer] --> C[Parser] --> D[AST] --> E[Formatter] --> F[Formatted SQL]
+```
+
+1. **Tokenizer** (`src/tokenizer.ts`) — Splits SQL text into tokens (keywords, identifiers, literals, operators, comments)
+2. **Parser** (`src/parser.ts`) — Builds an AST from the token stream
+3. **Formatter** (`src/formatter.ts`) — Walks the AST and produces formatted output
+
+The key formatting concept is the **river**. For each statement, `sqlfmt` derives a river width from the longest top-level aligned keyword in that statement (for example, `RETURNING` can widen DML alignment). Clause/logical keywords are then right-aligned to that width so content starts in a consistent column. Nested blocks may use their own derived widths. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
+
+## Edge Cases & Behavior
+
+### Long Lines
+
+sqlfmt targets 80-column output but does not break individual tokens (identifiers, string literals). Lines may exceed 80 columns when single tokens are long.
+
+### Comment Preservation
+
+Line comments and block comments are preserved. Comments attached to specific expressions maintain their association.
+
+### Keyword Casing
+
+All SQL keywords are uppercased. Identifiers are preserved as-is (quoted identifiers keep their case and quotes). Unquoted identifiers are lowercased.
+
+### Idempotency
+
+Formatting is idempotent: `formatSQL(formatSQL(x)) === formatSQL(x)` for all valid inputs.
+
+## FAQ
+
+**Q: Can I change the indentation style or keyword casing?**
+A: No. sqlfmt is zero-config by design, like Prettier. One style, everywhere.
+
+**Q: What happens with SQL syntax sqlfmt doesn't understand?**
+A: In default (recovery) mode, unrecognized statements are passed through unchanged. Use `--strict` to fail instead.
+
+**Q: How fast is sqlfmt?**
+A: ~5,000 statements/second on modern hardware. A typical migration file formats in <10ms.
+
+**Q: Does sqlfmt modify SQL semantics?**
+A: No. sqlfmt only changes whitespace and keyword casing. The semantic meaning is preserved.
+
+**Q: Does sqlfmt respect `.editorconfig`?**
+A: No. sqlfmt is zero-config — it does not read `.editorconfig`, `.sqlfmtrc`, or any configuration file. The output style is always the same.
+
+**Q: Can I customize the river width?**
+A: No. The river width is automatically derived per statement from the longest top-level aligned keyword. This ensures consistent formatting without any manual tuning.
+
+**Q: Does formatting change SQL semantics?**
+A: sqlfmt only changes whitespace and casing. Specifically: SQL keywords are uppercased (`select` becomes `SELECT`), unquoted identifiers are lowercased (`MyTable` becomes `mytable`), and quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`). If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
+
+**Q: Does sqlfmt work with MySQL / SQL Server / SQLite?**
+A: sqlfmt is PostgreSQL-first, but any query written in standard ANSI SQL will format correctly regardless of your target database. Vendor-specific extensions (stored procedures, MySQL-only syntax) may not be fully parsed. See [SQL Dialect Support](#sql-dialect-support) for details.
+
+## Documentation
+
+- [Integrations](docs/integrations.md) -- Pre-commit hooks, CI pipelines, and editor setup recipes
+- [Architecture](docs/architecture.md) -- Internal pipeline and design decisions
+- [Style Guide Mapping](docs/style-guide.md) -- How sqlfmt maps to each rule in the Simon Holywell SQL Style Guide
+- [Migration Guide](docs/migration-guide.md) -- Rolling out sqlfmt in existing codebases with minimal churn
+- [Contributing](CONTRIBUTING.md) -- Development setup, running tests, and submitting changes
+- [Changelog](CHANGELOG.md) -- Release history
 
 ## Development
 
