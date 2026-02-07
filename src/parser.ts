@@ -1,9 +1,50 @@
-import { Token } from './tokenizer';
+import { tokenize, Token } from './tokenizer';
 import * as AST from './ast';
 
-class ParseError extends Error {
-  token: Token;
-  expected: string;
+const DEFAULT_MAX_DEPTH = 100;
+const CLAUSE_KEYWORDS = new Set([
+  'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'LIMIT', 'OFFSET',
+  'UNION', 'INTERSECT', 'EXCEPT', 'ON', 'SET', 'VALUES',
+  'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'JOIN',
+  'INTO', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER',
+  'DROP', 'WITH', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR',
+  'RETURNING', 'FETCH', 'WINDOW', 'LATERAL', 'FOR', 'USING', 'ESCAPE',
+]);
+
+const TYPE_CONTINUATION_RULES: ReadonlyArray<{
+  predicate: (parts: string[], next: string) => boolean;
+}> = [
+  {
+    predicate: (parts, next) => parts[parts.length - 1] === 'DOUBLE' && next === 'PRECISION',
+  },
+  {
+    predicate: (parts, next) => (parts[parts.length - 1] === 'CHARACTER' || parts[parts.length - 1] === 'CHAR') && next === 'VARYING',
+  },
+  {
+    predicate: (parts, next) => parts[parts.length - 1] === 'NATIONAL' && next === 'CHARACTER',
+  },
+  {
+    predicate: (parts, next) => (parts[parts.length - 1] === 'TIMESTAMP' || parts[parts.length - 1] === 'TIME') && (next === 'WITH' || next === 'WITHOUT'),
+  },
+  {
+    predicate: (parts, next) => parts[parts.length - 1] === 'WITH' && next === 'TIME',
+  },
+  {
+    predicate: (parts, next) => parts[parts.length - 1] === 'WITHOUT' && next === 'TIME',
+  },
+  {
+    predicate: (parts, next) => parts[parts.length - 1] === 'TIME' && (next === 'ZONE' || next === 'PRECISION'),
+  },
+];
+
+export interface ParseOptions {
+  recover?: boolean;
+  maxDepth?: number;
+}
+
+export class ParseError extends Error {
+  readonly token: Token;
+  readonly expected: string;
 
   constructor(expected: string, token: Token) {
     const got = token.type === 'eof' ? 'EOF' : `${token.type} "${token.value}"`;
@@ -17,18 +58,28 @@ class ParseError extends Error {
 export class Parser {
   private tokens: Token[];
   private pos: number = 0;
+  private blankLinesBeforeToken = new Map<number, number>();
+  private readonly recover: boolean;
+  private readonly maxDepth: number;
+  private depth: number = 0;
 
-  constructor(tokens: Token[]) {
-    // Annotate non-whitespace tokens with blankLinesBefore count, then filter whitespace
+  constructor(tokens: Token[], options: ParseOptions = {}) {
+    // Record blank lines preceding each non-whitespace token, then filter whitespace.
     for (let i = 0; i < tokens.length; i++) {
       if (tokens[i].type === 'whitespace') {
         const nlCount = (tokens[i].value.match(/\n/g) || []).length;
-        if (nlCount >= 2 && i + 1 < tokens.length) {
-          tokens[i + 1].blankLinesBefore = nlCount - 1;
+        if (nlCount >= 2) {
+          let j = i + 1;
+          while (j < tokens.length && tokens[j].type === 'whitespace') j++;
+          if (j < tokens.length) {
+            this.blankLinesBeforeToken.set(tokens[j].position, nlCount - 1);
+          }
         }
       }
     }
     this.tokens = tokens.filter(t => t.type !== 'whitespace');
+    this.recover = options.recover ?? true;
+    this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   }
 
   parseStatements(): AST.Node[] {
@@ -41,7 +92,9 @@ export class Parser {
         const stmt = this.parseStatement();
         if (stmt) stmts.push(stmt);
       } catch (err) {
+        if (!this.recover) throw err;
         if (!(err instanceof ParseError)) throw err;
+        if (err.expected.startsWith('maximum nesting depth')) throw err;
         this.pos = stmtStart;
         const raw = this.parseRawStatement();
         if (raw) stmts.push(raw);
@@ -140,14 +193,16 @@ export class Parser {
   }
 
   private parseQueryExpression(comments: AST.CommentNode[] = []): AST.QueryExpression {
-    if (this.peekUpper() === 'WITH') {
-      return this.parseCTE(comments);
-    }
-    if (this.peekUpper() === 'SELECT' || this.check('(')) {
-      const query = this.parseUnionOrSelect(comments);
-      if (query.type === 'select' || query.type === 'union') return query;
-    }
-    throw new ParseError('query expression', this.peek());
+    return this.withDepth(() => {
+      if (this.peekUpper() === 'WITH') {
+        return this.parseCTE(comments);
+      }
+      if (this.peekUpper() === 'SELECT' || this.check('(')) {
+        const query = this.parseUnionOrSelect(comments);
+        if (query.type === 'select' || query.type === 'union') return query;
+      }
+      throw new ParseError('query expression', this.peek());
+    });
   }
 
   private tryParseQueryExpressionAtCurrent(comments: AST.CommentNode[] = []): AST.QueryExpression | null {
@@ -170,9 +225,10 @@ export class Parser {
 
   private consumeUnionKeyword(): string {
     const kw = this.advance().upper;
-    if (kw === 'UNION' && this.peekUpper() === 'ALL') {
-      this.advance();
-      return 'UNION ALL';
+    if ((kw === 'UNION' || kw === 'INTERSECT' || kw === 'EXCEPT')
+        && (this.peekUpper() === 'ALL' || this.peekUpper() === 'DISTINCT')) {
+      const modifier = this.advance().upper;
+      return `${kw} ${modifier}`;
     }
     return kw;
   }
@@ -208,6 +264,7 @@ export class Parser {
     let limit: AST.LimitClause | undefined;
     let offset: AST.OffsetClause | undefined;
     let fetch: { count: AST.Expression; withTies?: boolean } | undefined;
+    let lockingClause: string | undefined;
     let windowClause: { name: string; spec: AST.WindowSpec }[] | undefined;
 
     if (this.peekUpper() === 'FROM') {
@@ -279,6 +336,10 @@ export class Parser {
       fetch = this.parseFetchClause();
     }
 
+    if (this.peekUpper() === 'FOR') {
+      lockingClause = this.parseForClause();
+    }
+
     const result: AST.SelectStatement = {
       type: 'select',
       distinct,
@@ -292,6 +353,7 @@ export class Parser {
       limit,
       offset,
       fetch,
+      lockingClause,
       windowClause,
       leadingComments: [],
     };
@@ -362,7 +424,7 @@ export class Parser {
     return { table, alias, aliasColumns, lateral, tablesample };
   }
 
-  private parseTableExpr(): AST.Expr {
+  private parseTableExpr(): AST.Expression {
     if (this.check('(')) {
       const subquery = this.tryParseSubqueryAtCurrent();
       if (subquery) {
@@ -459,7 +521,7 @@ export class Parser {
       }
     }
 
-    let on: AST.Expr | undefined;
+    let on: AST.Expression | undefined;
     let usingClause: string[] | undefined;
 
     if (this.peekUpper() === 'ON') {
@@ -480,7 +542,7 @@ export class Parser {
   }
 
   private parseGroupByClause(): AST.GroupByClause {
-    const items: AST.Expr[] = [];
+    const items: AST.Expression[] = [];
     let groupingSets: AST.GroupByClause['groupingSets'];
 
     // Check for GROUPING SETS, ROLLUP, CUBE
@@ -570,7 +632,7 @@ export class Parser {
   }
 
   private parseWindowSpec(): AST.WindowSpec {
-    let partitionBy: AST.Expr[] | undefined;
+    let partitionBy: AST.Expression[] | undefined;
     let orderBy: AST.OrderByItem[] | undefined;
     let frame: string | undefined;
     let exclude: string | undefined;
@@ -647,6 +709,39 @@ export class Parser {
     return { count, withTies };
   }
 
+  private parseForClause(): string {
+    this.expectKeyword('FOR');
+
+    const parts: string[] = [];
+    if (this.peekUpper() === 'UPDATE' || this.peekUpper() === 'SHARE') {
+      parts.push(this.advance().upper);
+    } else if (this.peekUpper() === 'NO' && this.peekUpperAt(1) === 'KEY' && this.peekUpperAt(2) === 'UPDATE') {
+      parts.push(this.advance().upper, this.advance().upper, this.advance().upper);
+    } else if (this.peekUpper() === 'KEY' && this.peekUpperAt(1) === 'SHARE') {
+      parts.push(this.advance().upper, this.advance().upper);
+    } else {
+      throw new ParseError('UPDATE, SHARE, NO KEY UPDATE, or KEY SHARE', this.peek());
+    }
+
+    if (this.peekUpper() === 'OF') {
+      this.advance();
+      const ofTables: string[] = [this.advance().value];
+      while (this.check(',')) {
+        this.advance();
+        ofTables.push(this.advance().value);
+      }
+      parts.push(`OF ${ofTables.join(', ')}`);
+    }
+
+    if (this.peekUpper() === 'NOWAIT') {
+      parts.push(this.advance().upper);
+    } else if (this.peekUpper() === 'SKIP' && this.peekUpperAt(1) === 'LOCKED') {
+      parts.push(this.advance().upper, this.advance().upper);
+    }
+
+    return parts.join(' ');
+  }
+
   private parseOrderByItems(): AST.OrderByItem[] {
     const items: AST.OrderByItem[] = [];
     items.push(this.parseOrderByItem());
@@ -662,15 +757,28 @@ export class Parser {
     let direction: 'ASC' | 'DESC' | undefined;
     if (this.peekUpper() === 'ASC') { this.advance(); direction = 'ASC'; }
     else if (this.peekUpper() === 'DESC') { this.advance(); direction = 'DESC'; }
-    return { expr, direction };
+    let nulls: 'FIRST' | 'LAST' | undefined;
+    if (this.peekUpper() === 'NULLS') {
+      this.advance();
+      if (this.peekUpper() === 'FIRST') {
+        this.advance();
+        nulls = 'FIRST';
+      } else if (this.peekUpper() === 'LAST') {
+        this.advance();
+        nulls = 'LAST';
+      } else {
+        throw new ParseError('FIRST or LAST', this.peek());
+      }
+    }
+    return { expr, direction, nulls };
   }
 
   // Expression parser using precedence climbing
-  private parseExpression(): AST.Expr {
-    return this.parseOr();
+  private parseExpression(): AST.Expression {
+    return this.withDepth(() => this.parseOr());
   }
 
-  private parseOr(): AST.Expr {
+  private parseOr(): AST.Expression {
     let left = this.parseAnd();
     while (this.peekUpper() === 'OR') {
       this.advance();
@@ -680,9 +788,11 @@ export class Parser {
     return left;
   }
 
-  private parseAnd(): AST.Expr {
+  private parseAnd(): AST.Expression {
     let left = this.parseNot();
-    while (this.peekUpper() === 'AND' && !this.isPartOfBetween()) {
+    // BETWEEN consumes its own AND token at comparison precedence, so plain AND
+    // here always means boolean conjunction.
+    while (this.peekUpper() === 'AND') {
       this.advance();
       const right = this.parseNot();
       left = { type: 'binary', left, operator: 'AND', right };
@@ -690,11 +800,7 @@ export class Parser {
     return left;
   }
 
-  private isPartOfBetween(): boolean {
-    return false;
-  }
-
-  private parseNot(): AST.Expr {
+  private parseNot(): AST.Expression {
     if (this.peekUpper() === 'NOT') {
       this.advance();
 
@@ -709,7 +815,7 @@ export class Parser {
     return this.parseComparison();
   }
 
-  private parseComparison(): AST.Expr {
+  private parseComparison(): AST.Expression {
     let left = this.parseAddSub();
 
     // IS [NOT] NULL / IS [NOT] TRUE / IS [NOT] FALSE
@@ -793,7 +899,12 @@ export class Parser {
     if (this.peekUpper() === 'LIKE') {
       this.advance();
       const pattern = this.parseAddSub();
-      return { type: 'like', expr: left, pattern, negated };
+      let escape: AST.Expression | undefined;
+      if (this.peekUpper() === 'ESCAPE') {
+        this.advance();
+        escape = this.parseAddSub();
+      }
+      return { type: 'like', expr: left, pattern, negated, escape };
     }
 
     // [NOT] ILIKE
@@ -805,7 +916,12 @@ export class Parser {
     if (this.peekUpper() === 'ILIKE') {
       this.advance();
       const pattern = this.parseAddSub();
-      return { type: 'ilike', expr: left, pattern, negated };
+      let escape: AST.Expression | undefined;
+      if (this.peekUpper() === 'ESCAPE') {
+        this.advance();
+        escape = this.parseAddSub();
+      }
+      return { type: 'ilike', expr: left, pattern, negated, escape };
     }
 
     // [NOT] SIMILAR TO
@@ -852,7 +968,7 @@ export class Parser {
     return false;
   }
 
-  private parseAddSub(): AST.Expr {
+  private parseAddSub(): AST.Expression {
     let left = this.parseMulDiv();
     while (this.peek().type === 'operator' && (this.peek().value === '+' || this.peek().value === '-')) {
       const op = this.advance().value;
@@ -862,7 +978,7 @@ export class Parser {
     return left;
   }
 
-  private parseMulDiv(): AST.Expr {
+  private parseMulDiv(): AST.Expression {
     let left = this.parseJsonOps();
     while (this.peek().type === 'operator' && (this.peek().value === '*' || this.peek().value === '/' || this.peek().value === '||')) {
       const op = this.advance().value;
@@ -873,7 +989,7 @@ export class Parser {
   }
 
   // JSON, Array, Bitwise operators
-  private parseJsonOps(): AST.Expr {
+  private parseJsonOps(): AST.Expression {
     let left = this.parseUnaryExpr();
 
     while (true) {
@@ -919,7 +1035,7 @@ export class Parser {
     return left;
   }
 
-  private parseUnaryExpr(): AST.Expr {
+  private parseUnaryExpr(): AST.Expression {
     if (this.peek().type === 'operator' && this.peek().value === '-') {
       this.advance();
       const operand = this.parsePrimary();
@@ -935,7 +1051,7 @@ export class Parser {
   }
 
   // Parse primary then handle postfix :: cast
-  private parsePrimaryWithPostfix(): AST.Expr {
+  private parsePrimaryWithPostfix(): AST.Expression {
     let expr = this.parsePrimary();
 
     // Handle :: casts (can be chained)
@@ -984,7 +1100,7 @@ export class Parser {
     return expr;
   }
 
-  private parsePrimary(): AST.Expr {
+  private parsePrimary(): AST.Expression {
     const token = this.peek();
 
     // EXISTS subquery
@@ -1041,14 +1157,14 @@ export class Parser {
     if (token.upper === 'INTERVAL' && this.peekTypeAt(1) === 'string') {
       this.advance();
       const strToken = this.advance();
-      return { type: 'raw', text: 'INTERVAL ' + strToken.value };
+      return { type: 'interval', value: strToken.value };
     }
 
     // ARRAY[...] constructor
     if (token.upper === 'ARRAY' && this.peekAt(1)?.value === '[') {
       this.advance(); // consume ARRAY
       this.advance(); // consume [
-      const elements: AST.Expr[] = [];
+      const elements: AST.Expression[] = [];
       if (!this.check(']')) {
         elements.push(this.parseExpression());
         while (this.check(',')) {
@@ -1064,7 +1180,7 @@ export class Parser {
     if (token.upper === 'ROW' && this.peekAt(1)?.value === '(') {
       this.advance(); // consume ROW
       this.advance(); // consume (
-      const args: AST.Expr[] = [];
+      const args: AST.Expression[] = [];
       if (!this.check(')')) {
         args.push(this.parseExpression());
         while (this.check(',')) {
@@ -1103,7 +1219,7 @@ export class Parser {
     // NULL literal
     if (token.upper === 'NULL') {
       this.advance();
-      return { type: 'raw', text: 'NULL' };
+      return { type: 'null' };
     }
 
     // Number literal
@@ -1118,12 +1234,22 @@ export class Parser {
       return { type: 'literal', value: token.value, literalType: 'string' };
     }
 
+    // Positional parameter: $1, $2, ...
+    if (token.type === 'parameter') {
+      this.advance();
+      return { type: 'raw', text: token.value };
+    }
+
     // DATE/TIME/TIMESTAMP type constructor: DATE 'YYYY-MM-DD'
     if ((token.upper === 'DATE' || token.upper === 'TIME' || token.upper === 'TIMESTAMP')
         && this.peekTypeAt(1) === 'string') {
       this.advance();
       const strToken = this.advance();
-      return { type: 'raw', text: token.upper + ' ' + strToken.value };
+      return {
+        type: 'typed_string',
+        dataType: token.upper as 'DATE' | 'TIME' | 'TIMESTAMP',
+        value: strToken.value,
+      };
     }
 
     // CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP (no parens needed)
@@ -1142,7 +1268,7 @@ export class Parser {
     return { type: 'raw', text: token.value };
   }
 
-  private parseIdentifierOrFunction(): AST.Expr {
+  private parseIdentifierOrFunction(): AST.Expression {
     const name = this.advance();
     let fullName = name.value;
     const quoted = name.value.startsWith('"');
@@ -1168,7 +1294,7 @@ export class Parser {
         distinct = true;
       }
 
-      const args: AST.Expr[] = [];
+      const args: AST.Expression[] = [];
       if (!this.check(')')) {
         if (this.check('*')) {
           this.advance();
@@ -1255,12 +1381,12 @@ export class Parser {
   private parseCaseExpr(): AST.CaseExpr {
     this.expectKeyword('CASE');
 
-    let operand: AST.Expr | undefined;
+    let operand: AST.Expression | undefined;
     if (this.peekUpper() !== 'WHEN') {
       operand = this.parseExpression();
     }
 
-    const whenClauses: { condition: AST.Expr; result: AST.Expr }[] = [];
+    const whenClauses: { condition: AST.Expression; result: AST.Expression }[] = [];
     while (this.peekUpper() === 'WHEN') {
       this.advance();
       const condition = this.parseExpression();
@@ -1269,7 +1395,7 @@ export class Parser {
       whenClauses.push({ condition, result });
     }
 
-    let elseResult: AST.Expr | undefined;
+    let elseResult: AST.Expression | undefined;
     if (this.peekUpper() === 'ELSE') {
       this.advance();
       elseResult = this.parseExpression();
@@ -1311,35 +1437,32 @@ export class Parser {
     return { type: 'extract', field, source };
   }
 
-  private parsePositionExpr(): AST.Expr {
+  private parsePositionExpr(): AST.Expression {
     this.advance(); // POSITION
     this.expect('(');
     const substr = this.parseAddSub();
     this.expectKeyword('IN');
     const str = this.parseAddSub();
     this.expect(')');
-    return { type: 'raw', text: 'POSITION(' + fmtExprForRaw(substr) + ' IN ' + fmtExprForRaw(str) + ')' } as AST.RawExpression;
+    return { type: 'position', substring: substr, source: str } as AST.PositionExpr;
   }
 
-  private parseSubstringExpr(): AST.Expr {
+  private parseSubstringExpr(): AST.Expression {
     this.advance(); // SUBSTRING
     this.expect('(');
     const str = this.parseExpression();
     this.expectKeyword('FROM');
     const start = this.parseExpression();
-    let len: AST.Expr | undefined;
+    let len: AST.Expression | undefined;
     if (this.peekUpper() === 'FOR') {
       this.advance();
       len = this.parseExpression();
     }
     this.expect(')');
-    let text = 'SUBSTRING(' + fmtExprForRaw(str) + ' FROM ' + fmtExprForRaw(start);
-    if (len) text += ' FOR ' + fmtExprForRaw(len);
-    text += ')';
-    return { type: 'raw', text } as AST.RawExpression;
+    return { type: 'substring', source: str, start, length: len } as AST.SubstringExpr;
   }
 
-  private parseOverlayExpr(): AST.Expr {
+  private parseOverlayExpr(): AST.Expression {
     this.advance(); // OVERLAY
     this.expect('(');
     const str = this.parseExpression();
@@ -1347,41 +1470,44 @@ export class Parser {
     const replacement = this.parseExpression();
     this.expectKeyword('FROM');
     const start = this.parseExpression();
-    let len: AST.Expr | undefined;
+    let len: AST.Expression | undefined;
     if (this.peekUpper() === 'FOR') {
       this.advance();
       len = this.parseExpression();
     }
     this.expect(')');
-    let text = 'OVERLAY(' + fmtExprForRaw(str) + ' PLACING ' + fmtExprForRaw(replacement) + ' FROM ' + fmtExprForRaw(start);
-    if (len) text += ' FOR ' + fmtExprForRaw(len);
-    text += ')';
-    return { type: 'raw', text } as AST.RawExpression;
+    return {
+      type: 'overlay',
+      source: str,
+      replacement,
+      start,
+      length: len,
+    } as AST.OverlayExpr;
   }
 
-  private parseTrimExpr(): AST.Expr {
+  private parseTrimExpr(): AST.Expression {
     this.advance(); // TRIM
     this.expect('(');
 
-    let side = '';
+    let side: AST.TrimExpr['side'];
     if (this.peekUpper() === 'LEADING' || this.peekUpper() === 'TRAILING' || this.peekUpper() === 'BOTH') {
-      side = this.advance().upper;
+      side = this.advance().upper as AST.TrimExpr['side'];
     }
 
-    let char: AST.Expr | undefined;
-    let str: AST.Expr;
-    let usedFrom = false;
+    let trimChar: AST.Expression | undefined;
+    let str: AST.Expression;
+    let fromSyntax = false;
 
     // TRIM([LEADING|TRAILING|BOTH] [trim_char] FROM str)
     if (this.peekUpper() === 'FROM') {
-      usedFrom = true;
+      fromSyntax = true;
       this.advance();
       str = this.parseExpression();
     } else {
       const firstExpr = this.parseExpression();
       if (this.peekUpper() === 'FROM') {
-        char = firstExpr;
-        usedFrom = true;
+        trimChar = firstExpr;
+        fromSyntax = true;
         this.advance();
         str = this.parseExpression();
       } else {
@@ -1392,29 +1518,11 @@ export class Parser {
 
     this.expect(')');
 
-    let text = 'TRIM(';
-    if (side) {
-      text += side;
-      if (char) {
-        text += ' ' + fmtExprForRaw(char) + ' FROM ' + fmtExprForRaw(str);
-      } else if (usedFrom) {
-        text += ' FROM ' + fmtExprForRaw(str);
-      } else {
-        text += ' ' + fmtExprForRaw(str);
-      }
-    } else if (char) {
-      text += fmtExprForRaw(char) + ' FROM ' + fmtExprForRaw(str);
-    } else if (usedFrom) {
-      text += 'FROM ' + fmtExprForRaw(str);
-    } else {
-      text += fmtExprForRaw(str);
-    }
-    text += ')';
-    return { type: 'raw', text } as AST.RawExpression;
+    return { type: 'trim', side, trimChar, source: str, fromSyntax } as AST.TrimExpr;
   }
 
-  private parseExpressionList(): AST.Expr[] {
-    const list: AST.Expr[] = [];
+  private parseExpressionList(): AST.Expression[] {
+    const list: AST.Expression[] = [];
     list.push(this.parseExpression());
     while (this.check(',')) {
       this.advance();
@@ -1509,10 +1617,15 @@ export class Parser {
       this.expect(')');
     }
 
+    let defaultValues = false;
     let values: AST.ValuesList[] | undefined;
-    let selectQuery: AST.SelectStatement | undefined;
+    let selectQuery: AST.QueryExpression | undefined;
 
-    if (this.peekUpper() === 'VALUES') {
+    if (this.peekUpper() === 'DEFAULT' && this.peekUpperAt(1) === 'VALUES') {
+      this.advance();
+      this.advance();
+      defaultValues = true;
+    } else if (this.peekUpper() === 'VALUES') {
       this.advance();
       values = [];
       values.push(this.parseValuesTuple());
@@ -1520,8 +1633,8 @@ export class Parser {
         this.advance();
         values.push(this.parseValuesTuple());
       }
-    } else if (this.peekUpper() === 'SELECT') {
-      selectQuery = this.parseSelect();
+    } else if (this.peekUpper() === 'SELECT' || this.peekUpper() === 'WITH' || this.check('(')) {
+      selectQuery = this.parseQueryExpression();
     }
 
     // ON CONFLICT
@@ -1538,7 +1651,17 @@ export class Parser {
       returning = this.parseReturningList();
     }
 
-    return { type: 'insert', table, columns, values, selectQuery, onConflict, returning, leadingComments: comments };
+    return {
+      type: 'insert',
+      table,
+      columns,
+      defaultValues,
+      values,
+      selectQuery,
+      onConflict,
+      returning,
+      leadingComments: comments,
+    };
   }
 
   private parseOnConflict(): AST.InsertStatement['onConflict'] {
@@ -1639,6 +1762,16 @@ export class Parser {
     this.expectKeyword('FROM');
     const table = this.advance().value;
 
+    let using: AST.FromClause[] | undefined;
+    if (this.peekUpper() === 'USING') {
+      this.advance();
+      using = [this.parseFromItem()];
+      while (this.check(',')) {
+        this.advance();
+        using.push(this.parseFromItem());
+      }
+    }
+
     let where: AST.WhereClause | undefined;
     if (this.peekUpper() === 'WHERE') {
       this.advance();
@@ -1651,12 +1784,11 @@ export class Parser {
       returning = this.parseReturningList();
     }
 
-    return { type: 'delete', from: table, where, returning, leadingComments: comments };
+    return { type: 'delete', from: table, using, where, returning, leadingComments: comments };
   }
 
   // CREATE TABLE | CREATE INDEX | CREATE VIEW
   private parseCreate(comments: AST.CommentNode[]): AST.Node {
-    const createPos = this.pos;
     this.advance(); // CREATE
 
     // OR REPLACE
@@ -1909,7 +2041,11 @@ export class Parser {
 
   private parseTruncate(comments: AST.CommentNode[]): AST.TruncateStatement {
     this.advance(); // TRUNCATE
-    this.expectKeyword('TABLE');
+    let tableKeyword = false;
+    if (this.peekUpper() === 'TABLE') {
+      this.advance();
+      tableKeyword = true;
+    }
 
     const tables: string[] = [];
     tables.push(this.advance().value);
@@ -1931,7 +2067,7 @@ export class Parser {
       cascade = true;
     }
 
-    return { type: 'truncate', table: tables.join(', '), restartIdentity, cascade, leadingComments: comments };
+    return { type: 'truncate', table: tables.join(', '), tableKeyword, restartIdentity, cascade, leadingComments: comments };
   }
 
   private parseStandaloneValues(comments: AST.CommentNode[]): AST.StandaloneValuesStatement {
@@ -2097,8 +2233,12 @@ export class Parser {
   // ALTER TABLE
   private parseAlter(comments: AST.CommentNode[]): AST.AlterTableStatement {
     this.expectKeyword('ALTER');
-    this.expectKeyword('TABLE');
-    const tableName = this.advance().value;
+    const objectTypeToken = this.advance();
+    if (objectTypeToken.type !== 'keyword' && objectTypeToken.type !== 'identifier') {
+      throw new ParseError('object type', objectTypeToken);
+    }
+    const objectType = objectTypeToken.upper;
+    const objectName = this.advance().value;
 
     let action = '';
     while (!this.check(';') && !this.isAtEnd()) {
@@ -2118,13 +2258,24 @@ export class Parser {
       }
     }
 
-    return { type: 'alter_table', tableName, action, leadingComments: comments };
+    return {
+      type: 'alter_table',
+      objectType,
+      objectName,
+      tableName: objectName,
+      action,
+      leadingComments: comments,
+    };
   }
 
   // DROP TABLE [IF EXISTS] name
   private parseDrop(comments: AST.CommentNode[]): AST.DropTableStatement {
     this.expectKeyword('DROP');
-    this.expectKeyword('TABLE');
+    const objectTypeToken = this.advance();
+    if (objectTypeToken.type !== 'keyword' && objectTypeToken.type !== 'identifier') {
+      throw new ParseError('object type', objectTypeToken);
+    }
+    const objectType = objectTypeToken.upper;
 
     let ifExists = false;
     if (this.peekUpper() === 'IF' && this.peekUpperAt(1) === 'EXISTS') {
@@ -2132,9 +2283,16 @@ export class Parser {
       ifExists = true;
     }
 
-    const tableName = this.advance().value;
+    const objectName = this.advance().value;
 
-    return { type: 'drop_table', ifExists, tableName, leadingComments: comments };
+    return {
+      type: 'drop_table',
+      objectType,
+      ifExists,
+      objectName,
+      tableName: objectName,
+      leadingComments: comments,
+    };
   }
 
   // CTE: WITH [RECURSIVE] name AS (...), name AS (...) SELECT ...
@@ -2332,8 +2490,20 @@ export class Parser {
   }
 
   private consumeTypeNameToken(): string {
-    const t = this.advance();
-    return t.type === 'keyword' ? t.upper : t.value;
+    const first = this.advance();
+    const parts: string[] = [first.type === 'keyword' ? first.upper : first.value];
+
+    while (true) {
+      const nextToken = this.peek();
+      if (nextToken.type !== 'keyword' && nextToken.type !== 'identifier') break;
+      const nextUpper = nextToken.upper;
+      const shouldConsume = TYPE_CONTINUATION_RULES.some(rule => rule.predicate(parts, nextUpper));
+      if (!shouldConsume) break;
+      const consumed = this.advance();
+      parts.push(consumed.type === 'keyword' ? consumed.upper : consumed.value);
+    }
+
+    return parts.join(' ');
   }
 
   // Helper methods
@@ -2346,7 +2516,7 @@ export class Parser {
         type: 'comment',
         style: t.type === 'line_comment' ? 'line' : 'block',
         text: t.value,
-        blankLinesBefore: t.blankLinesBefore || 0,
+        blankLinesBefore: this.blankLinesBeforeToken.get(t.position) || 0,
       });
     }
     return comments;
@@ -2357,14 +2527,7 @@ export class Parser {
   }
 
   private isClauseKeywordValue(val: string): boolean {
-    return [
-      'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'LIMIT', 'OFFSET',
-      'UNION', 'INTERSECT', 'EXCEPT', 'ON', 'SET', 'VALUES',
-      'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'JOIN',
-      'INTO', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER',
-      'DROP', 'WITH', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR',
-      'RETURNING', 'FETCH', 'WINDOW', 'LATERAL',
-    ].includes(val);
+    return CLAUSE_KEYWORDS.has(val);
   }
 
   private peek(): Token {
@@ -2401,11 +2564,18 @@ export class Parser {
   }
 
   private check(value: string): boolean {
-    return this.peek().value === value || this.peek().upper === value;
+    const token = this.peek();
+    return token.value === value || token.upper === value;
   }
 
   private advance(): Token {
+    if (this.pos >= this.tokens.length) {
+      throw new ParseError('more input', this.peek());
+    }
     const token = this.tokens[this.pos];
+    if (token.type === 'eof') {
+      throw new ParseError('more input', token);
+    }
     this.pos++;
     return token;
   }
@@ -2419,24 +2589,57 @@ export class Parser {
   }
 
   private expectKeyword(keyword: string): Token {
-    return this.expect(keyword);
+    const token = this.peek();
+    if (token.type !== 'keyword' || token.upper !== keyword) {
+      throw new ParseError(keyword, token);
+    }
+    return this.advance();
   }
 
   private isAtEnd(): boolean {
     return this.pos >= this.tokens.length || this.tokens[this.pos].type === 'eof';
   }
+
+  private withDepth<T>(fn: () => T): T {
+    this.depth++;
+    if (this.depth > this.maxDepth) {
+      this.depth--;
+      throw new ParseError(`maximum nesting depth ${this.maxDepth}`, this.peek());
+    }
+    try {
+      return fn();
+    } finally {
+      this.depth--;
+    }
+  }
+}
+
+export function parse(input: string, options: ParseOptions = {}): AST.Node[] {
+  if (!input.trim()) return [];
+  const parser = new Parser(tokenize(input), options);
+  return parser.parseStatements();
+}
+
+function assertNever(x: never): never {
+  throw new Error(`Unhandled expression type: ${(x as { type?: string }).type ?? 'unknown'}`);
 }
 
 // Helper for building raw text from AST during parse
-function fmtExprForRaw(expr: AST.Expr): string {
+function fmtExprForRaw(expr: AST.Expression): string {
   switch (expr.type) {
     case 'identifier':
       return expr.quoted ? expr.value : expr.value.toLowerCase();
     case 'literal':
       if (expr.literalType === 'boolean') return expr.value.toUpperCase();
       return expr.value;
+    case 'null':
+      return 'NULL';
+    case 'interval':
+      return `INTERVAL ${expr.value}`;
+    case 'typed_string':
+      return `${expr.dataType} ${expr.value}`;
     case 'star':
-      return expr.qualifier ? expr.qualifier + '.*' : '*';
+      return expr.qualifier ? expr.qualifier.toLowerCase() + '.*' : '*';
     case 'binary':
       return fmtExprForRaw(expr.left) + ' ' + expr.operator + ' ' + fmtExprForRaw(expr.right);
     case 'unary':
@@ -2444,24 +2647,114 @@ function fmtExprForRaw(expr: AST.Expr): string {
       if (expr.operator === '~') return '~' + fmtExprForRaw(expr.operand);
       return expr.operator + ' ' + fmtExprForRaw(expr.operand);
     case 'function_call': {
-      const name = expr.name.toUpperCase();
+      const name = expr.name;
       const distinct = expr.distinct ? 'DISTINCT ' : '';
       const args = expr.args.map(fmtExprForRaw).join(', ');
-      return name + '(' + distinct + args + ')';
+      let out = name + '(' + distinct + args + ')';
+      if (expr.orderBy && expr.orderBy.length > 0) {
+        out += ' ORDER BY ' + expr.orderBy.map(i => {
+          let s = fmtExprForRaw(i.expr);
+          if (i.direction) s += ' ' + i.direction;
+          if (i.nulls) s += ` NULLS ${i.nulls}`;
+          return s;
+        }).join(', ');
+      }
+      return out;
     }
+    case 'subquery':
+      return '(' + (expr.query.type === 'select' ? '[SELECT]' : '[QUERY]') + ')';
+    case 'case': {
+      let out = 'CASE';
+      if (expr.operand) out += ' ' + fmtExprForRaw(expr.operand);
+      for (const wc of expr.whenClauses) {
+        out += ' WHEN ' + fmtExprForRaw(wc.condition) + ' THEN ' + fmtExprForRaw(wc.result);
+      }
+      if (expr.elseResult) out += ' ELSE ' + fmtExprForRaw(expr.elseResult);
+      return out + ' END';
+    }
+    case 'between': {
+      const neg = expr.negated ? 'NOT ' : '';
+      return `${fmtExprForRaw(expr.expr)} ${neg}BETWEEN ${fmtExprForRaw(expr.low)} AND ${fmtExprForRaw(expr.high)}`;
+    }
+    case 'in': {
+      const neg = expr.negated ? 'NOT ' : '';
+      if ((expr.values as AST.SubqueryExpr).type === 'subquery') {
+        return `${fmtExprForRaw(expr.expr)} ${neg}IN (${(expr.values as AST.SubqueryExpr).query.type})`;
+      }
+      return `${fmtExprForRaw(expr.expr)} ${neg}IN (${(expr.values as AST.Expression[]).map(fmtExprForRaw).join(', ')})`;
+    }
+    case 'is':
+      return `${fmtExprForRaw(expr.expr)} IS ${expr.value}`;
+    case 'like': {
+      const neg = expr.negated ? 'NOT ' : '';
+      let out = `${fmtExprForRaw(expr.expr)} ${neg}LIKE ${fmtExprForRaw(expr.pattern)}`;
+      if (expr.escape) out += ` ESCAPE ${fmtExprForRaw(expr.escape)}`;
+      return out;
+    }
+    case 'ilike': {
+      const neg = expr.negated ? 'NOT ' : '';
+      let out = `${fmtExprForRaw(expr.expr)} ${neg}ILIKE ${fmtExprForRaw(expr.pattern)}`;
+      if (expr.escape) out += ` ESCAPE ${fmtExprForRaw(expr.escape)}`;
+      return out;
+    }
+    case 'similar_to': {
+      const neg = expr.negated ? 'NOT ' : '';
+      return `${fmtExprForRaw(expr.expr)} ${neg}SIMILAR TO ${fmtExprForRaw(expr.pattern)}`;
+    }
+    case 'exists':
+      return `EXISTS (${expr.subquery.query.type})`;
     case 'paren':
       return '(' + fmtExprForRaw(expr.expr) + ')';
     case 'cast':
       return 'CAST(' + fmtExprForRaw(expr.expr) + ' AS ' + expr.targetType + ')';
     case 'pg_cast':
-      return fmtExprForRaw(expr.expr as AST.Expr) + '::' + expr.targetType;
-    case 'raw':
-      return expr.text;
+      return fmtExprForRaw(expr.expr as AST.Expression) + '::' + expr.targetType;
     case 'extract':
       return 'EXTRACT(' + expr.field + ' FROM ' + fmtExprForRaw(expr.source) + ')';
+    case 'position':
+      return `POSITION(${fmtExprForRaw(expr.substring)} IN ${fmtExprForRaw(expr.source)})`;
+    case 'substring': {
+      let out = `SUBSTRING(${fmtExprForRaw(expr.source)} FROM ${fmtExprForRaw(expr.start)}`;
+      if (expr.length) out += ` FOR ${fmtExprForRaw(expr.length)}`;
+      return out + ')';
+    }
+    case 'overlay': {
+      let out = `OVERLAY(${fmtExprForRaw(expr.source)} PLACING ${fmtExprForRaw(expr.replacement)} FROM ${fmtExprForRaw(expr.start)}`;
+      if (expr.length) out += ` FOR ${fmtExprForRaw(expr.length)}`;
+      return out + ')';
+    }
+    case 'trim': {
+      let out = 'TRIM(';
+      if (expr.side) {
+        out += expr.side;
+        if (expr.trimChar) out += ` ${fmtExprForRaw(expr.trimChar)} FROM ${fmtExprForRaw(expr.source)}`;
+        else if (expr.fromSyntax) out += ` FROM ${fmtExprForRaw(expr.source)}`;
+        else out += ` ${fmtExprForRaw(expr.source)}`;
+      } else if (expr.trimChar) {
+        out += `${fmtExprForRaw(expr.trimChar)} FROM ${fmtExprForRaw(expr.source)}`;
+      } else if (expr.fromSyntax) {
+        out += `FROM ${fmtExprForRaw(expr.source)}`;
+      } else {
+        out += fmtExprForRaw(expr.source);
+      }
+      return out + ')';
+    }
     case 'array_constructor':
-      return 'ARRAY[' + expr.elements.map(e => fmtExprForRaw(e as AST.Expr)).join(', ') + ']';
-    default:
-      return String((expr as any).text || (expr as any).value || '');
+      return 'ARRAY[' + expr.elements.map(e => fmtExprForRaw(e as AST.Expression)).join(', ') + ']';
+    case 'is_distinct_from': {
+      const kw = expr.negated ? 'IS NOT DISTINCT FROM' : 'IS DISTINCT FROM';
+      return `${fmtExprForRaw(expr.left as AST.Expression)} ${kw} ${fmtExprForRaw(expr.right as AST.Expression)}`;
+    }
+    case 'regex_match':
+      return `${fmtExprForRaw(expr.left as AST.Expression)} ${expr.operator} ${fmtExprForRaw(expr.right as AST.Expression)}`;
+    case 'window_function': {
+      const func = fmtExprForRaw(expr.func);
+      if (expr.windowName) return `${func} OVER ${expr.windowName}`;
+      return `${func} OVER (...)`;
+    }
+    case 'raw':
+      return expr.text;
   }
+
+  return assertNever(expr);
 }

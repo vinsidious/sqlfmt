@@ -28,6 +28,9 @@ export type Node =
 export type Expression =
   | IdentifierExpr
   | LiteralExpr
+  | NullLiteralExpr
+  | IntervalExpr
+  | TypedStringExpr
   | StarExpr
   | BinaryExpr
   | UnaryExpr
@@ -46,12 +49,16 @@ export type Expression =
   | PgCastExpr
   | WindowFunctionExpr
   | ExtractExpr
+  | PositionExpr
+  | SubstringExpr
+  | OverlayExpr
+  | TrimExpr
   | ArrayConstructorExpr
   | IsDistinctFromExpr
   | RegexExpr
   | RawExpression;
 
-// Keep Expr as an alias for backward compatibility
+// Keep Expr as an alias for backward compatibility.
 export type Expr = Expression;
 
 export interface SelectStatement {
@@ -68,6 +75,7 @@ export interface SelectStatement {
   limit?: LimitClause;
   offset?: OffsetClause;
   fetch?: { count: Expression; withTies?: boolean };
+  lockingClause?: string;
   windowClause?: { name: string; spec: WindowSpec }[];
   leadingComments: CommentNode[];
   parenthesized?: boolean;
@@ -77,8 +85,9 @@ export interface InsertStatement {
   type: 'insert';
   table: string;
   columns: string[];
+  defaultValues?: boolean;
   values?: ValuesList[];
-  selectQuery?: SelectStatement;
+  selectQuery?: QueryExpression;
   returning?: Expression[];
   onConflict?: {
     columns?: string[];
@@ -103,6 +112,7 @@ export interface UpdateStatement {
 export interface DeleteStatement {
   type: 'delete';
   from: string;
+  using?: FromClause[];
   where?: WhereClause;
   returning?: Expression[];
   leadingComments: CommentNode[];
@@ -117,6 +127,9 @@ export interface CreateTableStatement {
 
 export interface AlterTableStatement {
   type: 'alter_table';
+  objectType: string;
+  objectName: string;
+  // Backward compatibility for existing code paths/tests
   tableName: string;
   action: string; // raw text like "ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"
   leadingComments: CommentNode[];
@@ -124,7 +137,10 @@ export interface AlterTableStatement {
 
 export interface DropTableStatement {
   type: 'drop_table';
+  objectType: string;
   ifExists: boolean;
+  objectName: string;
+  // Backward compatibility for existing code paths/tests
   tableName: string;
   leadingComments: CommentNode[];
 }
@@ -203,6 +219,7 @@ export interface GrantStatement {
 export interface TruncateStatement {
   type: 'truncate';
   table: string;
+  tableKeyword?: boolean;
   restartIdentity?: boolean;
   cascade?: boolean;
   leadingComments: CommentNode[];
@@ -221,7 +238,7 @@ export interface ValuesClause {
 }
 
 export interface ValuesRow {
-  values: Expr[];
+  values: Expression[];
   trailingComment?: CommentNode;
   leadingComments?: CommentNode[];
 }
@@ -248,6 +265,21 @@ export interface LiteralExpr {
   literalType: 'string' | 'number' | 'boolean';
 }
 
+export interface NullLiteralExpr {
+  type: 'null';
+}
+
+export interface IntervalExpr {
+  type: 'interval';
+  value: string;
+}
+
+export interface TypedStringExpr {
+  type: 'typed_string';
+  dataType: 'DATE' | 'TIME' | 'TIMESTAMP';
+  value: string;
+}
+
 export interface StarExpr {
   type: 'star';
   qualifier?: string; // e.g., "t" in "t.*"
@@ -255,21 +287,21 @@ export interface StarExpr {
 
 export interface BinaryExpr {
   type: 'binary';
-  left: Expr;
+  left: Expression;
   operator: string;
-  right: Expr;
+  right: Expression;
 }
 
 export interface UnaryExpr {
   type: 'unary';
   operator: string;
-  operand: Expr;
+  operand: Expression;
 }
 
 export interface FunctionCallExpr {
   type: 'function_call';
   name: string;
-  args: Expr[];
+  args: Expression[];
   distinct?: boolean;
   orderBy?: OrderByItem[];
   filter?: Expression;
@@ -283,50 +315,52 @@ export interface SubqueryExpr {
 
 export interface CaseExpr {
   type: 'case';
-  operand?: Expr;  // for simple CASE
-  whenClauses: { condition: Expr; result: Expr }[];
-  elseResult?: Expr;
+  operand?: Expression;  // for simple CASE
+  whenClauses: { condition: Expression; result: Expression }[];
+  elseResult?: Expression;
 }
 
 export interface BetweenExpr {
   type: 'between';
-  expr: Expr;
-  low: Expr;
-  high: Expr;
+  expr: Expression;
+  low: Expression;
+  high: Expression;
   negated: boolean;
 }
 
 export interface InExpr {
   type: 'in';
-  expr: Expr;
-  values: Expr[] | SubqueryExpr;
+  expr: Expression;
+  values: Expression[] | SubqueryExpr;
   negated: boolean;
 }
 
 export interface IsExpr {
   type: 'is';
-  expr: Expr;
+  expr: Expression;
   value: 'NULL' | 'NOT NULL' | 'TRUE' | 'FALSE' | 'NOT TRUE' | 'NOT FALSE';
 }
 
 export interface LikeExpr {
   type: 'like';
-  expr: Expr;
-  pattern: Expr;
+  expr: Expression;
+  pattern: Expression;
   negated: boolean;
+  escape?: Expression;
 }
 
 export interface IlikeExpr {
   type: 'ilike';
-  expr: Expr;
-  pattern: Expr;
+  expr: Expression;
+  pattern: Expression;
   negated: boolean;
+  escape?: Expression;
 }
 
 export interface SimilarToExpr {
   type: 'similar_to';
-  expr: Expr;
-  pattern: Expr;
+  expr: Expression;
+  pattern: Expression;
   negated: boolean;
 }
 
@@ -337,12 +371,12 @@ export interface ExistsExpr {
 
 export interface ParenExpr {
   type: 'paren';
-  expr: Expr;
+  expr: Expression;
 }
 
 export interface CastExpr {
   type: 'cast';
-  expr: Expr;
+  expr: Expression;
   targetType: string;
 }
 
@@ -353,7 +387,7 @@ export interface PgCastExpr {
 }
 
 export interface WindowSpec {
-  partitionBy?: Expr[];
+  partitionBy?: Expression[];
   orderBy?: OrderByItem[];
   frame?: string;
   exclude?: string;
@@ -362,7 +396,7 @@ export interface WindowSpec {
 export interface WindowFunctionExpr {
   type: 'window_function';
   func: FunctionCallExpr;
-  partitionBy?: Expr[];
+  partitionBy?: Expression[];
   orderBy?: OrderByItem[];
   frame?: string; // raw frame clause like "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
   exclude?: string;
@@ -372,7 +406,36 @@ export interface WindowFunctionExpr {
 export interface ExtractExpr {
   type: 'extract';
   field: string;   // DAY, MONTH, YEAR, etc.
-  source: Expr;    // the expression to extract from
+  source: Expression;    // the expression to extract from
+}
+
+export interface PositionExpr {
+  type: 'position';
+  substring: Expression;
+  source: Expression;
+}
+
+export interface SubstringExpr {
+  type: 'substring';
+  source: Expression;
+  start: Expression;
+  length?: Expression;
+}
+
+export interface OverlayExpr {
+  type: 'overlay';
+  source: Expression;
+  replacement: Expression;
+  start: Expression;
+  length?: Expression;
+}
+
+export interface TrimExpr {
+  type: 'trim';
+  side?: 'LEADING' | 'TRAILING' | 'BOTH';
+  trimChar?: Expression;
+  source: Expression;
+  fromSyntax: boolean;
 }
 
 export interface ArrayConstructorExpr {
@@ -401,13 +464,13 @@ export interface RawExpression {
 
 // Column expression with optional alias and comment
 export interface ColumnExpr {
-  expr: Expr;
+  expr: Expression;
   alias?: string;
   trailingComment?: CommentNode;
 }
 
 export interface FromClause {
-  table: Expr;
+  table: Expression;
   alias?: string;
   aliasColumns?: string[];
   lateral?: boolean;
@@ -416,26 +479,26 @@ export interface FromClause {
 
 export interface JoinClause {
   joinType: string; // 'INNER JOIN', 'LEFT JOIN', 'LEFT OUTER JOIN', etc.
-  table: Expr;
+  table: Expression;
   alias?: string;
   aliasColumns?: string[];
   lateral?: boolean;
-  on?: Expr;
+  on?: Expression;
   usingClause?: string[];
 }
 
 export interface WhereClause {
-  condition: Expr;
+  condition: Expression;
   trailingComment?: CommentNode;
 }
 
 export interface GroupByClause {
-  items: Expr[];
+  items: Expression[];
   groupingSets?: { type: 'grouping_sets' | 'rollup' | 'cube'; sets: Expression[][] }[];
 }
 
 export interface HavingClause {
-  condition: Expr;
+  condition: Expression;
 }
 
 export interface OrderByClause {
@@ -443,26 +506,27 @@ export interface OrderByClause {
 }
 
 export interface OrderByItem {
-  expr: Expr;
+  expr: Expression;
   direction?: 'ASC' | 'DESC';
+  nulls?: 'FIRST' | 'LAST';
 }
 
 export interface LimitClause {
-  count: Expr;
+  count: Expression;
 }
 
 export interface OffsetClause {
-  count: Expr;
+  count: Expression;
   rowsKeyword?: boolean;
 }
 
 export interface SetItem {
   column: string;
-  value: Expr;
+  value: Expression;
 }
 
 export interface ValuesList {
-  values: Expr[];
+  values: Expression[];
 }
 
 export interface TableElement {
