@@ -669,11 +669,11 @@ export class Parser {
         }
         if (this.peekUpper() === 'TRUE') {
           this.advance();
-          return { type: 'is', expr: left, value: 'NOT NULL' }; // We'll need special handling
+          return { type: 'is', expr: left, value: 'NOT TRUE' };
         }
         if (this.peekUpper() === 'FALSE') {
           this.advance();
-          return { type: 'is', expr: left, value: 'NOT NULL' };
+          return { type: 'is', expr: left, value: 'NOT FALSE' };
         }
       } else if (this.peekUpper() === 'NULL') {
         this.advance();

@@ -569,6 +569,14 @@ OFFSET 20;`
     OR termination_date IS NOT NULL;`
   );
 
+  assertFormat('12.14b — IS NOT TRUE / IS NOT FALSE',
+    `select user_id from feature_flags where is_enabled is not true or is_enabled is not false;`,
+    `SELECT user_id
+  FROM feature_flags
+ WHERE is_enabled IS NOT TRUE
+    OR is_enabled IS NOT FALSE;`
+  );
+
   assertFormat('12.15 — BETWEEN in WHERE',
     `select order_id, order_date from orders where order_date between '2024-01-01' and '2024-12-31' and total_amount between 100 and 5000;`,
     `SELECT order_id, order_date
