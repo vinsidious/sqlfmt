@@ -165,6 +165,41 @@ describe('Category 3: Subqueries', () => {
          WHERE o.customer_id = c.customer_id
            AND o.order_date > '2024-01-01');`
   );
+
+  assertFormat('3.5 — IN subquery with UNION',
+    `select * from t where id in (select id from a union select id from b);`,
+    `SELECT *
+  FROM t
+ WHERE id IN
+       (SELECT id
+          FROM a
+
+         UNION
+
+        SELECT id
+          FROM b);`
+  );
+
+  assertFormat('3.6 — Subquery in FROM with CTE',
+    `select * from (with x as (select 1 as a) select a from x) q;`,
+    `SELECT *
+  FROM (  WITH x AS (
+                   SELECT 1 AS a
+               )
+        SELECT a
+          FROM x) AS q;`
+  );
+
+  assertFormat('3.7 — IN subquery with CTE',
+    `select 1 where 1 in (with x as (select 1 as id) select id from x);`,
+    `SELECT 1
+ WHERE 1 IN
+       (  WITH x AS (
+                   SELECT 1 AS id
+               )
+        SELECT id
+          FROM x);`
+  );
 });
 
 describe('Category 4: CASE Expressions', () => {

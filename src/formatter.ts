@@ -769,11 +769,7 @@ function fmtExprInCondition(expr: AST.Expr, ctx: FormatContext): string {
     }
 
     // IN: inline if subquery is short (≤ 2 lines), new line otherwise
-    const inner = formatSelect(subqExpr.query, {
-      indentOffset: 0,
-      riverWidth: deriveSelectRiverWidth(subqExpr.query),
-      isSubquery: true,
-    });
+    const inner = formatQueryExpressionForSubquery(subqExpr.query);
     const lineCount = inner.split('\n').length;
 
     if (lineCount <= 2) {
@@ -796,11 +792,7 @@ function fmtExprInCondition(expr: AST.Expr, ctx: FormatContext): string {
   if (expr.type === 'binary' && ['=', '<>', '!=', '<', '>', '<=', '>='].includes(expr.operator)) {
     if (expr.right.type === 'subquery') {
       const left = fmtExpr(expr.left);
-      const inner = formatSelect(expr.right.query, {
-        indentOffset: 0,
-        riverWidth: deriveSelectRiverWidth(expr.right.query),
-        isSubquery: true,
-      });
+      const inner = formatQueryExpressionForSubquery(expr.right.query);
       const lineCount = inner.split('\n').length;
 
       if (lineCount <= 2) {
@@ -835,17 +827,24 @@ function formatParenOperand(expr: AST.Expr, opCol: number, parentOp: string): st
 
 // ─── Subquery formatting ─────────────────────────────────────────────
 
+function formatQueryExpressionForSubquery(
+  query: AST.QueryExpression,
+  outerColumnOffset?: number
+): string {
+  return formatNode(query, {
+    indentOffset: 0,
+    riverWidth: deriveRiverWidth(query),
+    isSubquery: true,
+    outerColumnOffset,
+  });
+}
+
 // Format subquery at a given column offset.
 // The ( sits at `col` in the final output. SELECT starts at col+1.
 // We format the inner query with indentOffset=0 (its own coordinate system),
 // then shift subsequent lines by (col+1) to align under SELECT.
 function fmtSubqueryAtColumn(expr: AST.SubqueryExpr, col: number): string {
-  const inner = formatSelect(expr.query, {
-    indentOffset: 0,
-    riverWidth: deriveSelectRiverWidth(expr.query),
-    isSubquery: true,
-    outerColumnOffset: col + 1,
-  });
+  const inner = formatQueryExpressionForSubquery(expr.query, col + 1);
   return wrapSubqueryLines(inner, col);
 }
 
@@ -854,7 +853,7 @@ function wrapSubqueryLines(innerFormatted: string, col: number): string {
   const pad = ' '.repeat(col + 1);
   let result = '(' + lines[0];
   for (let i = 1; i < lines.length; i++) {
-    result += '\n' + pad + lines[i];
+    result += lines[i] ? '\n' + pad + lines[i] : '\n';
   }
   result += ')';
   return result;
@@ -1441,7 +1440,7 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
         str += '\n' + ' ' + innerLines[j];
       }
       str += ')';
-      if (isLast) {
+      if (isLast && !ctx.isSubquery) {
         parts.push(str + ';');
       } else {
         parts.push(str);
@@ -1536,7 +1535,7 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   const mainCtx: FormatContext = {
     indentOffset: 0,
     riverWidth: deriveRiverWidth(node.mainQuery),
-    isSubquery: false,
+    isSubquery: ctx.isSubquery,
   };
   // Emit leading comments before main query (we handle them here, so clear them
   // from the node to avoid double-emitting in formatSelect/formatUnion)
@@ -1778,11 +1777,7 @@ function fmtFunctionCall(expr: AST.FunctionCallExpr): string {
 }
 
 function fmtSubquerySimple(expr: AST.SubqueryExpr): string {
-  const inner = formatSelect(expr.query, {
-    indentOffset: 0,
-    riverWidth: deriveSelectRiverWidth(expr.query),
-    isSubquery: true,
-  });
+  const inner = formatQueryExpressionForSubquery(expr.query);
   return '(' + inner + ')';
 }
 

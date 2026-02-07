@@ -17,6 +17,8 @@ export type Statement =
   | TruncateStatement
   | StandaloneValuesStatement;
 
+export type QueryExpression = SelectStatement | UnionStatement | CTEStatement;
+
 export type Node =
   | Statement
   | ValuesClause
@@ -276,7 +278,7 @@ export interface FunctionCallExpr {
 
 export interface SubqueryExpr {
   type: 'subquery';
-  query: SelectStatement;
+  query: QueryExpression;
 }
 
 export interface CaseExpr {

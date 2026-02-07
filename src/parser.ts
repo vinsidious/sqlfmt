@@ -60,9 +60,10 @@ export class Parser {
 
     if (this.isAtEnd()) return null;
 
-    // Check for parenthesized query (could be UNION)
-    if (this.check('(') && this.looksLikeParenthesizedSelect()) {
-      return this.parseUnionOrSelect(comments);
+    // Parenthesized top-level query expression
+    if (this.check('(')) {
+      const query = this.tryParseQueryExpressionAtCurrent(comments);
+      if (query) return query;
     }
 
     const kw = this.peekUpper();
@@ -110,19 +111,6 @@ export class Parser {
     return { type: 'raw', text };
   }
 
-  private looksLikeParenthesizedSelect(): boolean {
-    let depth = 0;
-    for (let i = this.pos; i < this.tokens.length; i++) {
-      const t = this.tokens[i];
-      if (t.type === 'line_comment' || t.type === 'block_comment') continue;
-      if (t.value === '(') { depth++; continue; }
-      if (depth === 1 && t.upper === 'SELECT') return true;
-      if (depth === 1 && t.upper !== 'SELECT') return false;
-      if (t.value === ')') return false;
-    }
-    return false;
-  }
-
   private parseUnionOrSelect(comments: AST.CommentNode[]): AST.Node {
     const first = this.parseSelectOrParenSelect();
     first.leadingComments = comments;
@@ -149,6 +137,30 @@ export class Parser {
     }
 
     return first;
+  }
+
+  private parseQueryExpression(comments: AST.CommentNode[] = []): AST.QueryExpression {
+    if (this.peekUpper() === 'WITH') {
+      return this.parseCTE(comments);
+    }
+    if (this.peekUpper() === 'SELECT' || this.check('(')) {
+      const query = this.parseUnionOrSelect(comments);
+      if (query.type === 'select' || query.type === 'union') return query;
+    }
+    throw new ParseError('query expression', this.peek());
+  }
+
+  private tryParseQueryExpressionAtCurrent(comments: AST.CommentNode[] = []): AST.QueryExpression | null {
+    const checkpoint = this.pos;
+    try {
+      return this.parseQueryExpression(comments);
+    } catch (err) {
+      if (err instanceof ParseError) {
+        this.pos = checkpoint;
+        return null;
+      }
+      throw err;
+    }
   }
 
   private checkUnionKeyword(): boolean {
@@ -352,8 +364,9 @@ export class Parser {
 
   private parseTableExpr(): AST.Expr {
     if (this.check('(')) {
-      if (this.looksLikeSubqueryAtCurrent()) {
-        return this.parseSubquery();
+      const subquery = this.tryParseSubqueryAtCurrent();
+      if (subquery) {
+        return subquery;
       }
       this.advance();
       const expr = this.parseExpression();
@@ -363,22 +376,26 @@ export class Parser {
     return this.parsePrimary();
   }
 
-  private looksLikeSubqueryAtCurrent(): boolean {
-    let depth = 0;
-    for (let i = this.pos; i < this.tokens.length; i++) {
-      const t = this.tokens[i];
-      if (t.type === 'line_comment' || t.type === 'block_comment') continue;
-      if (t.value === '(') { depth++; continue; }
-      if (depth === 1 && t.upper === 'SELECT') return true;
-      if (depth === 1) return false;
-      if (t.value === ')') return false;
+  private tryParseSubqueryAtCurrent(): AST.SubqueryExpr | null {
+    const checkpoint = this.pos;
+    try {
+      if (!this.check('(')) return null;
+      this.advance();
+      const query = this.parseQueryExpression();
+      this.expect(')');
+      return { type: 'subquery', query };
+    } catch (err) {
+      if (err instanceof ParseError) {
+        this.pos = checkpoint;
+        return null;
+      }
+      throw err;
     }
-    return false;
   }
 
   private parseSubquery(): AST.SubqueryExpr {
     this.expect('(');
-    const query = this.parseSelect();
+    const query = this.parseQueryExpression();
     this.expect(')');
     return { type: 'subquery', query };
   }
@@ -757,8 +774,8 @@ export class Parser {
     if (this.peekUpper() === 'IN') {
       this.advance();
       this.expect('(');
-      if (this.peekUpper() === 'SELECT') {
-        const query = this.parseSelect();
+      const query = this.tryParseQueryExpressionAtCurrent();
+      if (query) {
         this.expect(')');
         return { type: 'in', expr: left, values: { type: 'subquery', query }, negated };
       }
@@ -1061,8 +1078,9 @@ export class Parser {
 
     // Paren expression or subquery
     if (token.value === '(') {
-      if (this.looksLikeSubqueryAtCurrent()) {
-        return this.parseSubquery();
+      const subquery = this.tryParseSubqueryAtCurrent();
+      if (subquery) {
+        return subquery;
       }
       this.advance();
       const expr = this.parseExpression();
@@ -2107,9 +2125,29 @@ export class Parser {
     let mainQuery: AST.SelectStatement | AST.UnionStatement;
     const mainComments = this.consumeComments();
 
-    if (this.check('(') && this.looksLikeParenthesizedSelect()) {
-      const result = this.parseUnionOrSelect(mainComments);
-      mainQuery = result as AST.SelectStatement | AST.UnionStatement;
+    if (this.check('(')) {
+      const result = this.tryParseQueryExpressionAtCurrent(mainComments);
+      if (result && (result.type === 'select' || result.type === 'union')) {
+        mainQuery = result;
+      } else {
+        const first = this.parseSelect();
+        first.leadingComments = mainComments;
+
+        if (this.checkUnionKeyword()) {
+          const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
+            { statement: first, parenthesized: false }
+          ];
+          const operators: string[] = [];
+          while (this.checkUnionKeyword()) {
+            operators.push(this.consumeUnionKeyword());
+            const next = this.parseSelectOrParenSelect();
+            members.push({ statement: next, parenthesized: next.parenthesized || false });
+          }
+          mainQuery = { type: 'union', members, operators, leadingComments: mainComments };
+        } else {
+          mainQuery = first;
+        }
+      }
     } else {
       const first = this.parseSelect();
       first.leadingComments = mainComments;
