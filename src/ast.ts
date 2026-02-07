@@ -407,6 +407,7 @@ export interface ColumnExpr {
 export interface FromClause {
   table: Expr;
   alias?: string;
+  aliasColumns?: string[];
   lateral?: boolean;
   tablesample?: { method: string; args: Expression[]; repeatable?: Expression };
 }
@@ -415,6 +416,7 @@ export interface JoinClause {
   joinType: string; // 'INNER JOIN', 'LEFT JOIN', 'LEFT OUTER JOIN', etc.
   table: Expr;
   alias?: string;
+  aliasColumns?: string[];
   lateral?: boolean;
   on?: Expr;
   usingClause?: string[];

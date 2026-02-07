@@ -608,8 +608,9 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
   }
   if (from.alias) {
     result += ' AS ' + from.alias;
-    const aliasCols = (from as any).aliasColumns as string | undefined;
-    if (aliasCols) result += '(' + aliasCols + ')';
+    if (from.aliasColumns && from.aliasColumns.length > 0) {
+      result += '(' + from.aliasColumns.join(', ') + ')';
+    }
   }
   return result;
 }
@@ -661,8 +662,9 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number): string {
   if (join.lateral) result = 'LATERAL ' + result;
   if (join.alias) {
     result += ' AS ' + join.alias;
-    const aliasCols = (join as any).aliasColumns as string | undefined;
-    if (aliasCols) result += '(' + aliasCols + ')';
+    if (join.aliasColumns && join.aliasColumns.length > 0) {
+      result += '(' + join.aliasColumns.join(', ') + ')';
+    }
   }
   return result;
 }

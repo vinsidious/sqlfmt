@@ -255,7 +255,7 @@ export class Parser {
 
     const table = this.parseTableExpr();
     let alias: string | undefined;
-    let aliasColumns: string | undefined;
+    let aliasColumns: string[] | undefined;
     let tablesample: AST.FromClause['tablesample'];
 
     // TABLESAMPLE
@@ -287,7 +287,7 @@ export class Parser {
           if (this.check(',')) this.advance();
         }
         this.expect(')');
-        aliasColumns = cols.join(', ');
+        aliasColumns = cols;
       }
     } else if (this.peekType() === 'identifier' && !this.isClauseKeyword() && !this.isJoinKeyword() && !this.check(',') && !this.check(')') && !this.check(';') && this.peekUpper() !== 'TABLESAMPLE') {
       alias = this.advance().value;
@@ -300,13 +300,11 @@ export class Parser {
           if (this.check(',')) this.advance();
         }
         this.expect(')');
-        aliasColumns = cols.join(', ');
+        aliasColumns = cols;
       }
     }
 
-    const result: AST.FromClause = { table, alias, lateral, tablesample };
-    if (aliasColumns) (result as any).aliasColumns = aliasColumns;
-    return result;
+    return { table, alias, aliasColumns, lateral, tablesample };
   }
 
   private parseTableExpr(): AST.Expr {
@@ -372,7 +370,7 @@ export class Parser {
 
     const table = this.parseTableExpr();
     let alias: string | undefined;
-    let aliasColumns: string | undefined;
+    let aliasColumns: string[] | undefined;
 
     if (this.peekUpper() === 'AS') {
       this.advance();
@@ -385,7 +383,7 @@ export class Parser {
           if (this.check(',')) this.advance();
         }
         this.expect(')');
-        aliasColumns = cols.join(', ');
+        aliasColumns = cols;
       }
     } else if (this.peekType() === 'identifier' && !this.isClauseKeyword() && !this.isJoinKeyword() && this.peekUpper() !== 'ON' && this.peekUpper() !== 'USING' && !this.check(',') && !this.check(')') && !this.check(';')) {
       alias = this.advance().value;
@@ -397,7 +395,7 @@ export class Parser {
           if (this.check(',')) this.advance();
         }
         this.expect(')');
-        aliasColumns = cols.join(', ');
+        aliasColumns = cols;
       }
     }
 
@@ -418,9 +416,7 @@ export class Parser {
       this.expect(')');
     }
 
-    const result: AST.JoinClause = { joinType: joinType.trim(), table, alias, lateral, on, usingClause };
-    if (aliasColumns) (result as any).aliasColumns = aliasColumns;
-    return result;
+    return { joinType: joinType.trim(), table, alias, aliasColumns, lateral, on, usingClause };
   }
 
   private parseGroupByClause(): AST.GroupByClause {

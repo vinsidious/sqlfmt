@@ -5,7 +5,7 @@
 - [ ] 3. Fix `IS NOT TRUE` / `IS NOT FALSE` semantics so they are not rewritten as `IS NOT NULL`.
 - [ ] 4. Fix tokenizer support for escaped quoted identifiers (`""`) so identifiers like `"a""b"` are parsed correctly.
 - [ ] 5. Remove brittle subquery lookahead heuristics and replace with checkpoint/rollback query probing.
-- [ ] 6. Eliminate `as any` alias-column plumbing by adding typed AST fields for alias column lists.
+- [x] 6. Eliminate `as any` alias-column plumbing by adding typed AST fields for alias column lists.
 - [ ] 7. Centralize formatter width/wrapping thresholds into a policy object instead of scattered magic numbers.
 - [ ] 8. Replace fragile function/frame string special-casing with more general and structured formatting logic.
 - [ ] 9. Remove AST mutation during formatting (e.g., mutating `leadingComments`) and keep formatting operations pure.
