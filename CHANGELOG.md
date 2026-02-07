@@ -6,33 +6,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- Dedicated tokenizer, parser, error-path, CLI, API, and idempotency tests.
-- CLI flags: `--version`/`-v`, `--write`/`-w`, and `--diff`.
-- Public API exports for tokenizer/parser types and helpers.
-- Formatter options (`FormatOptions`) with depth-limit support.
+- Refreshed website design and layout for improved visual hierarchy.
+- Enhanced playground with sample queries and improved layout.
+- Added website favicons and web manifest.
+
+## [1.2.1] - 2026-02-07
 
 ### Changed
 
-- Tokenizer now supports dollar-quoted strings, positional parameters, scientific notation, hex numerics, prefixed strings, and Unicode identifiers.
-- Parser now supports additional SQL syntax and stricter keyword/error handling.
-- Formatter now handles additional expression nodes and alignment behaviors.
-- CLI error handling and multi-file behavior were improved.
+- Updated release workflow and removed website deployment from CI.
+
+## [1.2.0] - 2026-02-07
+
+### Added
+
+- VS Code extension for sqlfmt formatting with max input size limit and icon.
+- Documentation website and interactive playground.
+- EXPLAIN statement support.
+- Configurable line-length formatting with `lineWidth` option.
+- Project-level configuration file support (`.sqlfmtrc`).
+- Dry-run mode (`--dry-run`) for CLI.
+- `--strict` flag to disable recovery mode for CI usage.
+- `--version`/`-v` CLI flag.
+- `--write`/`-w` and `--diff` CLI flags.
+- Intelligent wrapping for IN lists and array constructors.
+- CJK character width awareness in formatting.
+- Numeric literal underscores and unicode-escape string support.
+- Recovery callback (`onRecover`) in `FormatOptions`.
+- DML parser module (INSERT/UPDATE/DELETE/MERGE).
+- Expression parser module (comparison/primary expressions).
+- Structured AST nodes for complex SQL constructs.
+- Comprehensive test suites for tokenizer, parser, CLI, security, and formatting.
+- SECURITY.md and architecture documentation.
+- Benchmarks.
+
+### Changed
+
+- Formatter depth limit enforced at 200 (falls back to simple formatting on overflow).
+- Formatter strict mode with improved error recovery.
+- Readonly constraints applied to AST types.
+- Unified alias parsing across SELECT, FROM, and subqueries.
+- Centralized formatter layout thresholds into policy constants.
+- Generalized function/frame formatting with TRIM shorthand support.
+- Full query-expression subqueries with parser probing.
+- Strict parser expectations with error recovery.
+- CTE comment style preservation without AST mutation.
+- Expanded parser and tokenizer for broader SQL support.
+- Enhanced error reporting and tokenization accuracy.
+- Version injection via tsup build.
 
 ### Fixed
 
+- IS NOT TRUE/FALSE parsing semantics.
+- Escaped quoted identifiers in tokenizer.
+- Path traversal and sensitive data leak in CLI.
+- Security and robustness improvements in formatting logic.
 - Silent consumption of unterminated strings/comments/quoted identifiers.
 - Multiple parser and formatter correctness gaps across common SQL dialect patterns.
 
-## [1.1.1] - 2025-02-07
+## [1.1.1] - 2026-02-06
 
 ### Fixed
 
 - Dynamic river width derivation for improved formatting of DML statements with wide keywords like `RETURNING`.
-- Updated README with formatting details and examples.
 
-## [1.1.0] - 2025-02-07
+## [1.1.0] - 2026-02-06
 
 ### Added
 
@@ -45,7 +85,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - New AST nodes and keywords for advanced SQL constructs.
 - Expanded parser and formatter to handle advanced SQL statements and clauses.
 
-## [1.0.1] - 2025-02-07
+## [1.0.1] - 2026-02-06
 
 ### Changed
 
@@ -53,7 +93,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Updated package name to `@vcoppola/sqlfmt` for npm publishing.
 - Updated installation and import instructions.
 
-## [1.0.0] - 2025-02-07
+## [1.0.0] - 2026-02-06
 
 ### Added
 
@@ -68,7 +108,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `.sqlfmtignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/sqlfmt/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/vinsidious/sqlfmt/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/vinsidious/sqlfmt/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/vinsidious/sqlfmt/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/vinsidious/sqlfmt/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/vinsidious/sqlfmt/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/vinsidious/sqlfmt/compare/v1.0.0...v1.0.1
