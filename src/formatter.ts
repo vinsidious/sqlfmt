@@ -1,5 +1,5 @@
 import * as AST from './ast';
-import { isKeyword } from './keywords';
+import { FUNCTION_KEYWORDS, isKeyword } from './keywords';
 
 // The formatter walks the AST and produces formatted SQL per the Holywell style guide.
 // Key concept: "The River" — top-level clause keywords are right-aligned so content
@@ -44,6 +44,7 @@ function deriveRiverWidth(node: AST.Node): number {
     case 'insert': {
       let width = 'INSERT'.length;
       if (node.values) width = Math.max(width, 'VALUES'.length);
+      if (node.defaultValues) width = Math.max(width, 'DEFAULT'.length);
       if (node.onConflict) {
         width = Math.max(width, 'ON'.length, 'DO'.length);
         if (node.onConflict.setItems && node.onConflict.setItems.length > 0) {
@@ -112,6 +113,7 @@ function deriveSelectRiverWidth(node: AST.SelectStatement): number {
   if (node.limit) width = Math.max(width, 'LIMIT'.length);
   if (node.offset) width = Math.max(width, 'OFFSET'.length);
   if (node.fetch) width = Math.max(width, 'FETCH'.length);
+  if (node.lockingClause) width = Math.max(width, 'FOR'.length);
   return width;
 }
 
@@ -135,6 +137,8 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
     case 'standalone_values': return formatStandaloneValues(node, ctx);
     case 'raw': return node.text;
     case 'comment': return node.text;
+    default:
+      throw new Error(`Unknown node type: ${(node as { type?: string }).type ?? 'unknown'}`);
   }
 }
 
@@ -253,6 +257,10 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   if (node.fetch) {
     const suffix = node.fetch.withTies ? ' WITH TIES' : ' ONLY';
     lines.push(rightAlign('FETCH', ctx) + ' FIRST ' + fmtExpr(node.fetch.count) + ' ROWS' + suffix);
+  }
+
+  if (node.lockingClause) {
+    lines.push(rightAlign('FOR', ctx) + ' ' + node.lockingClause);
   }
 
   let result = lines.join('\n');
@@ -415,7 +423,7 @@ function formatColumnsOnePerLine(parts: { text: string; comment?: AST.CommentNod
 
 // Format an expression that appears in a SELECT column list
 // This needs context-awareness for CASE and subqueries
-function fmtExprInSelect(expr: AST.Expr, colStart: number, outerOffset: number = 0): string {
+function fmtExprInSelect(expr: AST.Expression, colStart: number, outerOffset: number = 0): string {
   if (expr.type === 'case') {
     return fmtCaseAtColumn(expr, colStart);
   }
@@ -589,7 +597,7 @@ function fmtCaseCompact(expr: AST.CaseExpr, col: number, outerOffset: number): s
 }
 
 // Format an expression with column-awareness (for wrapping IN lists etc.)
-function fmtExprColumnAware(expr: AST.Expr, col: number, outerOffset: number): string {
+function fmtExprColumnAware(expr: AST.Expression, col: number, outerOffset: number): string {
   if (expr.type === 'in') {
     const simple = fmtExpr(expr);
     if (col + outerOffset + simple.length > LAYOUT_POLICY.expressionWrapColumnMax) {
@@ -603,7 +611,7 @@ function fmtExprColumnAware(expr: AST.Expr, col: number, outerOffset: number): s
 function fmtInExprWrapped(expr: AST.InExpr, col: number): string {
   const neg = expr.negated ? 'NOT ' : '';
   const prefix = fmtExpr(expr.expr) + ' ' + neg + 'IN (';
-  const vals = (expr.values as AST.Expr[]).map(fmtExpr);
+  const vals = (expr.values as AST.Expression[]).map(fmtExpr);
   const valStartCol = col + prefix.length;
   const valPad = ' '.repeat(valStartCol);
 
@@ -624,7 +632,7 @@ function fmtBinaryWrapped(expr: AST.BinaryExpr, colStart: number): string {
   return left + '\n' + wrapPad + expr.operator + ' ' + right;
 }
 
-function fmtExprAtColumn(expr: AST.Expr, colStart: number): string {
+function fmtExprAtColumn(expr: AST.Expression, colStart: number): string {
   if (expr.type === 'case') return fmtCaseAtColumn(expr, colStart);
   if (expr.type === 'subquery') return fmtSubqueryAtColumn(expr, colStart);
   if (expr.type === 'window_function') return fmtWindowFunctionAtColumn(expr, colStart);
@@ -635,10 +643,11 @@ function fmtExprAtColumn(expr: AST.Expr, colStart: number): string {
   return fmtExpr(expr);
 }
 
-function isLiteralLike(expr: AST.Expr): boolean {
+function isLiteralLike(expr: AST.Expression): boolean {
   if (expr.type === 'literal') return true;
+  if (expr.type === 'interval' || expr.type === 'null' || expr.type === 'typed_string') return true;
   if (expr.type === 'raw') return /^INTERVAL\s+/.test(expr.text) || /^NULL$/i.test(expr.text);
-  if (expr.type === 'pg_cast') return isLiteralLike(expr.expr as AST.Expr);
+  if (expr.type === 'pg_cast') return isLiteralLike(expr.expr as AST.Expression);
   if (expr.type === 'paren') return isLiteralLike(expr.expr);
   return false;
 }
@@ -653,11 +662,11 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
   if (from.tablesample) {
     result += ' TABLESAMPLE ' + from.tablesample.method + '(' + from.tablesample.args.map(fmtExpr).join(', ') + ')';
     if (from.tablesample.repeatable) {
-      result += ' REPEATABLE(' + fmtExpr(from.tablesample.repeatable as AST.Expr) + ')';
+      result += ' REPEATABLE(' + fmtExpr(from.tablesample.repeatable as AST.Expression) + ')';
     }
   }
   if (from.alias) {
-    result += ' AS ' + from.alias;
+    result += ' AS ' + fmtAlias(from.alias);
     if (from.aliasColumns && from.aliasColumns.length > 0) {
       result += '(' + from.aliasColumns.join(', ') + ')';
     }
@@ -711,7 +720,7 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number): string {
   let result = fmtExprAtColumn(join.table, tableStartCol + lateralOffset);
   if (join.lateral) result = 'LATERAL ' + result;
   if (join.alias) {
-    result += ' AS ' + join.alias;
+    result += ' AS ' + fmtAlias(join.alias);
     if (join.aliasColumns && join.aliasColumns.length > 0) {
       result += '(' + join.aliasColumns.join(', ') + ')';
     }
@@ -719,7 +728,7 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number): string {
   return result;
 }
 
-function formatJoinOn(expr: AST.Expr, baseCol: number): string {
+function formatJoinOn(expr: AST.Expression, baseCol: number): string {
   if (expr.type === 'binary' && expr.operator === 'AND') {
     const left = formatJoinOn(expr.left, baseCol);
     const indent = ' '.repeat(baseCol);
@@ -730,11 +739,11 @@ function formatJoinOn(expr: AST.Expr, baseCol: number): string {
 
 // ─── WHERE/HAVING condition ──────────────────────────────────────────
 
-function formatCondition(expr: AST.Expr, ctx: FormatContext): string {
+function formatCondition(expr: AST.Expression, ctx: FormatContext): string {
   return formatConditionInner(expr, ctx);
 }
 
-function formatConditionInner(expr: AST.Expr, ctx: FormatContext): string {
+function formatConditionInner(expr: AST.Expression, ctx: FormatContext): string {
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     const left = formatConditionInner(expr.left, ctx);
     const opKw = rightAlign(expr.operator, ctx);
@@ -744,7 +753,7 @@ function formatConditionInner(expr: AST.Expr, ctx: FormatContext): string {
   return fmtExprInCondition(expr, ctx);
 }
 
-function formatConditionRight(expr: AST.Expr, ctx: FormatContext): string {
+function formatConditionRight(expr: AST.Expression, ctx: FormatContext): string {
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     return formatConditionInner(expr, ctx);
   }
@@ -769,7 +778,7 @@ function formatGroupingSpec(
   const kind = spec.type === 'grouping_sets' ? 'GROUPING SETS' : spec.type.toUpperCase();
   if (spec.type !== 'grouping_sets') {
     const flat = spec.sets.map(set => {
-      const exprs = (set as AST.Expr[]).map(e => fmtExpr(e));
+      const exprs = (set as AST.Expression[]).map(e => fmtExpr(e));
       return exprs.length === 1 ? exprs[0] : '(' + exprs.join(', ') + ')';
     });
     const flatText = flat.join(', ');
@@ -783,7 +792,7 @@ function formatGroupingSpec(
 
   const lines: string[] = [kind + ' ('];
   for (let i = 0; i < spec.sets.length; i++) {
-    const set = spec.sets[i] as AST.Expr[];
+    const set = spec.sets[i] as AST.Expression[];
     const isLast = i === spec.sets.length - 1;
     const comma = isLast ? '' : ',';
     let text: string;
@@ -801,7 +810,7 @@ function formatGroupingSpec(
 }
 
 // Format expression in WHERE/HAVING context — handles IN subquery, EXISTS, comparisons with subqueries
-function fmtExprInCondition(expr: AST.Expr, ctx: FormatContext): string {
+function fmtExprInCondition(expr: AST.Expression, ctx: FormatContext): string {
   if (expr.type === 'paren' && expr.expr.type === 'binary' && (expr.expr.operator === 'AND' || expr.expr.operator === 'OR')) {
     return '(' + formatParenLogical(expr.expr, contentCol(ctx) + 1) + ')';
   }
@@ -865,7 +874,7 @@ function formatParenLogical(expr: AST.BinaryExpr, opCol: number): string {
   return left + '\n' + ' '.repeat(opCol) + expr.operator + ' ' + right;
 }
 
-function formatParenOperand(expr: AST.Expr, opCol: number, parentOp: string): string {
+function formatParenOperand(expr: AST.Expression, opCol: number, parentOp: string): string {
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     return formatParenLogical(expr, opCol);
   }
@@ -930,7 +939,7 @@ function fmtCaseAtColumn(expr: AST.CaseExpr, col: number): string {
   return result;
 }
 
-function fmtCaseThenResult(expr: AST.Expr, col: number): string {
+function fmtCaseThenResult(expr: AST.Expression, col: number): string {
   if (expr.type === 'case') {
     return fmtCaseAtColumn(expr, col);
   }
@@ -1068,13 +1077,10 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       const prefix = i === 0 ? rightAlign('VALUES', dmlCtx) + ' ' : contentPad(dmlCtx);
       lines.push(prefix + tuples[i] + comma);
     }
+  } else if (node.defaultValues) {
+    lines.push(rightAlign('DEFAULT', dmlCtx) + ' VALUES');
   } else if (node.selectQuery) {
-    const selectStr = formatSelect(node.selectQuery, {
-      indentOffset: 0,
-      riverWidth: deriveSelectRiverWidth(node.selectQuery),
-      isSubquery: true,
-    });
-    lines.push(selectStr);
+    lines.push(formatQueryExpressionForSubquery(node.selectQuery));
   }
 
   if (node.onConflict) {
@@ -1093,7 +1099,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       const conflictCtx: FormatContext = { ...dmlCtx, indentOffset: 7 };
       for (let i = 0; i < (node.onConflict.setItems || []).length; i++) {
         const item = node.onConflict.setItems![i];
-        const val = item.column + ' = ' + fmtExpr(item.value as AST.Expr);
+        const val = item.column + ' = ' + fmtExpr(item.value as AST.Expression);
         const comma = i < node.onConflict.setItems!.length - 1 ? ',' : '';
         if (i === 0) {
           lines.push(rightAlign('SET', conflictCtx) + ' ' + val + comma);
@@ -1102,13 +1108,13 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
         }
       }
       if (node.onConflict.where) {
-        lines.push(rightAlign('WHERE', conflictCtx) + ' ' + formatCondition(node.onConflict.where as AST.Expr, dmlCtx));
+        lines.push(rightAlign('WHERE', conflictCtx) + ' ' + formatCondition(node.onConflict.where as AST.Expression, dmlCtx));
       }
     }
   }
 
   if (node.returning && node.returning.length > 0) {
-    lines.push('RETURNING ' + node.returning.map(e => fmtExpr(e as AST.Expr)).join(', ') + ';');
+    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(e => fmtExpr(e as AST.Expression)).join(', ') + ';');
     return lines.join('\n');
   }
 
@@ -1160,7 +1166,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
   }
 
   if (node.returning && node.returning.length > 0) {
-    lines.push('RETURNING ' + node.returning.map(e => fmtExpr(e as AST.Expr)).join(', ') + ';');
+    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(e => fmtExpr(e as AST.Expression)).join(', ') + ';');
     return lines.join('\n');
   }
 
@@ -1180,13 +1186,22 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
   lines.push(rightAlign('DELETE', dmlCtx));
   lines.push(rightAlign('FROM', dmlCtx) + ' ' + node.from);
 
+  if (node.using && node.using.length > 0) {
+    const usingKw = rightAlign('USING', dmlCtx);
+    lines.push(usingKw + ' ' + formatFromClause(node.using[0], dmlCtx) + (node.using.length > 1 ? ',' : ''));
+    for (let i = 1; i < node.using.length; i++) {
+      const comma = i < node.using.length - 1 ? ',' : '';
+      lines.push(contentPad(dmlCtx) + formatFromClause(node.using[i], dmlCtx) + comma);
+    }
+  }
+
   if (node.where) {
     const whereKw = rightAlign('WHERE', dmlCtx);
     lines.push(whereKw + ' ' + formatCondition(node.where.condition, dmlCtx));
   }
 
   if (node.returning && node.returning.length > 0) {
-    lines.push('RETURNING ' + node.returning.map(e => fmtExpr(e as AST.Expr)).join(', ') + ';');
+    lines.push(rightAlign('RETURNING', dmlCtx) + ' ' + node.returning.map(e => fmtExpr(e as AST.Expression)).join(', ') + ';');
     return lines.join('\n');
   }
 
@@ -1222,7 +1237,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   header += ' ' + node.name;
   lines.push(header);
 
-  const cols = node.columns.map(c => fmtExpr(c as AST.Expr)).join(', ');
+  const cols = node.columns.map(c => fmtExpr(c as AST.Expression)).join(', ');
   if (node.using) {
     lines.push('    ON ' + node.table);
     lines.push(' USING ' + node.using + ' (' + cols + ')');
@@ -1231,7 +1246,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   }
 
   if (node.where) {
-    lines.push(' WHERE ' + formatCondition(node.where as AST.Expr, {
+    lines.push(' WHERE ' + formatCondition(node.where as AST.Expression, {
       ...ctx,
       indentOffset: 0,
       riverWidth: DEFAULT_RIVER,
@@ -1318,7 +1333,7 @@ function formatTruncate(node: AST.TruncateStatement, ctx: FormatContext): string
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
 
-  lines.push('TRUNCATE TABLE ' + node.table);
+  lines.push('TRUNCATE ' + (node.tableKeyword ? 'TABLE ' : '') + node.table);
   const opts: string[] = [];
   if (node.restartIdentity) opts.push('RESTART IDENTITY');
   if (node.cascade) opts.push('CASCADE');
@@ -1339,11 +1354,11 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
 
   lines.push(' MERGE INTO ' + target);
   lines.push('       USING ' + source);
-  lines.push('          ON ' + formatJoinOn(node.on as AST.Expr, 9));
+  lines.push('          ON ' + formatJoinOn(node.on as AST.Expression, 9));
 
   for (const wc of node.whenClauses) {
     const branch = wc.matched ? 'MATCHED' : 'NOT MATCHED';
-    const cond = wc.condition ? ' AND ' + fmtExpr(wc.condition as AST.Expr) : '';
+    const cond = wc.condition ? ' AND ' + fmtExpr(wc.condition as AST.Expression) : '';
     lines.push('  WHEN ' + branch + cond + ' THEN');
 
     if (wc.action === 'delete') {
@@ -1357,9 +1372,9 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
         const item = wc.setItems![i];
         const comma = i < wc.setItems!.length - 1 ? ',' : '';
         if (i === 0) {
-          lines.push('          SET ' + item.column + ' = ' + fmtExpr(item.value as AST.Expr) + comma);
+          lines.push('          SET ' + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
         } else {
-          lines.push('              ' + item.column + ' = ' + fmtExpr(item.value as AST.Expr) + comma);
+          lines.push('              ' + item.column + ' = ' + fmtExpr(item.value as AST.Expression) + comma);
         }
       }
       continue;
@@ -1368,7 +1383,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
     if (wc.action === 'insert') {
       const cols = wc.columns ? ' (' + wc.columns.join(', ') + ')' : '';
       lines.push('       INSERT' + cols);
-      lines.push('       VALUES (' + (wc.values || []).map(v => fmtExpr(v as AST.Expr)).join(', ') + ')');
+      lines.push('       VALUES (' + (wc.values || []).map(v => fmtExpr(v as AST.Expression)).join(', ') + ')');
     }
   }
 
@@ -1450,8 +1465,9 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
 
-  const header = 'ALTER TABLE ' + node.tableName;
-  const indent = ' '.repeat(header.length - node.action.split(' ')[0].length);
+  const objectType = node.objectType || 'TABLE';
+  const objectName = node.objectName || node.tableName;
+  const header = `ALTER ${objectType} ${objectName}`;
   lines.push(header);
   lines.push(' '.repeat(8) + node.action + ';');
 
@@ -1464,9 +1480,11 @@ function formatDropTable(node: AST.DropTableStatement, ctx: FormatContext): stri
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
 
-  let line = 'DROP TABLE';
+  const objectType = node.objectType || 'TABLE';
+  const objectName = node.objectName || node.tableName;
+  let line = `DROP ${objectType}`;
   if (node.ifExists) line += ' IF EXISTS';
-  line += ' ' + node.tableName + ';';
+  line += ' ' + objectName + ';';
   lines.push(line);
   return lines.join('\n');
 }
@@ -1536,6 +1554,15 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
 function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
+  const firstCTEHasComments = !!(node.ctes[0]?.leadingComments && node.ctes[0].leadingComments.length > 0);
+  if (
+    node.leadingComments.length > 0
+    && !firstCTEHasComments
+    && lines.length > 0
+    && lines[lines.length - 1] !== ''
+  ) {
+    lines.push('');
+  }
 
   const withKw = rightAlign('WITH', ctx);
   const cteBodyIndent = contentCol(ctx) + 4; // align CTE body SELECT inside parens
@@ -1662,15 +1689,21 @@ function formatValuesClause(node: AST.ValuesClause, ctx: FormatContext): string 
 
 // ─── Expression formatting (context-free) ────────────────────────────
 
-function fmtExpr(expr: AST.Expr): string {
+function fmtExpr(expr: AST.Expression): string {
   switch (expr.type) {
     case 'identifier':
       return expr.quoted ? expr.value : lowerIdent(expr.value);
     case 'literal':
       if (expr.literalType === 'boolean') return expr.value.toUpperCase();
       return expr.value;
+    case 'null':
+      return 'NULL';
+    case 'interval':
+      return `INTERVAL ${expr.value}`;
+    case 'typed_string':
+      return `${expr.dataType} ${expr.value}`;
     case 'star':
-      return expr.qualifier ? expr.qualifier + '.*' : '*';
+      return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
     case 'binary':
       return fmtExpr(expr.left) + ' ' + expr.operator + ' ' + fmtExpr(expr.right);
     case 'unary':
@@ -1692,14 +1725,16 @@ function fmtExpr(expr: AST.Expr): string {
       if ('type' in expr.values && (expr.values as any).type === 'subquery') {
         return fmtExpr(expr.expr) + ' ' + neg + 'IN ' + fmtSubquerySimple(expr.values as AST.SubqueryExpr);
       }
-      const vals = (expr.values as AST.Expr[]).map(fmtExpr).join(', ');
+      const vals = (expr.values as AST.Expression[]).map(fmtExpr).join(', ');
       return fmtExpr(expr.expr) + ' ' + neg + 'IN (' + vals + ')';
     }
     case 'is':
       return fmtExpr(expr.expr) + ' IS ' + expr.value;
     case 'like': {
       const neg = expr.negated ? 'NOT ' : '';
-      return fmtExpr(expr.expr) + ' ' + neg + 'LIKE ' + fmtExpr(expr.pattern);
+      let out = fmtExpr(expr.expr) + ' ' + neg + 'LIKE ' + fmtExpr(expr.pattern);
+      if (expr.escape) out += ' ESCAPE ' + fmtExpr(expr.escape);
+      return out;
     }
     case 'exists':
       return 'EXISTS ' + fmtSubquerySimple(expr.subquery);
@@ -1711,32 +1746,68 @@ function fmtExpr(expr: AST.Expr): string {
       return fmtWindowFunctionSimple(expr);
     case 'extract':
       return 'EXTRACT(' + expr.field + ' FROM ' + fmtExpr(expr.source) + ')';
+    case 'position':
+      return `POSITION(${fmtExpr(expr.substring)} IN ${fmtExpr(expr.source)})`;
+    case 'substring': {
+      let out = `SUBSTRING(${fmtExpr(expr.source)} FROM ${fmtExpr(expr.start)}`;
+      if (expr.length) out += ` FOR ${fmtExpr(expr.length)}`;
+      return out + ')';
+    }
+    case 'overlay': {
+      let out = `OVERLAY(${fmtExpr(expr.source)} PLACING ${fmtExpr(expr.replacement)} FROM ${fmtExpr(expr.start)}`;
+      if (expr.length) out += ` FOR ${fmtExpr(expr.length)}`;
+      return out + ')';
+    }
+    case 'trim': {
+      let out = 'TRIM(';
+      if (expr.side) {
+        out += expr.side;
+        if (expr.trimChar) out += ` ${fmtExpr(expr.trimChar)} FROM ${fmtExpr(expr.source)}`;
+        else if (expr.fromSyntax) out += ` FROM ${fmtExpr(expr.source)}`;
+        else out += ` ${fmtExpr(expr.source)}`;
+      } else if (expr.trimChar) {
+        out += `${fmtExpr(expr.trimChar)} FROM ${fmtExpr(expr.source)}`;
+      } else if (expr.fromSyntax) {
+        out += `FROM ${fmtExpr(expr.source)}`;
+      } else {
+        out += fmtExpr(expr.source);
+      }
+      return out + ')';
+    }
     case 'raw':
       return expr.text;
     // New expression types
     case 'pg_cast':
-      return fmtExpr(expr.expr as AST.Expr) + '::' + expr.targetType;
+      return fmtExpr(expr.expr as AST.Expression) + '::' + expr.targetType;
     case 'ilike': {
       const neg = expr.negated ? 'NOT ' : '';
-      return fmtExpr(expr.expr) + ' ' + neg + 'ILIKE ' + fmtExpr(expr.pattern);
+      let out = fmtExpr(expr.expr) + ' ' + neg + 'ILIKE ' + fmtExpr(expr.pattern);
+      if (expr.escape) out += ' ESCAPE ' + fmtExpr(expr.escape);
+      return out;
     }
     case 'similar_to': {
       const neg = expr.negated ? 'NOT ' : '';
       return fmtExpr(expr.expr) + ' ' + neg + 'SIMILAR TO ' + fmtExpr(expr.pattern);
     }
     case 'array_constructor':
-      return 'ARRAY[' + expr.elements.map(e => fmtExpr(e as AST.Expr)).join(', ') + ']';
+      return 'ARRAY[' + expr.elements.map(e => fmtExpr(e as AST.Expression)).join(', ') + ']';
     case 'is_distinct_from': {
       const kw = expr.negated ? 'IS NOT DISTINCT FROM' : 'IS DISTINCT FROM';
-      return fmtExpr(expr.left as AST.Expr) + ' ' + kw + ' ' + fmtExpr(expr.right as AST.Expr);
+      return fmtExpr(expr.left as AST.Expression) + ' ' + kw + ' ' + fmtExpr(expr.right as AST.Expression);
     }
     case 'regex_match':
-      return fmtExpr(expr.left as AST.Expr) + ' ' + expr.operator + ' ' + fmtExpr(expr.right as AST.Expr);
+      return fmtExpr(expr.left as AST.Expression) + ' ' + expr.operator + ' ' + fmtExpr(expr.right as AST.Expression);
   }
+
+  return assertNeverExpr(expr);
+}
+
+function assertNeverExpr(expr: never): never {
+  throw new Error(`Unhandled expression node: ${(expr as { type?: string }).type ?? 'unknown'}`);
 }
 
 function fmtFunctionCall(expr: AST.FunctionCallExpr): string {
-  const name = expr.name.toUpperCase();
+  const name = formatFunctionName(expr.name);
   const distinct = expr.distinct ? 'DISTINCT ' : '';
   const args = expr.args.map(fmtExpr).join(', ');
   let body = distinct + args;
@@ -1749,7 +1820,7 @@ function fmtFunctionCall(expr: AST.FunctionCallExpr): string {
     out += ' WITHIN GROUP (ORDER BY ' + expr.withinGroup.orderBy.map(fmtOrderByItem).join(', ') + ')';
   }
   if (expr.filter) {
-    out += ' FILTER (WHERE ' + fmtExpr(expr.filter as AST.Expr) + ')';
+    out += ' FILTER (WHERE ' + fmtExpr(expr.filter as AST.Expression) + ')';
   }
   return out;
 }
@@ -1793,11 +1864,12 @@ function fmtWindowFunctionSimple(expr: AST.WindowFunctionExpr): string {
 function fmtOrderByItem(item: AST.OrderByItem): string {
   let s = fmtExpr(item.expr);
   if (item.direction) s += ' ' + item.direction;
+  if (item.nulls) s += ' NULLS ' + item.nulls;
   return s;
 }
 
 // Check if an alias is redundant (matches the last component of the expression)
-function isRedundantAlias(expr: AST.Expr, alias: string): boolean {
+function isRedundantAlias(expr: AST.Expression, alias: string): boolean {
   if (expr.type === 'identifier') {
     // For "a.b", the last component is "b"
     const parts = expr.value.split('.');
@@ -1810,6 +1882,21 @@ function isRedundantAlias(expr: AST.Expr, alias: string): boolean {
 function fmtAlias(alias: string): string {
   if (alias.startsWith('"')) return alias;
   return alias.toLowerCase();
+}
+
+function formatFunctionName(name: string): string {
+  const parts = name.split('.');
+  const last = parts[parts.length - 1];
+  if (last.startsWith('"')) return lowerIdent(name);
+  const upperLast = last.toUpperCase();
+  if (FUNCTION_KEYWORDS.has(upperLast)) {
+    parts[parts.length - 1] = upperLast;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!parts[i].startsWith('"')) parts[i] = parts[i].toLowerCase();
+    }
+    return parts.join('.');
+  }
+  return lowerIdent(name);
 }
 
 // Lowercase identifiers, preserving qualified name dots and quoted identifiers
