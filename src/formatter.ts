@@ -5,7 +5,7 @@ import { isKeyword } from './keywords';
 // Key concept: "The River" — top-level clause keywords are right-aligned so content
 // starts at a consistent column position.
 
-const SELECT_RIVER = 6; // length of SELECT keyword
+const DEFAULT_RIVER = 6; // length of SELECT keyword
 
 interface FormatContext {
   indentOffset: number;  // extra left-margin offset for nested contexts
@@ -17,9 +17,91 @@ interface FormatContext {
 export function formatStatements(nodes: AST.Node[]): string {
   const parts: string[] = [];
   for (const node of nodes) {
-    parts.push(formatNode(node, { indentOffset: 0, riverWidth: SELECT_RIVER, isSubquery: false }));
+    parts.push(formatNode(node, {
+      indentOffset: 0,
+      riverWidth: deriveRiverWidth(node),
+      isSubquery: false,
+    }));
   }
   return parts.join('\n\n') + '\n';
+}
+
+function deriveRiverWidth(node: AST.Node): number {
+  switch (node.type) {
+    case 'select':
+      return deriveSelectRiverWidth(node);
+    case 'insert': {
+      let width = 'INSERT'.length;
+      if (node.values) width = Math.max(width, 'VALUES'.length);
+      if (node.onConflict) {
+        width = Math.max(width, 'ON'.length, 'DO'.length);
+        if (node.onConflict.setItems && node.onConflict.setItems.length > 0) {
+          width = Math.max(width, 'SET'.length);
+        }
+        if (node.onConflict.where) {
+          width = Math.max(width, 'WHERE'.length);
+        }
+      }
+      if (node.returning && node.returning.length > 0) {
+        width = Math.max(width, 'RETURNING'.length);
+      }
+      return width;
+    }
+    case 'update': {
+      let width = Math.max('UPDATE'.length, 'SET'.length);
+      if (node.from) width = Math.max(width, 'FROM'.length);
+      if (node.where) width = Math.max(width, 'WHERE'.length);
+      if (node.returning && node.returning.length > 0) {
+        width = Math.max(width, 'RETURNING'.length);
+      }
+      return width;
+    }
+    case 'delete': {
+      let width = Math.max('DELETE'.length, 'FROM'.length);
+      if (node.where) width = Math.max(width, 'WHERE'.length);
+      if (node.returning && node.returning.length > 0) {
+        width = Math.max(width, 'RETURNING'.length);
+      }
+      return width;
+    }
+    case 'union': {
+      let width = DEFAULT_RIVER;
+      for (const member of node.members) {
+        width = Math.max(width, deriveSelectRiverWidth(member.statement));
+      }
+      for (const op of node.operators) {
+        width = Math.max(width, op.split(' ')[0].length);
+      }
+      return width;
+    }
+    case 'cte': {
+      let width = 'WITH'.length;
+      for (const cte of node.ctes) {
+        width = Math.max(width, deriveRiverWidth(cte.query as AST.Node));
+      }
+      width = Math.max(width, deriveRiverWidth(node.mainQuery));
+      return width;
+    }
+    case 'create_view':
+      return deriveRiverWidth(node.query as AST.Node);
+    default:
+      return DEFAULT_RIVER;
+  }
+}
+
+function deriveSelectRiverWidth(node: AST.SelectStatement): number {
+  let width = 'SELECT'.length;
+  if (node.from) width = Math.max(width, 'FROM'.length);
+  if (node.joins.some(j => j.joinType === 'JOIN')) width = Math.max(width, 'JOIN'.length);
+  if (node.where) width = Math.max(width, 'WHERE'.length);
+  if (node.groupBy) width = Math.max(width, 'GROUP'.length);
+  if (node.having) width = Math.max(width, 'HAVING'.length);
+  if (node.windowClause && node.windowClause.length > 0) width = Math.max(width, 'WINDOW'.length);
+  if (node.orderBy) width = Math.max(width, 'ORDER'.length);
+  if (node.limit) width = Math.max(width, 'LIMIT'.length);
+  if (node.offset) width = Math.max(width, 'OFFSET'.length);
+  if (node.fetch) width = Math.max(width, 'FETCH'.length);
+  return width;
 }
 
 function formatNode(node: AST.Node, ctx: FormatContext): string {
@@ -685,7 +767,11 @@ function fmtExprInCondition(expr: AST.Expr, ctx: FormatContext): string {
     }
 
     // IN: inline if subquery is short (≤ 2 lines), new line otherwise
-    const inner = formatSelect(subqExpr.query, { indentOffset: 0, riverWidth: SELECT_RIVER, isSubquery: true });
+    const inner = formatSelect(subqExpr.query, {
+      indentOffset: 0,
+      riverWidth: deriveSelectRiverWidth(subqExpr.query),
+      isSubquery: true,
+    });
     const lineCount = inner.split('\n').length;
 
     if (lineCount <= 2) {
@@ -708,7 +794,11 @@ function fmtExprInCondition(expr: AST.Expr, ctx: FormatContext): string {
   if (expr.type === 'binary' && ['=', '<>', '!=', '<', '>', '<=', '>='].includes(expr.operator)) {
     if (expr.right.type === 'subquery') {
       const left = fmtExpr(expr.left);
-      const inner = formatSelect(expr.right.query, { indentOffset: 0, riverWidth: SELECT_RIVER, isSubquery: true });
+      const inner = formatSelect(expr.right.query, {
+        indentOffset: 0,
+        riverWidth: deriveSelectRiverWidth(expr.right.query),
+        isSubquery: true,
+      });
       const lineCount = inner.split('\n').length;
 
       if (lineCount <= 2) {
@@ -750,7 +840,7 @@ function formatParenOperand(expr: AST.Expr, opCol: number, parentOp: string): st
 function fmtSubqueryAtColumn(expr: AST.SubqueryExpr, col: number): string {
   const inner = formatSelect(expr.query, {
     indentOffset: 0,
-    riverWidth: SELECT_RIVER,
+    riverWidth: deriveSelectRiverWidth(expr.query),
     isSubquery: true,
     outerColumnOffset: col + 1,
   });
@@ -901,7 +991,7 @@ function formatWindowSpec(spec: AST.WindowSpec): string {
 function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const dmlCtx: FormatContext = {
     ...ctx,
-    riverWidth: node.returning ? 9 : ctx.riverWidth,
+    riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
@@ -924,7 +1014,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   } else if (node.selectQuery) {
     const selectStr = formatSelect(node.selectQuery, {
       indentOffset: 0,
-      riverWidth: SELECT_RIVER,
+      riverWidth: deriveSelectRiverWidth(node.selectQuery),
       isSubquery: true,
     });
     lines.push(selectStr);
@@ -974,7 +1064,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
 function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
   const dmlCtx: FormatContext = {
     ...ctx,
-    riverWidth: node.returning ? 9 : ctx.riverWidth,
+    riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
@@ -1025,7 +1115,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
 function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
   const dmlCtx: FormatContext = {
     ...ctx,
-    riverWidth: node.returning ? 9 : ctx.riverWidth,
+    riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
@@ -1084,7 +1174,12 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   }
 
   if (node.where) {
-    lines.push(' WHERE ' + formatCondition(node.where as AST.Expr, { ...ctx, indentOffset: 0, riverWidth: SELECT_RIVER, isSubquery: false }) + ';');
+    lines.push(' WHERE ' + formatCondition(node.where as AST.Expr, {
+      ...ctx,
+      indentOffset: 0,
+      riverWidth: DEFAULT_RIVER,
+      isSubquery: false,
+    }) + ';');
   } else {
     lines[lines.length - 1] += ';';
   }
@@ -1103,7 +1198,11 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
   header += ' ' + node.name + ' AS';
   lines.push(header);
 
-  const queryCtx: FormatContext = { indentOffset: 0, riverWidth: SELECT_RIVER, isSubquery: false };
+  const queryCtx: FormatContext = {
+    indentOffset: 0,
+    riverWidth: deriveRiverWidth(node.query as AST.Node),
+    isSubquery: false,
+  };
   let queryStr = formatNode(node.query as AST.Node, queryCtx).trimEnd();
   if (node.withData !== undefined && queryStr.endsWith(';')) {
     queryStr = queryStr.slice(0, -1);
@@ -1329,7 +1428,7 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
       // Format inner with indentOffset=0, then shift subsequent lines by 1 for the paren
       const innerCtx: FormatContext = {
         indentOffset: 0,
-        riverWidth: SELECT_RIVER,
+        riverWidth: deriveSelectRiverWidth(member.statement),
         isSubquery: true,
         outerColumnOffset: 1,
       };
@@ -1349,6 +1448,7 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
       // Not parenthesized
       const selectCtx: FormatContext = {
         ...ctx,
+        riverWidth: deriveSelectRiverWidth(member.statement),
         isSubquery: ctx.isSubquery ? true : !isLast, // Only last gets semicolon, unless already in subquery context
       };
       parts.push(formatSelect(member.statement, selectCtx));
@@ -1413,7 +1513,7 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
     // CTE body
     const bodyCtx: FormatContext = {
       indentOffset: cteBodyIndent,
-      riverWidth: SELECT_RIVER,
+      riverWidth: deriveRiverWidth(cte.query as AST.Node),
       isSubquery: true,
     };
 
@@ -1431,7 +1531,11 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   }
 
   // Main query
-  const mainCtx: FormatContext = { indentOffset: 0, riverWidth: SELECT_RIVER, isSubquery: false };
+  const mainCtx: FormatContext = {
+    indentOffset: 0,
+    riverWidth: deriveRiverWidth(node.mainQuery),
+    isSubquery: false,
+  };
   // Emit leading comments before main query (we handle them here, so clear them
   // from the node to avoid double-emitting in formatSelect/formatUnion)
   if (node.mainQuery.leadingComments && node.mainQuery.leadingComments.length > 0) {
@@ -1672,7 +1776,11 @@ function fmtFunctionCall(expr: AST.FunctionCallExpr): string {
 }
 
 function fmtSubquerySimple(expr: AST.SubqueryExpr): string {
-  const inner = formatSelect(expr.query, { indentOffset: 0, riverWidth: SELECT_RIVER, isSubquery: true });
+  const inner = formatSelect(expr.query, {
+    indentOffset: 0,
+    riverWidth: deriveSelectRiverWidth(expr.query),
+    isSubquery: true,
+  });
   return '(' + inner + ')';
 }
 
