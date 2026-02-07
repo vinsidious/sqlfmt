@@ -38,8 +38,16 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const sqlfmt_1 = require("@vcoppola/sqlfmt");
 const SUPPORTED_LANGUAGES = ['sql', 'pgsql'];
+const DEFAULT_MAX_INPUT_BYTES = 1_048_576; // 1 MiB
 let outputChannel;
 let statusBarItem;
+function readMaxInputBytes(config) {
+    const configured = config.get('maxInputBytes', DEFAULT_MAX_INPUT_BYTES);
+    if (!Number.isFinite(configured) || configured < 1) {
+        return DEFAULT_MAX_INPUT_BYTES;
+    }
+    return Math.floor(configured);
+}
 class SQLFormattingProvider {
     provideDocumentFormattingEdits(document) {
         const config = vscode.workspace.getConfiguration('sqlfmt');
@@ -47,6 +55,15 @@ class SQLFormattingProvider {
             return [];
         }
         const text = document.getText();
+        const maxInputBytes = readMaxInputBytes(config);
+        const inputBytes = Buffer.byteLength(text, 'utf8');
+        if (inputBytes > maxInputBytes) {
+            const message = `Document size ${inputBytes.toLocaleString()} bytes exceeds sqlfmt.maxInputBytes (${maxInputBytes.toLocaleString()})`;
+            outputChannel.appendLine(`[warn] ${message}`);
+            updateStatusBar('$(warning) sqlfmt', message);
+            vscode.window.setStatusBarMessage(`sqlfmt: ${message}`, 5000);
+            return [];
+        }
         try {
             const formatted = (0, sqlfmt_1.formatSQL)(text);
             const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));

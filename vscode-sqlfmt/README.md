@@ -37,7 +37,19 @@ SELECT e.name, e.salary, d.department_name
 
 ## Installation
 
-Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=vcoppola.sqlfmt) or search for "sqlfmt" in the Extensions view (`Ctrl+Shift+X`).
+As of February 7, 2026, `sqlfmt` is not yet published on the VS Code Marketplace.
+
+Install from source:
+
+```bash
+cd vscode-sqlfmt
+npm install
+npm run build
+npx @vscode/vsce package
+code --install-extension sqlfmt-1.1.1.vsix
+```
+
+To update, rebuild and reinstall the generated `.vsix`.
 
 ## Usage
 
@@ -65,6 +77,7 @@ To make sqlfmt the default SQL formatter and enable format on save:
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `sqlfmt.enable` | `boolean` | `true` | Enable or disable the sqlfmt formatter |
+| `sqlfmt.maxInputBytes` | `number` | `1048576` | Maximum file size (UTF-8 bytes) to format; larger files are skipped |
 
 ## About river alignment
 

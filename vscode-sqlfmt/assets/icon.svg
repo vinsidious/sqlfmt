@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="sqlfmt icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0F3A3E"/>
+      <stop offset="100%" stop-color="#0A1F24"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="40" fill="url(#bg)"/>
+  <rect x="28" y="70" width="118" height="12" rx="6" fill="#9EEAF7"/>
+  <rect x="42" y="100" width="104" height="12" rx="6" fill="#9EEAF7" opacity="0.9"/>
+  <rect x="56" y="130" width="90" height="12" rx="6" fill="#9EEAF7" opacity="0.8"/>
+  <rect x="168" y="56" width="6" height="144" rx="3" fill="#F9D65C"/>
+  <text x="178" y="145" font-size="48" font-family="Menlo, Monaco, Consolas, monospace" font-weight="700" fill="#FFFFFF">SQL</text>
+</svg>

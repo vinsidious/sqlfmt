@@ -28,6 +28,7 @@
   "categories": [
     "Formatters"
   ],
+  "icon": "assets/icon.png",
   "activationEvents": [
     "onLanguage:sql",
     "onLanguage:pgsql"
@@ -51,6 +52,12 @@
           "type": "boolean",
           "default": true,
           "description": "Enable or disable the sqlfmt formatter."
+        },
+        "sqlfmt.maxInputBytes": {
+          "type": "number",
+          "default": 1048576,
+          "minimum": 1,
+          "description": "Maximum document size (in UTF-8 bytes) that sqlfmt will format."
         }
       }
     },
