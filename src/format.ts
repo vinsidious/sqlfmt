@@ -39,10 +39,15 @@ export interface FormatOptions {
   recover?: boolean;
 
   /**
-   * Callback invoked when parser recovery occurs.
+   * Called when the parser recovers from an unparseable statement.
+   * The recovered statement is passed through as raw text.
    *
-   * Only called when `recover` is `true` and the parser falls back to
-   * raw-passthrough for a statement.
+   * Only called when `recover` is `true` (the default) and the parser
+   * falls back to raw-passthrough for a statement.
+   *
+   * @param error - The ParseError that triggered recovery
+   * @param raw - The raw expression node containing the original SQL text, or
+   *   null if recovery could not extract any text (rare end-of-input cases)
    */
   onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
 

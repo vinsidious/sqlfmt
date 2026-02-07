@@ -4,9 +4,25 @@ import { MaxDepthError } from './parser';
 import type { Token } from './tokenizer';
 import { DEFAULT_MAX_DEPTH, TERMINAL_WIDTH } from './constants';
 
-// Type guard: checks if an InExpr's values field is a SubqueryExpr (vs Expression[])
-function isSubqueryValues(values: AST.Expression[] | AST.SubqueryExpr): values is AST.SubqueryExpr {
-  return !Array.isArray(values) && typeof values === 'object' && 'type' in values && values.type === 'subquery';
+// Discriminated union helpers for InExpr.
+// The AST may have a `subquery` boolean field (new shape) or the old shape
+// where `values` is either SubqueryExpr | Expression[]. These helpers handle both.
+function isInExprSubquery(expr: AST.InExpr): boolean {
+  // New discriminated union shape: explicit boolean field
+  const exprAny = expr as unknown as Record<string, unknown>;
+  if ('subquery' in expr && typeof exprAny.subquery === 'boolean') {
+    return exprAny.subquery as boolean;
+  }
+  // Old shape: check if values is a SubqueryExpr object
+  return !Array.isArray(expr.values) && typeof expr.values === 'object' && 'type' in expr.values && expr.values.type === 'subquery';
+}
+
+function getInExprSubquery(expr: AST.InExpr): AST.SubqueryExpr {
+  return expr.values as AST.SubqueryExpr;
+}
+
+function getInExprList(expr: AST.InExpr): AST.Expression[] {
+  return expr.values as AST.Expression[];
 }
 
 // The formatter walks the AST and produces formatted SQL per the Holywell style guide.
@@ -394,7 +410,7 @@ interface FormattedColumnPart {
   comment?: AST.CommentNode;
 }
 
-function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, ctx: FormatContext): string {
+function formatColumnList(columns: readonly AST.ColumnExpr[], firstColStartCol: number, ctx: FormatContext): string {
   if (columns.length === 0) return '';
 
   const parts = buildFormattedColumnParts(columns, ctx);
@@ -417,7 +433,7 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
   return formatColumnListWithGroups(parts, indent, cCol, ctx);
 }
 
-function buildFormattedColumnParts(columns: AST.ColumnExpr[], ctx: FormatContext): FormattedColumnPart[] {
+function buildFormattedColumnParts(columns: readonly AST.ColumnExpr[], ctx: FormatContext): FormattedColumnPart[] {
   return columns.map(col => {
     let text = formatExprInSelect(col.expr, contentCol(ctx), ctx.outerColumnOffset || 0, ctx.depth);
     if (col.alias && !isRedundantAlias(col.expr, col.alias)) {
@@ -431,14 +447,14 @@ function hasEffectiveAlias(column: AST.ColumnExpr): boolean {
   return !!(column.alias && !isRedundantAlias(column.expr, column.alias));
 }
 
-function getMaxInlineColumnLength(columns: AST.ColumnExpr[], ctx: FormatContext): number {
+function getMaxInlineColumnLength(columns: readonly AST.ColumnExpr[], ctx: FormatContext): number {
   if (ctx.indentOffset === 0) return LAYOUT_POLICY.topLevelInlineColumnMax;
   const hasAliases = columns.some(hasEffectiveAlias);
   if (columns.length <= 2 && hasAliases) return LAYOUT_POLICY.nestedInlineWithShortAliasesMax;
   return LAYOUT_POLICY.nestedInlineColumnMax;
 }
 
-function hasTopLevelAliasBreak(columns: AST.ColumnExpr[], effectiveLen: number, ctx: FormatContext): boolean {
+function hasTopLevelAliasBreak(columns: readonly AST.ColumnExpr[], effectiveLen: number, ctx: FormatContext): boolean {
   if (ctx.indentOffset !== 0) return false;
   const aliasCount = columns.filter(hasEffectiveAlias).length;
   return aliasCount >= 2
@@ -447,7 +463,7 @@ function hasTopLevelAliasBreak(columns: AST.ColumnExpr[], effectiveLen: number, 
 }
 
 function shouldBreakNestedConcatTail(
-  columns: AST.ColumnExpr[],
+  columns: readonly AST.ColumnExpr[],
   parts: FormattedColumnPart[],
   firstColStartCol: number,
   ctx: FormatContext
@@ -464,7 +480,7 @@ function shouldBreakNestedConcatTail(
 
 function tryFormatInlineColumnList(
   parts: FormattedColumnPart[],
-  columns: AST.ColumnExpr[],
+  columns: readonly AST.ColumnExpr[],
   firstColStartCol: number,
   ctx: FormatContext
 ): string | null {
@@ -626,6 +642,11 @@ function formatExprInSelect(expr: AST.Expression, colStart: number, outerOffset:
     return formatBinaryWrapped(expr, colStart);
   }
 
+  // Array constructor that's too long — wrap elements
+  if (expr.type === 'array_constructor' && effectiveLen > LAYOUT_POLICY.expressionWrapColumnMax) {
+    return formatArrayConstructorWrapped(expr, colStart);
+  }
+
   return simple;
 }
 
@@ -775,22 +796,72 @@ function formatExprColumnAware(expr: AST.Expression, col: number, outerOffset: n
   return formatExpr(expr);
 }
 
-// Wrap IN list values across lines when too long (only called for non-subquery IN)
+// Wrap IN list values across lines when too long (only called for non-subquery IN).
+// Packs as many items as fit on each line before wrapping.
 function formatInExprWrapped(expr: AST.InExpr, col: number): string {
   const neg = expr.negated ? 'NOT ' : '';
   const prefix = formatExpr(expr.expr) + ' ' + neg + 'IN (';
-  if (isSubqueryValues(expr.values)) return formatExpr(expr);
-  const vals = expr.values.map(formatExpr);
+  if (isInExprSubquery(expr)) return formatExpr(expr);
+  const vals = getInExprList(expr).map(v => formatExpr(v));
   const valStartCol = col + prefix.length;
   const valPad = ' '.repeat(valStartCol);
+  const maxWidth = TERMINAL_WIDTH;
 
-  let result = prefix + vals[0] + ',';
-  for (let i = 1; i < vals.length; i++) {
-    const comma = i < vals.length - 1 ? ',' : '';
-    result += '\n' + valPad + vals[i] + comma;
+  // Pack items onto lines, wrapping when exceeding maxWidth
+  const lines: string[] = [];
+  let currentLine = prefix;
+  let currentCol = col + prefix.length;
+
+  for (let i = 0; i < vals.length; i++) {
+    const isLast = i === vals.length - 1;
+    const suffix = isLast ? ')' : ', ';
+    const itemText = vals[i] + suffix;
+    const itemWidth = stringDisplayWidth(itemText);
+
+    if (i > 0 && currentCol + itemWidth > maxWidth) {
+      // Wrap: trim trailing comma-space if present, add it back on next line
+      lines.push(currentLine.trimEnd());
+      currentLine = valPad + itemText;
+      currentCol = valStartCol + itemWidth;
+    } else {
+      currentLine += itemText;
+      currentCol += itemWidth;
+    }
   }
-  result += ')';
-  return result;
+  lines.push(currentLine);
+  return lines.join('\n');
+}
+
+// Wrap ARRAY[...] constructors across lines when too long.
+// Packs items per line, aligning continuation under first element after '['.
+function formatArrayConstructorWrapped(expr: AST.ArrayConstructorExpr, col: number): string {
+  const prefix = 'ARRAY[';
+  const vals = expr.elements.map(e => formatExpr(e));
+  const elemStartCol = col + prefix.length;
+  const elemPad = ' '.repeat(elemStartCol);
+  const maxWidth = TERMINAL_WIDTH;
+
+  const lines: string[] = [];
+  let currentLine = prefix;
+  let currentCol = col + prefix.length;
+
+  for (let i = 0; i < vals.length; i++) {
+    const isLast = i === vals.length - 1;
+    const suffix = isLast ? ']' : ', ';
+    const itemText = vals[i] + suffix;
+    const itemWidth = stringDisplayWidth(itemText);
+
+    if (i > 0 && currentCol + itemWidth > maxWidth) {
+      lines.push(currentLine.trimEnd());
+      currentLine = elemPad + itemText;
+      currentCol = elemStartCol + itemWidth;
+    } else {
+      currentLine += itemText;
+      currentCol += itemWidth;
+    }
+  }
+  lines.push(currentLine);
+  return lines.join('\n');
 }
 
 // Wrap a binary expression at the outermost operator
@@ -888,7 +959,7 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
   return lines.join('\n');
 }
 
-function formatSelectOrderByLines(items: AST.OrderByItem[], orderKeyword: string, continuationPad: string): string[] {
+function formatSelectOrderByLines(items: readonly AST.OrderByItem[], orderKeyword: string, continuationPad: string): string[] {
   if (items.length === 0) return [`${orderKeyword} BY`];
 
   const hasTrailingComments = items.some(item => !!item.trailingComment);
@@ -933,7 +1004,7 @@ function formatJoinOn(expr: AST.Expression, baseCol: number, depth: number = 0):
   if (expr.type === 'binary' && expr.operator === 'AND') {
     const left = formatJoinOn(expr.left, baseCol, depth + 1);
     const indent = ' '.repeat(baseCol);
-    return left + '\n' + indent + 'AND ' + formatExpr(expr.right);
+    return left + '\n' + indent + 'AND ' + formatJoinOn(expr.right, baseCol, depth + 1);
   }
   return formatExpr(expr);
 }
@@ -980,13 +1051,13 @@ function formatGroupByClause(groupBy: AST.GroupByClause, ctx: FormatContext): st
 }
 
 function formatGroupingSpec(
-  spec: { type: 'grouping_sets' | 'rollup' | 'cube'; sets: AST.Expression[][] },
+  spec: { readonly type: 'grouping_sets' | 'rollup' | 'cube'; readonly sets: readonly (readonly AST.Expression[])[] },
   ctx: FormatContext
 ): string {
   const kind = spec.type === 'grouping_sets' ? 'GROUPING SETS' : spec.type.toUpperCase();
   if (spec.type !== 'grouping_sets') {
     const flat = spec.sets.map(set => {
-      const exprs = (set as AST.Expression[]).map(e => formatExpr(e));
+      const exprs = set.map(e => formatExpr(e));
       return exprs.length === 1 ? exprs[0] : '(' + exprs.join(', ') + ')';
     });
     const flatText = flat.join(', ');
@@ -1000,7 +1071,7 @@ function formatGroupingSpec(
 
   const lines: string[] = [kind + ' ('];
   for (let i = 0; i < spec.sets.length; i++) {
-    const set = spec.sets[i] as AST.Expression[];
+    const set = spec.sets[i];
     const isLast = i === spec.sets.length - 1;
     const comma = isLast ? '' : ',';
     let text: string;
@@ -1024,10 +1095,9 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   }
 
   // IN with subquery
-  if (expr.type === 'in' && isSubqueryValues(expr.values)) {
+  if (expr.type === 'in' && isInExprSubquery(expr)) {
     const e = formatExpr(expr.expr);
-    const neg = expr.negated ? 'NOT ' : '';
-    const subqExpr = expr.values;
+    const subqExpr = getInExprSubquery(expr);
 
     // NOT IN: always on new line
     if (expr.negated) {
@@ -1047,6 +1117,16 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
 
     const subq = wrapSubqueryLines(inner, contentCol(ctx));
     return e + ' IN\n' + contentPad(ctx) + subq;
+  }
+
+  // IN with value list: wrap if too long
+  if (expr.type === 'in' && !isInExprSubquery(expr)) {
+    const simple = formatExpr(expr);
+    const cCol = contentCol(ctx);
+    if (cCol + stringDisplayWidth(simple) > TERMINAL_WIDTH) {
+      return formatInExprWrapped(expr, cCol);
+    }
+    return simple;
   }
 
   // EXISTS: always on new line
@@ -1204,7 +1284,12 @@ function formatWindowFunctionAtColumn(expr: AST.WindowFunctionExpr, col: number)
   }
 
   if (overParts.length <= 1 && !expr.frame) {
-    return func + ' OVER (' + overParts.map(p => p.text).join('') + ')';
+    const inline = func + ' OVER (' + overParts.map(p => p.text).join('') + ')';
+    // Keep inline if it fits within terminal width
+    if (col + stringDisplayWidth(inline) <= TERMINAL_WIDTH) {
+      return inline;
+    }
+    // Otherwise fall through to multi-line formatting
   }
 
   // Multi-line OVER: right-align BY keywords to the longest
@@ -1982,7 +2067,7 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
 }
 
 // Emit CTE-leading comments as-is so comment style is preserved.
-function emitCTELeadingComments(comments: AST.CommentNode[], lines: string[], _cteIndentCol: number): void {
+function emitCTELeadingComments(comments: readonly AST.CommentNode[], lines: string[], _cteIndentCol: number): void {
   for (const c of comments) {
     const blanks = Math.min(c.blankLinesBefore || 0, 1);
     for (let i = 0; i < blanks; i++) {
@@ -1996,7 +2081,7 @@ function emitCTELeadingComments(comments: AST.CommentNode[], lines: string[], _c
 }
 
 // Emit comments to a lines array, preserving blank lines between comment groups
-function emitComments(comments: AST.CommentNode[], lines: string[]): void {
+function emitComments(comments: readonly AST.CommentNode[], lines: string[]): void {
   for (const c of comments) {
     const blanks = c.blankLinesBefore || 0;
     for (let i = 0; i < blanks; i++) {
@@ -2036,7 +2121,26 @@ function formatValuesClause(node: AST.ValuesClause, ctx: FormatContext): string 
 
 // ─── Expression formatting (context-free) ────────────────────────────
 
-function formatExpr(expr: AST.Expression): string {
+// Simple fallback: space-separated tokens for depth-exceeded expressions
+function formatExprSimpleFallback(expr: AST.Expression): string {
+  // Use depth=0 for the simple formatting — this won't recurse deeply
+  // because it only produces inline token output
+  return formatExpr(expr, 0);
+}
+
+function formatExpr(expr: AST.Expression, depth: number = 0): string {
+  if (depth >= MAX_FORMATTER_DEPTH) {
+    // At max depth, produce a minimal inline representation to avoid stack overflow.
+    // We call the leaf formatters directly to avoid infinite recursion.
+    if (expr.type === 'identifier') return expr.quoted ? expr.value : lowerIdent(expr.value);
+    if (expr.type === 'literal') return expr.literalType === 'boolean' ? expr.value.toUpperCase() : expr.value;
+    if (expr.type === 'null') return 'NULL';
+    if (expr.type === 'star') return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
+    if (expr.type === 'raw') return expr.text;
+    // For anything else at max depth, return a best-effort inline string
+    return '/* depth exceeded */';
+  }
+  const d = depth + 1;
   switch (expr.type) {
     case 'identifier':
       return expr.quoted ? expr.value : lowerIdent(expr.value);
@@ -2052,108 +2156,108 @@ function formatExpr(expr: AST.Expression): string {
     case 'star':
       return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
     case 'binary':
-      return formatExpr(expr.left) + ' ' + expr.operator + ' ' + formatExpr(expr.right);
+      return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
     case 'unary':
       // No space for unary minus (e.g., -1), space for NOT
-      if (expr.operator === '-' || expr.operator === '~') return expr.operator + formatExpr(expr.operand);
-      return expr.operator + ' ' + formatExpr(expr.operand);
+      if (expr.operator === '-' || expr.operator === '~') return expr.operator + formatExpr(expr.operand, d);
+      return expr.operator + ' ' + formatExpr(expr.operand, d);
     case 'function_call':
-      return formatFunctionCall(expr);
+      return formatFunctionCall(expr, d);
     case 'subquery':
       return formatSubquerySimple(expr);
     case 'case':
-      return formatCaseSimple(expr);
+      return formatCaseSimple(expr, d);
     case 'between': {
       const neg = expr.negated ? 'NOT ' : '';
-      return formatExpr(expr.expr) + ' ' + neg + 'BETWEEN ' + formatExpr(expr.low) + ' AND ' + formatExpr(expr.high);
+      return formatExpr(expr.expr, d) + ' ' + neg + 'BETWEEN ' + formatExpr(expr.low, d) + ' AND ' + formatExpr(expr.high, d);
     }
     case 'in': {
       const neg = expr.negated ? 'NOT ' : '';
-      if (isSubqueryValues(expr.values)) {
-        return formatExpr(expr.expr) + ' ' + neg + 'IN ' + formatSubquerySimple(expr.values);
+      if (isInExprSubquery(expr)) {
+        return formatExpr(expr.expr, d) + ' ' + neg + 'IN ' + formatSubquerySimple(getInExprSubquery(expr));
       }
-      const vals = expr.values.map(formatExpr).join(', ');
-      return formatExpr(expr.expr) + ' ' + neg + 'IN (' + vals + ')';
+      const vals = getInExprList(expr).map(v => formatExpr(v, d)).join(', ');
+      return formatExpr(expr.expr, d) + ' ' + neg + 'IN (' + vals + ')';
     }
     case 'is':
-      return formatExpr(expr.expr) + ' IS ' + expr.value;
+      return formatExpr(expr.expr, d) + ' IS ' + expr.value;
     case 'like': {
       const neg = expr.negated ? 'NOT ' : '';
-      let out = formatExpr(expr.expr) + ' ' + neg + 'LIKE ' + formatExpr(expr.pattern);
-      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape);
+      let out = formatExpr(expr.expr, d) + ' ' + neg + 'LIKE ' + formatExpr(expr.pattern, d);
+      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape, d);
       return out;
     }
     case 'exists':
       return 'EXISTS ' + formatSubquerySimple(expr.subquery);
     case 'paren':
-      return '(' + formatExpr(expr.expr) + ')';
+      return '(' + formatExpr(expr.expr, d) + ')';
     case 'cast':
-      return 'CAST(' + formatExpr(expr.expr) + ' AS ' + expr.targetType + ')';
+      return 'CAST(' + formatExpr(expr.expr, d) + ' AS ' + expr.targetType + ')';
     case 'window_function':
-      return formatWindowFunctionSimple(expr);
+      return formatWindowFunctionSimple(expr, d);
     case 'extract':
-      return 'EXTRACT(' + expr.field + ' FROM ' + formatExpr(expr.source) + ')';
+      return 'EXTRACT(' + expr.field + ' FROM ' + formatExpr(expr.source, d) + ')';
     case 'position':
-      return `POSITION(${formatExpr(expr.substring)} IN ${formatExpr(expr.source)})`;
+      return `POSITION(${formatExpr(expr.substring, d)} IN ${formatExpr(expr.source, d)})`;
     case 'substring': {
-      let out = `SUBSTRING(${formatExpr(expr.source)} FROM ${formatExpr(expr.start)}`;
-      if (expr.length) out += ` FOR ${formatExpr(expr.length)}`;
+      let out = `SUBSTRING(${formatExpr(expr.source, d)} FROM ${formatExpr(expr.start, d)}`;
+      if (expr.length) out += ` FOR ${formatExpr(expr.length, d)}`;
       return out + ')';
     }
     case 'overlay': {
-      let out = `OVERLAY(${formatExpr(expr.source)} PLACING ${formatExpr(expr.replacement)} FROM ${formatExpr(expr.start)}`;
-      if (expr.length) out += ` FOR ${formatExpr(expr.length)}`;
+      let out = `OVERLAY(${formatExpr(expr.source, d)} PLACING ${formatExpr(expr.replacement, d)} FROM ${formatExpr(expr.start, d)}`;
+      if (expr.length) out += ` FOR ${formatExpr(expr.length, d)}`;
       return out + ')';
     }
     case 'trim': {
       let out = 'TRIM(';
       if (expr.side) {
         out += expr.side;
-        if (expr.trimChar) out += ` ${formatExpr(expr.trimChar)} FROM ${formatExpr(expr.source)}`;
-        else if (expr.fromSyntax) out += ` FROM ${formatExpr(expr.source)}`;
-        else out += ` ${formatExpr(expr.source)}`;
+        if (expr.trimChar) out += ` ${formatExpr(expr.trimChar, d)} FROM ${formatExpr(expr.source, d)}`;
+        else if (expr.fromSyntax) out += ` FROM ${formatExpr(expr.source, d)}`;
+        else out += ` ${formatExpr(expr.source, d)}`;
       } else if (expr.trimChar) {
-        out += `${formatExpr(expr.trimChar)} FROM ${formatExpr(expr.source)}`;
+        out += `${formatExpr(expr.trimChar, d)} FROM ${formatExpr(expr.source, d)}`;
       } else if (expr.fromSyntax) {
-        out += `FROM ${formatExpr(expr.source)}`;
+        out += `FROM ${formatExpr(expr.source, d)}`;
       } else {
-        out += formatExpr(expr.source);
+        out += formatExpr(expr.source, d);
       }
       return out + ')';
     }
     case 'aliased':
-      return formatExpr(expr.expr) + ' AS ' + formatAlias(expr.alias);
+      return formatExpr(expr.expr, d) + ' AS ' + formatAlias(expr.alias);
     case 'array_subscript': {
-      const lower = expr.lower ? formatExpr(expr.lower) : '';
-      const upper = expr.upper ? formatExpr(expr.upper) : '';
+      const lower = expr.lower ? formatExpr(expr.lower, d) : '';
+      const upper = expr.upper ? formatExpr(expr.upper, d) : '';
       const body = expr.isSlice ? `${lower}:${upper}` : lower;
-      return formatExpr(expr.array) + '[' + body + ']';
+      return formatExpr(expr.array, d) + '[' + body + ']';
     }
     case 'ordered_expr':
-      return formatExpr(expr.expr) + ' ' + expr.direction;
+      return formatExpr(expr.expr, d) + ' ' + expr.direction;
     case 'raw':
       return expr.text;
     // New expression types
     case 'pg_cast':
-      return formatExpr(expr.expr) + '::' + expr.targetType;
+      return formatExpr(expr.expr, d) + '::' + expr.targetType;
     case 'ilike': {
       const neg = expr.negated ? 'NOT ' : '';
-      let out = formatExpr(expr.expr) + ' ' + neg + 'ILIKE ' + formatExpr(expr.pattern);
-      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape);
+      let out = formatExpr(expr.expr, d) + ' ' + neg + 'ILIKE ' + formatExpr(expr.pattern, d);
+      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape, d);
       return out;
     }
     case 'similar_to': {
       const neg = expr.negated ? 'NOT ' : '';
-      return formatExpr(expr.expr) + ' ' + neg + 'SIMILAR TO ' + formatExpr(expr.pattern);
+      return formatExpr(expr.expr, d) + ' ' + neg + 'SIMILAR TO ' + formatExpr(expr.pattern, d);
     }
     case 'array_constructor':
-      return 'ARRAY[' + expr.elements.map(formatExpr).join(', ') + ']';
+      return 'ARRAY[' + expr.elements.map(e => formatExpr(e, d)).join(', ') + ']';
     case 'is_distinct_from': {
       const kw = expr.negated ? 'IS NOT DISTINCT FROM' : 'IS DISTINCT FROM';
-      return formatExpr(expr.left) + ' ' + kw + ' ' + formatExpr(expr.right);
+      return formatExpr(expr.left, d) + ' ' + kw + ' ' + formatExpr(expr.right, d);
     }
     case 'regex_match':
-      return formatExpr(expr.left) + ' ' + expr.operator + ' ' + formatExpr(expr.right);
+      return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
   }
 
   return assertNeverExpr(expr);
@@ -2163,10 +2267,10 @@ function assertNeverExpr(expr: never): never {
   throw new Error(`Unhandled expression node: ${(expr as { type?: string }).type ?? 'unknown'}`);
 }
 
-function formatFunctionCall(expr: AST.FunctionCallExpr): string {
+function formatFunctionCall(expr: AST.FunctionCallExpr, depth: number = 0): string {
   const name = formatFunctionName(expr.name);
   const distinct = expr.distinct ? 'DISTINCT ' : '';
-  const args = expr.args.map(formatExpr).join(', ');
+  const args = expr.args.map(a => formatExpr(a, depth)).join(', ');
   let body = distinct + args;
   if (expr.orderBy && expr.orderBy.length > 0) {
     body += ' ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', ');
@@ -2177,7 +2281,7 @@ function formatFunctionCall(expr: AST.FunctionCallExpr): string {
     out += ' WITHIN GROUP (ORDER BY ' + expr.withinGroup.orderBy.map(formatOrderByItem).join(', ') + ')';
   }
   if (expr.filter) {
-    out += ' FILTER (WHERE ' + formatExpr(expr.filter) + ')';
+    out += ' FILTER (WHERE ' + formatExpr(expr.filter, depth) + ')';
   }
   return out;
 }
@@ -2187,22 +2291,22 @@ function formatSubquerySimple(expr: AST.SubqueryExpr): string {
   return '(' + inner + ')';
 }
 
-function formatCaseSimple(expr: AST.CaseExpr): string {
+function formatCaseSimple(expr: AST.CaseExpr, depth: number = 0): string {
   let s = 'CASE';
-  if (expr.operand) s += ' ' + formatExpr(expr.operand);
+  if (expr.operand) s += ' ' + formatExpr(expr.operand, depth);
   for (const wc of expr.whenClauses) {
-    s += ' WHEN ' + formatExpr(wc.condition) + ' THEN ' + formatExpr(wc.result);
+    s += ' WHEN ' + formatExpr(wc.condition, depth) + ' THEN ' + formatExpr(wc.result, depth);
   }
-  if (expr.elseResult) s += ' ELSE ' + formatExpr(expr.elseResult);
+  if (expr.elseResult) s += ' ELSE ' + formatExpr(expr.elseResult, depth);
   s += ' END';
   return s;
 }
 
-function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr): string {
-  const func = formatFunctionCall(expr.func);
+function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number = 0): string {
+  const func = formatFunctionCall(expr.func, depth);
   if (expr.windowName) return func + ' OVER ' + expr.windowName;
   let over = '';
-  if (expr.partitionBy) over += 'PARTITION BY ' + expr.partitionBy.map(formatExpr).join(', ');
+  if (expr.partitionBy) over += 'PARTITION BY ' + expr.partitionBy.map(e => formatExpr(e, depth)).join(', ');
   if (expr.orderBy) {
     if (over) over += ' ';
     over += 'ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', ');

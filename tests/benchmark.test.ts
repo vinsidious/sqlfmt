@@ -135,4 +135,46 @@ describe('Benchmark: formatting performance', () => {
     const twice = formatSQL(once);
     expect(twice).toBe(once);
   });
+
+  it('formats 1000 simple statements under 200ms', () => {
+    const sql = generateBenchmarkSQL(1000);
+    const start = performance.now();
+    formatSQL(sql);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(200);
+  });
+
+  it('formats 1000 complex statements under 300ms', () => {
+    const sql = generateComplexSQL(1000);
+    const start = performance.now();
+    formatSQL(sql);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(300);
+  });
+
+  it('formats wide SELECT with 100+ columns in reasonable time', () => {
+    const cols = Array.from({ length: 120 }, (_, i) => `column_${i}`).join(', ');
+    const sql = `SELECT ${cols} FROM wide_table WHERE active = TRUE ORDER BY column_0;`;
+    const start = performance.now();
+    const result = formatSQL(sql);
+    const elapsed = performance.now() - start;
+    console.log(`  120-column SELECT: ${elapsed.toFixed(1)}ms`);
+    expect(result).toContain('SELECT');
+    expect(result).toContain('column_119');
+    expect(elapsed).toBeLessThan(200);
+  });
+
+  it('formats deeply nested subqueries (depth 30) in reasonable time', () => {
+    let inner = 'SELECT 1 FROM t';
+    for (let i = 0; i < 30; i++) {
+      inner = `SELECT (${inner}) AS v${i} FROM t${i}`;
+    }
+    const sql = inner + ';';
+    const start = performance.now();
+    const result = formatSQL(sql);
+    const elapsed = performance.now() - start;
+    console.log(`  30-deep subqueries: ${elapsed.toFixed(1)}ms`);
+    expect(result).toContain('SELECT');
+    expect(elapsed).toBeLessThan(500);
+  });
 });

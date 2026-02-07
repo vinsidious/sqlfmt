@@ -163,3 +163,56 @@ describe('idempotency with comments', () => {
     expect(twice).toBe(once);
   });
 });
+
+describe('idempotency for new SQL constructs', () => {
+  it('CTE with column list', () => {
+    const sql = `WITH cte (id, name) AS (SELECT 1, 'Alice') SELECT * FROM cte;`;
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('INTERVAL with precision unit', () => {
+    const sql = "SELECT INTERVAL '1' DAY FROM t;";
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('GROUPS window frame', () => {
+    const sql = 'SELECT SUM(x) OVER (ORDER BY y GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t;';
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('long IN list (20+ items) wrapping is idempotent', () => {
+    const items = Array.from({ length: 25 }, (_, i) => i + 1).join(', ');
+    const sql = `SELECT * FROM items WHERE id IN (${items});`;
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('wrapped OVER clause', () => {
+    const sql = 'SELECT ROW_NUMBER() OVER (PARTITION BY department, region, division, category ORDER BY salary DESC) FROM employees;';
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('wrapped ARRAY constructor', () => {
+    const items = Array.from({ length: 20 }, (_, i) => i + 1).join(', ');
+    const sql = `SELECT ARRAY[${items}] AS big_array FROM t;`;
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+
+  it('CTE with column list + INTERVAL + GROUPS window + IN list combined', () => {
+    const sql = `WITH summary (dt, total) AS (SELECT order_date, SUM(amount) FROM orders GROUP BY order_date) SELECT dt, total, SUM(total) OVER (ORDER BY dt GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS rolling FROM summary WHERE dt > INTERVAL '30' DAY AND total IN (100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500);`;
+    const once = formatSQL(sql);
+    const twice = formatSQL(once);
+    expect(twice).toBe(once);
+  });
+});

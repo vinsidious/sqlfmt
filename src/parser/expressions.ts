@@ -120,11 +120,11 @@ function tryParseInComparison(ctx: ComparisonParser, left: AST.Expression): AST.
   const query = ctx.tryParseQueryExpressionAtCurrent();
   if (query) {
     ctx.expect(')');
-    return { type: 'in', expr: left, values: { type: 'subquery', query }, negated };
+    return { type: 'in', expr: left, values: { type: 'subquery', query }, negated, subquery: true as const };
   }
   const values = ctx.parseExpressionList();
   ctx.expect(')');
-  return { type: 'in', expr: left, values, negated };
+  return { type: 'in', expr: left, values, negated, subquery: false as const };
 }
 
 function tryParseLikeFamilyComparison(
@@ -251,11 +251,26 @@ function tryParseSpecialKeywordPrimary(ctx: PrimaryExpressionParser, token: Toke
   return null;
 }
 
+const INTERVAL_UNITS = new Set([
+  'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND',
+]);
+
 function tryParseIntervalPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (!(token.upper === 'INTERVAL' && ctx.peekTypeAt(1) === 'string')) return null;
   ctx.advance();
   const strToken = ctx.advance();
-  return { type: 'interval', value: strToken.value };
+  let value = strToken.value;
+
+  // INTERVAL '1' DAY, INTERVAL '1' DAY TO SECOND
+  if (INTERVAL_UNITS.has(ctx.peek().upper)) {
+    value += ' ' + ctx.advance().upper;
+    if (ctx.peek().upper === 'TO' && INTERVAL_UNITS.has(ctx.peekUpperAt(1))) {
+      value += ' ' + ctx.advance().upper; // TO
+      value += ' ' + ctx.advance().upper; // target unit
+    }
+  }
+
+  return { type: 'interval', value };
 }
 
 function tryParseArrayConstructorPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
