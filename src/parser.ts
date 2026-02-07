@@ -1,6 +1,19 @@
 import { Token } from './tokenizer';
 import * as AST from './ast';
 
+class ParseError extends Error {
+  token: Token;
+  expected: string;
+
+  constructor(expected: string, token: Token) {
+    const got = token.type === 'eof' ? 'EOF' : `${token.type} "${token.value}"`;
+    super(`Expected ${expected}, got ${got}`);
+    this.name = 'ParseError';
+    this.expected = expected;
+    this.token = token;
+  }
+}
+
 export class Parser {
   private tokens: Token[];
   private pos: number = 0;
@@ -23,8 +36,16 @@ export class Parser {
     while (!this.isAtEnd()) {
       this.skipSemicolons();
       if (this.isAtEnd()) break;
-      const stmt = this.parseStatement();
-      if (stmt) stmts.push(stmt);
+      const stmtStart = this.pos;
+      try {
+        const stmt = this.parseStatement();
+        if (stmt) stmts.push(stmt);
+      } catch (err) {
+        if (!(err instanceof ParseError)) throw err;
+        this.pos = stmtStart;
+        const raw = this.parseRawStatement();
+        if (raw) stmts.push(raw);
+      }
       this.skipSemicolons();
     }
     return stmts;
@@ -60,11 +81,33 @@ export class Parser {
     if (kw === 'VALUES') return this.parseStandaloneValues(comments);
 
     // Unknown statement — consume until semicolon
-    let raw = '';
+    const raw = this.parseRawStatement();
+    return raw;
+  }
+
+  private parseRawStatement(): AST.RawExpression | null {
+    const start = this.pos;
     while (!this.isAtEnd() && !this.check(';')) {
-      raw += this.advance().value + ' ';
+      this.advance();
     }
-    return { type: 'raw', text: raw.trim() } as AST.RawExpression;
+    const end = this.pos;
+
+    let text = '';
+    for (let i = start; i < end; i++) {
+      const token = this.tokens[i];
+      text += token.value;
+      if (i < end - 1) text += ' ';
+    }
+    text = text.trim();
+
+    if (this.check(';')) {
+      this.advance();
+      if (text) text += ';';
+      else text = ';';
+    }
+
+    if (!text) return null;
+    return { type: 'raw', text };
   }
 
   private looksLikeParenthesizedSelect(): boolean {
@@ -2298,7 +2341,7 @@ export class Parser {
   private expect(value: string): Token {
     const token = this.peek();
     if (token.value !== value && token.upper !== value) {
-      return token;
+      throw new ParseError(value, token);
     }
     return this.advance();
   }
