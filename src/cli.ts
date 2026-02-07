@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, globSync } from 'fs';
 import { dirname, join } from 'path';
 import { formatSQL } from './format';
 import { ParseError } from './parser';
@@ -17,7 +17,35 @@ interface CLIOptions {
   diff: boolean;
   help: boolean;
   version: boolean;
+  listDifferent: boolean;
+  noColor: boolean;
   files: string[];
+}
+
+// ANSI color helpers — disabled by NO_COLOR env, --no-color flag, or non-TTY stderr
+const RESET = '\x1b[0m';
+const RED = '\x1b[31m';
+const GREEN = '\x1b[32m';
+const BOLD = '\x1b[1m';
+
+let colorEnabled = true;
+
+function initColor(opts: CLIOptions): void {
+  if (opts.noColor || process.env.NO_COLOR !== undefined || !process.stderr.isTTY) {
+    colorEnabled = false;
+  }
+}
+
+function red(s: string): string {
+  return colorEnabled ? `${RED}${s}${RESET}` : s;
+}
+
+function green(s: string): string {
+  return colorEnabled ? `${GREEN}${s}${RESET}` : s;
+}
+
+function bold(s: string): string {
+  return colorEnabled ? `${BOLD}${s}${RESET}` : s;
 }
 
 function readVersion(): string {
@@ -28,30 +56,45 @@ function readVersion(): string {
 }
 
 function printHelp(): void {
-  console.log('sqlfmt - SQL formatter');
-  console.log('');
-  console.log('Usage: sqlfmt [options] [file ...]');
-  console.log('');
-  console.log('Options:');
-  console.log('  -h, --help      Show this help text');
-  console.log('  -v, --version   Show version');
-  console.log('  --check         Exit 1 when input is not formatted');
-  console.log('  --diff          Show unified diff when --check fails');
-  console.log('  -w, --write     Write formatted output back to input file(s)');
-  console.log('');
-  console.log('Examples:');
-  console.log('  sqlfmt query.sql');
-  console.log('  sqlfmt --check schema.sql');
-  console.log('  sqlfmt --check --diff query.sql');
-  console.log('  sqlfmt -w one.sql two.sql');
-  console.log('  cat query.sql | sqlfmt');
-  console.log('');
-  console.log('Exit codes:');
-  console.log('  0 success');
-  console.log('  1 check failure / usage / I/O error');
-  console.log('  2 parse/tokenize error');
-  console.log('');
-  console.log('Docs: https://github.com/vinsidious/sqlfmt');
+  console.log(`sqlfmt - An opinionated SQL formatter
+
+  sqlfmt formats SQL using river alignment, following the
+  SQL style guide at https://www.sqlstyle.guide/. Keywords
+  are right-aligned to form a "river" of whitespace, making
+  queries easier to scan.
+
+Usage: sqlfmt [options] [file ...]
+
+  File arguments support glob patterns (e.g. **/*.sql).
+
+Options:
+  -h, --help            Show this help text
+  -v, --version         Show version
+  --check               Exit 1 when input is not formatted
+  --diff                Show unified diff when --check fails
+  -w, --write           Write formatted output back to input file(s)
+  -l, --list-different  Print only filenames that need formatting
+  --no-color            Disable colored output
+
+Examples:
+  sqlfmt query.sql
+  sqlfmt --check --diff "db/**/*.sql"
+  sqlfmt -w one.sql two.sql
+  cat query.sql | sqlfmt
+  echo "SELECT 1;" | sqlfmt
+
+  # Pipe from another command
+  pg_dump mydb --schema-only | sqlfmt
+
+  # Pre-commit one-liner (exits 1 if any file needs formatting)
+  sqlfmt --check $(git diff --cached --name-only -- '*.sql')
+
+Exit codes:
+  0  Success (or all files already formatted with --check)
+  1  Check failure / usage error / I/O error
+  2  Parse or tokenize error
+
+Docs: https://github.com/vinsidious/sqlfmt`);
 }
 
 function parseArgs(args: string[]): CLIOptions {
@@ -61,6 +104,8 @@ function parseArgs(args: string[]): CLIOptions {
     diff: false,
     help: false,
     version: false,
+    listDifferent: false,
+    noColor: false,
     files: [],
   };
 
@@ -85,6 +130,14 @@ function parseArgs(args: string[]): CLIOptions {
       opts.version = true;
       continue;
     }
+    if (arg === '--list-different' || arg === '-l') {
+      opts.listDifferent = true;
+      continue;
+    }
+    if (arg === '--no-color') {
+      opts.noColor = true;
+      continue;
+    }
 
     if (arg.startsWith('-')) {
       throw new CLIUsageError(`Unknown option: ${arg}`);
@@ -105,7 +158,44 @@ function parseArgs(args: string[]): CLIOptions {
     throw new CLIUsageError('--write requires at least one input file');
   }
 
+  if (opts.listDifferent && opts.files.length === 0) {
+    throw new CLIUsageError('--list-different requires at least one input file');
+  }
+
+  if (opts.listDifferent && opts.write) {
+    throw new CLIUsageError('--list-different and --write cannot be used together');
+  }
+
   return opts;
+}
+
+const GLOB_CHARS = /[*?{\[]/;
+
+function isGlobPattern(arg: string): boolean {
+  return GLOB_CHARS.test(arg);
+}
+
+function expandGlobs(files: string[]): string[] {
+  const result: string[] = [];
+  for (const f of files) {
+    if (!isGlobPattern(f)) {
+      result.push(f);
+      continue;
+    }
+    try {
+      const matches = globSync(f);
+      if (matches.length === 0) {
+        // No matches — treat as literal path (will error on read)
+        result.push(f);
+      } else {
+        result.push(...matches.sort());
+      }
+    } catch {
+      // globSync not available or failed — treat as literal path
+      result.push(f);
+    }
+  }
+  return result;
 }
 
 function normalizeForComparison(input: string): string {
@@ -144,25 +234,25 @@ function unifiedDiff(aText: string, bText: string): string {
       continue;
     }
     if (dp[i + 1][j] >= dp[i][j + 1]) {
-      body.push(`-${a[i]}`);
+      body.push(red(`-${a[i]}`));
       i++;
     } else {
-      body.push(`+${b[j]}`);
+      body.push(green(`+${b[j]}`));
       j++;
     }
   }
   while (i < n) {
-    body.push(`-${a[i]}`);
+    body.push(red(`-${a[i]}`));
     i++;
   }
   while (j < m) {
-    body.push(`+${b[j]}`);
+    body.push(green(`+${b[j]}`));
     j++;
   }
 
   return [
-    '--- input',
-    '+++ formatted',
+    bold('--- input'),
+    bold('+++ formatted'),
     `@@ -1,${n} +1,${m} @@`,
     ...body,
   ].join('\n');
@@ -172,14 +262,33 @@ function formatOneInput(input: string): string {
   return formatSQL(input);
 }
 
-function handleParseError(err: unknown): never {
+function getSourceLine(input: string, line: number): string {
+  const lines = input.split('\n');
+  if (line >= 1 && line <= lines.length) return lines[line - 1];
+  return '';
+}
+
+function formatErrorExcerpt(input: string, line: number, column: number, message: string): string {
+  const sourceLine = getSourceLine(input, line);
+  const caret = ' '.repeat(Math.max(0, column - 1)) + '^';
+  return red(`Parse error at line ${line}, column ${column}:`) + `\n\n  ${sourceLine}\n  ${caret}\n  ${message}`;
+}
+
+function handleParseError(err: unknown, input?: string): never {
   if (err instanceof ParseError) {
-    const pos = err.token.position >= 0 ? ` at position ${err.token.position}` : '';
-    console.error(`Parse error${pos}: ${err.message}`);
+    if (input) {
+      console.error(formatErrorExcerpt(input, err.line, err.column, err.message));
+    } else {
+      console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${err.message}`));
+    }
     process.exit(2);
   }
   if (err instanceof TokenizeError) {
-    console.error(`Parse error at position ${err.position}: ${err.message}`);
+    if (input) {
+      console.error(formatErrorExcerpt(input, err.line, err.column, err.message));
+    } else {
+      console.error(red(`Parse error at line ${err.line}, column ${err.column}: ${err.message}`));
+    }
     process.exit(2);
   }
   throw err;
@@ -199,22 +308,25 @@ function main(): void {
       process.exit(0);
     }
 
+    initColor(opts);
+
+    const expandedFiles = expandGlobs(opts.files);
     let checkFailures = 0;
 
-    if (opts.files.length === 0) {
+    if (expandedFiles.length === 0 && opts.files.length === 0) {
       const input = readFileSync(0, 'utf-8');
       let output: string;
       try {
         output = formatOneInput(input);
       } catch (err) {
-        handleParseError(err);
+        handleParseError(err, input);
       }
 
       if (opts.check) {
         const normalizedInput = normalizeForComparison(input);
         if (normalizedInput !== output) {
           checkFailures++;
-          console.error('Input is not formatted.');
+          console.error(red('Input is not formatted.'));
           if (opts.diff) {
             console.error(unifiedDiff(normalizedInput, output));
           }
@@ -223,14 +335,14 @@ function main(): void {
         process.stdout.write(output);
       }
     } else {
-      for (const file of opts.files) {
+      for (const file of expandedFiles) {
         const input = readFileSync(file, 'utf-8');
 
         let output: string;
         try {
           output = formatOneInput(input);
         } catch (err) {
-          handleParseError(err);
+          handleParseError(err, input);
         }
 
         if (opts.write) {
@@ -238,11 +350,20 @@ function main(): void {
           continue;
         }
 
+        if (opts.listDifferent) {
+          const normalizedInput = normalizeForComparison(input);
+          if (normalizedInput !== output) {
+            checkFailures++;
+            console.log(file);
+          }
+          continue;
+        }
+
         if (opts.check) {
           const normalizedInput = normalizeForComparison(input);
           if (normalizedInput !== output) {
             checkFailures++;
-            console.error(`${file}: not formatted.`);
+            console.error(red(`${file}: not formatted.`));
             if (opts.diff) {
               console.error(unifiedDiff(normalizedInput, output));
             }
@@ -254,18 +375,22 @@ function main(): void {
       }
     }
 
+    if (opts.check && checkFailures === 0 && expandedFiles.length > 0) {
+      console.error(green('All files are formatted.'));
+    }
+
     if (checkFailures > 0) {
       process.exit(1);
     }
   } catch (err) {
     if (err instanceof CLIUsageError) {
-      console.error(err.message);
+      console.error(red(err.message));
       process.exit(1);
     }
 
     const ioErr = err as NodeJS.ErrnoException;
     if (ioErr && typeof ioErr === 'object' && (ioErr.code === 'ENOENT' || ioErr.code === 'EISDIR')) {
-      console.error(`I/O error: ${ioErr.message}`);
+      console.error(red(`I/O error: ${ioErr.message}`));
       process.exit(1);
     }
 

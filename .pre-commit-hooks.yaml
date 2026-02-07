@@ -1,0 +1,6 @@
+- id: sqlfmt
+  name: sqlfmt
+  description: Format SQL files with sqlfmt (river-aligned, sqlstyle.guide)
+  entry: npx sqlfmt --check
+  language: node
+  types: [sql]
