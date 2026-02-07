@@ -129,7 +129,6 @@ export interface AlterTableStatement {
   type: 'alter_table';
   objectType: string;
   objectName: string;
-  action: string; // raw text like "ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"
   actions: AlterAction[];
   leadingComments: CommentNode[];
 }
@@ -268,8 +267,6 @@ export interface GrantStatement {
   grantedBy?: string;
   cascade?: boolean;
   restrict?: boolean;
-  // Backward compatibility for existing code paths/tests
-  raw?: string;
   leadingComments: CommentNode[];
 }
 
@@ -562,6 +559,7 @@ export interface JoinClause {
   lateral?: boolean;
   on?: Expression;
   usingClause?: string[];
+  trailingComment?: CommentNode;
 }
 
 export interface WhereClause {
@@ -586,6 +584,7 @@ export interface OrderByItem {
   expr: Expression;
   direction?: 'ASC' | 'DESC';
   nulls?: 'FIRST' | 'LAST';
+  trailingComment?: CommentNode;
 }
 
 export interface LimitClause {

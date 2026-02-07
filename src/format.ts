@@ -14,7 +14,7 @@ export interface FormatOptions {
    * Deeply nested sub-expressions (subqueries, CASE chains, etc.) increase
    * memory and stack usage. Set this to guard against pathological input.
    *
-   * @default 100
+   * @default 200
    */
   maxDepth?: number;
 
@@ -45,6 +45,14 @@ export interface FormatOptions {
    * raw-passthrough for a statement.
    */
   onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
+
+  /**
+   * Callback invoked when recovery cannot preserve a failed statement as raw SQL.
+   *
+   * This is rare (typically end-of-input failures), but allows callers to
+   * surface potential statement drops explicitly.
+   */
+  onDropStatement?: (error: ParseError) => void;
 }
 
 /**
@@ -58,7 +66,7 @@ export interface FormatOptions {
  * @returns Formatted SQL with a trailing newline, or empty string for blank input.
  * @throws {TokenizeError} When the input contains invalid tokens (e.g., unterminated strings).
  * @throws {ParseError} When `recover` is `false` and parsing fails. When `recover` is `true`
- *   (the default), unparseable statements are silently passed through instead.
+ *   (the default), unparseable statements are recovered as raw passthrough where possible.
  * @throws {Error} When input exceeds maximum size.
  *
  * @example
@@ -87,6 +95,7 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
     recover: options.recover ?? true,
     maxDepth: options.maxDepth,
     onRecover: options.onRecover,
+    onDropStatement: options.onDropStatement,
   });
 
   if (statements.length === 0) return '';

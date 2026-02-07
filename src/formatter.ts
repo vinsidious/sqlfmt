@@ -1,5 +1,8 @@
 import * as AST from './ast';
 import { FUNCTION_KEYWORDS } from './keywords';
+import { MaxDepthError } from './parser';
+import type { Token } from './tokenizer';
+import { DEFAULT_MAX_DEPTH, TERMINAL_WIDTH } from './constants';
 
 // Type guard: checks if an InExpr's values field is a SubqueryExpr (vs Expression[])
 function isSubqueryValues(values: AST.Expression[] | AST.SubqueryExpr): values is AST.SubqueryExpr {
@@ -11,7 +14,50 @@ function isSubqueryValues(values: AST.Expression[] | AST.SubqueryExpr): values i
 // starts at a consistent column position.
 
 const DEFAULT_RIVER = 6; // length of SELECT keyword
-const MAX_FORMATTER_DEPTH = 200;
+const MAX_FORMATTER_DEPTH = DEFAULT_MAX_DEPTH;
+
+const FORMATTER_DEPTH_TOKEN: Token = {
+  type: 'eof',
+  value: '',
+  upper: '',
+  position: -1,
+  line: 0,
+  column: 0,
+};
+
+// Formatter depth is a structural safety guard. We reuse MaxDepthError so
+// callers can handle parser/formatter depth failures consistently.
+function throwFormatterDepthError(): never {
+  throw new MaxDepthError(MAX_FORMATTER_DEPTH, FORMATTER_DEPTH_TOKEN);
+}
+
+// Approximate monospace display width with East Asian wide/full-width support.
+// Used for line-length heuristics so CJK-heavy SQL wraps more predictably.
+function stringDisplayWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    width += isWideCodePoint(cp) ? 2 : 1;
+  }
+  return width;
+}
+
+function isWideCodePoint(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    cp === 0x2329 ||
+    cp === 0x232a ||
+    (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe10 && cp <= 0xfe19) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff) ||
+    (cp >= 0x20000 && cp <= 0x3fffd)
+  );
+}
 
 // Layout thresholds that control when the formatter breaks lines or switches
 // from inline to multi-line output. Values are in character columns.
@@ -50,16 +96,16 @@ const MAX_FORMATTER_DEPTH = 200;
 //     Maximum data-type-name length (e.g. "VARCHAR(255)") for column-type
 //     alignment in CREATE TABLE. 13 covers common types like TIMESTAMP(6).
 const LAYOUT_POLICY = {
-  // 66 = 80 (standard terminal width) - 6 (SELECT keyword) - 8 (indentation headroom)
-  topLevelInlineColumnMax: 66,
-  // 80 = standard terminal width (nested contexts have more horizontal room)
-  nestedInlineColumnMax: 80,
-  nestedInlineWithShortAliasesMax: 66,
-  topLevelAliasBreakMin: 50,
-  nestedConcatTailBreakMin: 66,
-  groupPackColumnMax: 66,
-  nestedGroupPackColumnMax: 80,
-  expressionWrapColumnMax: 80,
+  // 66 = 80 (terminal) - 6 (river keyword) - 8 (indentation headroom)
+  topLevelInlineColumnMax: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
+  // Nested expressions use the full terminal width baseline.
+  nestedInlineColumnMax: TERMINAL_WIDTH,
+  nestedInlineWithShortAliasesMax: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
+  topLevelAliasBreakMin: Math.floor(TERMINAL_WIDTH * 0.625), // 50 on 80-col terminals
+  nestedConcatTailBreakMin: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
+  groupPackColumnMax: TERMINAL_WIDTH - DEFAULT_RIVER - 8,
+  nestedGroupPackColumnMax: TERMINAL_WIDTH,
+  expressionWrapColumnMax: TERMINAL_WIDTH,
   createTableTypeAlignMax: 13,
 } as const;
 
@@ -187,7 +233,7 @@ function deriveSelectRiverWidth(node: AST.SelectStatement): number {
 
 function formatNode(node: AST.Node, ctx: FormatContext): string {
   if (ctx.depth >= MAX_FORMATTER_DEPTH) {
-    return '/* max depth exceeded */';
+    throwFormatterDepthError();
   }
   switch (node.type) {
     case 'select': return formatSelect(node, ctx);
@@ -312,7 +358,7 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   // ORDER BY
   if (node.orderBy) {
     const kw = rightAlign('ORDER', ctx);
-    lines.push(kw + ' BY ' + node.orderBy.items.map(formatOrderByItem).join(', '));
+    lines.push(...formatSelectOrderByLines(node.orderBy.items, kw, contentPad(ctx)));
   }
 
   // LIMIT
@@ -343,50 +389,19 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
 
 // ─── Column List ─────────────────────────────────────────────────────
 
+interface FormattedColumnPart {
+  text: string;
+  comment?: AST.CommentNode;
+}
+
 function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, ctx: FormatContext): string {
   if (columns.length === 0) return '';
 
-  // Format each column to a string, tracking which have comments
-  const parts = columns.map(col => {
-    let s = formatExprInSelect(col.expr, contentCol(ctx), ctx.outerColumnOffset || 0);
-    if (col.alias && !isRedundantAlias(col.expr, col.alias)) {
-      s += ' AS ' + formatAlias(col.alias);
-    }
-    return { text: s, comment: col.trailingComment };
-  });
+  const parts = buildFormattedColumnParts(columns, ctx);
+  const inlineResult = tryFormatInlineColumnList(parts, columns, firstColStartCol, ctx);
+  if (inlineResult) return inlineResult;
 
-  const hasComments = parts.some(p => p.comment);
   const hasMultiLine = parts.some(p => p.text.includes('\n'));
-  const hasAliases = columns.some(c => c.alias && !isRedundantAlias(c.expr, c.alias));
-  const aliasCount = columns.filter(c => c.alias && !isRedundantAlias(c.expr, c.alias)).length;
-
-  // Build single-line version
-  const singleLine = parts.map(p => p.text).join(', ');
-  const totalLen = firstColStartCol + singleLine.length;
-
-  // Account for outer nesting (subqueries are shifted in the final output)
-  const effectiveLen = totalLen + (ctx.outerColumnOffset || 0);
-  const maxInlineLen = ctx.indentOffset > 0
-    ? (columns.length <= 2 && hasAliases
-      ? LAYOUT_POLICY.nestedInlineWithShortAliasesMax
-      : LAYOUT_POLICY.nestedInlineColumnMax)
-    : LAYOUT_POLICY.topLevelInlineColumnMax;
-
-  // Single-line if fits, no comments, no multi-line expressions
-  const aliasBreak =
-    ctx.indentOffset === 0 &&
-    aliasCount >= 2 &&
-    columns.length >= 3 &&
-    effectiveLen > LAYOUT_POLICY.topLevelAliasBreakMin;
-  const concatTailBreak =
-    ctx.indentOffset > 0 &&
-    columns.length >= 4 &&
-    parts.slice(3).some(p => p.text.includes('||')) &&
-    effectiveLen > LAYOUT_POLICY.nestedConcatTailBreakMin;
-  if (effectiveLen <= maxInlineLen && !hasComments && !hasMultiLine && !aliasBreak && !concatTailBreak) {
-    return singleLine;
-  }
-
   const cCol = contentCol(ctx);
   const indent = ' '.repeat(cCol);
 
@@ -395,23 +410,96 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
     return formatColumnsOnePerLine(parts, indent);
   }
 
-  if (
-    ctx.indentOffset > 0 &&
-    !hasComments &&
-    columns.length >= 4 &&
-    parts.slice(3).some(p => p.text.includes('||'))
-  ) {
-    const lines: string[] = [];
-    const head = parts.slice(0, 3).map(p => p.text).join(', ');
-    lines.push(head + ',');
-    for (let i = 3; i < parts.length; i++) {
-      const isLast = i === parts.length - 1;
-      const comma = isLast ? '' : ',';
-      lines.push(indent + parts[i].text + comma);
-    }
-    return lines.join('\n');
+  if (shouldBreakNestedConcatTail(columns, parts, firstColStartCol, ctx)) {
+    return formatColumnListWithConcatTailBreak(parts, indent);
   }
 
+  return formatColumnListWithGroups(parts, indent, cCol, ctx);
+}
+
+function buildFormattedColumnParts(columns: AST.ColumnExpr[], ctx: FormatContext): FormattedColumnPart[] {
+  return columns.map(col => {
+    let text = formatExprInSelect(col.expr, contentCol(ctx), ctx.outerColumnOffset || 0, ctx.depth);
+    if (col.alias && !isRedundantAlias(col.expr, col.alias)) {
+      text += ' AS ' + formatAlias(col.alias);
+    }
+    return { text, comment: col.trailingComment };
+  });
+}
+
+function hasEffectiveAlias(column: AST.ColumnExpr): boolean {
+  return !!(column.alias && !isRedundantAlias(column.expr, column.alias));
+}
+
+function getMaxInlineColumnLength(columns: AST.ColumnExpr[], ctx: FormatContext): number {
+  if (ctx.indentOffset === 0) return LAYOUT_POLICY.topLevelInlineColumnMax;
+  const hasAliases = columns.some(hasEffectiveAlias);
+  if (columns.length <= 2 && hasAliases) return LAYOUT_POLICY.nestedInlineWithShortAliasesMax;
+  return LAYOUT_POLICY.nestedInlineColumnMax;
+}
+
+function hasTopLevelAliasBreak(columns: AST.ColumnExpr[], effectiveLen: number, ctx: FormatContext): boolean {
+  if (ctx.indentOffset !== 0) return false;
+  const aliasCount = columns.filter(hasEffectiveAlias).length;
+  return aliasCount >= 2
+    && columns.length >= 3
+    && effectiveLen > LAYOUT_POLICY.topLevelAliasBreakMin;
+}
+
+function shouldBreakNestedConcatTail(
+  columns: AST.ColumnExpr[],
+  parts: FormattedColumnPart[],
+  firstColStartCol: number,
+  ctx: FormatContext
+): boolean {
+  if (ctx.indentOffset === 0 || columns.length < 4) return false;
+  if (parts.some(p => p.comment)) return false;
+  if (!parts.slice(3).some(p => p.text.includes('||'))) return false;
+
+  const singleLine = parts.map(p => p.text).join(', ');
+  const totalLen = firstColStartCol + stringDisplayWidth(singleLine);
+  const effectiveLen = totalLen + (ctx.outerColumnOffset || 0);
+  return effectiveLen > LAYOUT_POLICY.nestedConcatTailBreakMin;
+}
+
+function tryFormatInlineColumnList(
+  parts: FormattedColumnPart[],
+  columns: AST.ColumnExpr[],
+  firstColStartCol: number,
+  ctx: FormatContext
+): string | null {
+  if (parts.some(p => p.comment)) return null;
+  if (parts.some(p => p.text.includes('\n'))) return null;
+
+  const singleLine = parts.map(p => p.text).join(', ');
+  const totalLen = firstColStartCol + stringDisplayWidth(singleLine);
+  const effectiveLen = totalLen + (ctx.outerColumnOffset || 0);
+  const maxInlineLen = getMaxInlineColumnLength(columns, ctx);
+
+  if (effectiveLen > maxInlineLen) return null;
+  if (hasTopLevelAliasBreak(columns, effectiveLen, ctx)) return null;
+  if (shouldBreakNestedConcatTail(columns, parts, firstColStartCol, ctx)) return null;
+  return singleLine;
+}
+
+function formatColumnListWithConcatTailBreak(parts: FormattedColumnPart[], indent: string): string {
+  const lines: string[] = [];
+  const head = parts.slice(0, 3).map(p => p.text).join(', ');
+  lines.push(head + ',');
+  for (let i = 3; i < parts.length; i++) {
+    const isLast = i === parts.length - 1;
+    const comma = isLast ? '' : ',';
+    lines.push(indent + parts[i].text + comma);
+  }
+  return lines.join('\n');
+}
+
+function formatColumnListWithGroups(
+  parts: FormattedColumnPart[],
+  indent: string,
+  cCol: number,
+  ctx: FormatContext
+): string {
   // Multi-line with grouped continuation:
   // First column always on its own line (the SELECT line)
   const firstComment = parts[0].comment ? '  ' + parts[0].comment.text : '';
@@ -422,8 +510,8 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
 
   // Group remaining columns by comment boundaries
   const remaining = parts.slice(1);
-  const lineGroups: typeof parts[] = [];
-  let currentGroup: typeof parts = [];
+  const lineGroups: FormattedColumnPart[][] = [];
+  let currentGroup: FormattedColumnPart[] = [];
 
   for (const col of remaining) {
     currentGroup.push(col);
@@ -444,7 +532,7 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
     // Calculate group line length (columns only, without comments)
     const groupTexts = group.map(p => p.text);
     const groupLine = groupTexts.join(', ');
-    const groupLen = cCol + groupLine.length;
+    const groupLen = cCol + stringDisplayWidth(groupLine);
 
     // Get trailing comment from last column in group (if any)
     const lastCol = group[group.length - 1];
@@ -452,14 +540,7 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
     const groupComma = isLastGroup ? '' : ',';
 
     const effectiveGroupLen = groupLen + (ctx.outerColumnOffset || 0);
-    if (
-      (group.length >= 3 && groupLen <= LAYOUT_POLICY.groupPackColumnMax) ||
-      (
-        group.length >= 2 &&
-        (ctx.outerColumnOffset || 0) > 0 &&
-        effectiveGroupLen <= LAYOUT_POLICY.nestedGroupPackColumnMax
-      )
-    ) {
+    if (shouldPackColumnGroup(group.length, groupLen, effectiveGroupLen, ctx)) {
       // Pack onto one continuation line (3+ similar columns that fit)
       lines.push(indent + groupLine + groupComma + groupComment);
     } else {
@@ -477,7 +558,21 @@ function formatColumnList(columns: AST.ColumnExpr[], firstColStartCol: number, c
   return lines.join('\n');
 }
 
-function formatColumnsOnePerLine(parts: { text: string; comment?: AST.CommentNode }[], indent: string): string {
+function shouldPackColumnGroup(
+  groupLength: number,
+  groupLen: number,
+  effectiveGroupLen: number,
+  ctx: FormatContext
+): boolean {
+  if (groupLength >= 3 && groupLen <= LAYOUT_POLICY.groupPackColumnMax) {
+    return true;
+  }
+  return groupLength >= 2
+    && (ctx.outerColumnOffset || 0) > 0
+    && effectiveGroupLen <= LAYOUT_POLICY.nestedGroupPackColumnMax;
+}
+
+function formatColumnsOnePerLine(parts: FormattedColumnPart[], indent: string): string {
   const result: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
@@ -496,12 +591,12 @@ function formatColumnsOnePerLine(parts: { text: string; comment?: AST.CommentNod
 
 // Format an expression that appears in a SELECT column list
 // This needs context-awareness for CASE and subqueries
-function formatExprInSelect(expr: AST.Expression, colStart: number, outerOffset: number = 0): string {
+function formatExprInSelect(expr: AST.Expression, colStart: number, outerOffset: number = 0, depth: number = 0): string {
   if (expr.type === 'case') {
-    return formatCaseAtColumn(expr, colStart);
+    return formatCaseAtColumn(expr, colStart, depth + 1);
   }
   if (expr.type === 'subquery') {
-    return formatSubqueryAtColumn(expr, colStart);
+    return formatSubqueryAtColumn(expr, colStart, depth + 1);
   }
   if (expr.type === 'window_function') {
     return formatWindowFunctionAtColumn(expr, colStart);
@@ -510,7 +605,7 @@ function formatExprInSelect(expr: AST.Expression, colStart: number, outerOffset:
   if (expr.type === 'binary' && expr.right.type === 'subquery') {
     const left = formatExpr(expr.left);
     const op = ' ' + expr.operator + ' ';
-    const subq = formatSubqueryAtColumn(expr.right, colStart + left.length + op.length + 1);
+    const subq = formatSubqueryAtColumn(expr.right, colStart + left.length + op.length + 1, depth + 1);
     return left + op + subq;
   }
 
@@ -786,7 +881,36 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
     }
   }
 
+  if (join.trailingComment && lines.length > 0) {
+    lines[lines.length - 1] += '  ' + join.trailingComment.text;
+  }
+
   return lines.join('\n');
+}
+
+function formatSelectOrderByLines(items: AST.OrderByItem[], orderKeyword: string, continuationPad: string): string[] {
+  if (items.length === 0) return [`${orderKeyword} BY`];
+
+  const hasTrailingComments = items.some(item => !!item.trailingComment);
+  if (!hasTrailingComments) {
+    return [`${orderKeyword} BY ${items.map(formatOrderByItem).join(', ')}`];
+  }
+
+  const lines: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const isLast = i === items.length - 1;
+    const comma = isLast ? '' : ',';
+    const comment = item.trailingComment ? '  ' + item.trailingComment.text : '';
+    const line = formatOrderByItem(item) + comma + comment;
+    if (i === 0) {
+      lines.push(`${orderKeyword} BY ${line}`);
+    } else {
+      lines.push(continuationPad + line);
+    }
+  }
+
+  return lines;
 }
 
 function formatJoinTable(join: AST.JoinClause, tableStartCol: number): string {
@@ -996,7 +1120,7 @@ function formatQueryExpressionForSubquery(
 // then shift subsequent lines by (col+1) to align under SELECT.
 function formatSubqueryAtColumn(expr: AST.SubqueryExpr, col: number, depth: number = 0): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
-    return formatSubquerySimple(expr);
+    throwFormatterDepthError();
   }
   const inner = formatQueryExpressionForSubquery(expr.query, col + 1, depth + 1);
   return wrapSubqueryLines(inner, col);
@@ -1017,7 +1141,7 @@ function wrapSubqueryLines(innerFormatted: string, col: number): string {
 
 function formatCaseAtColumn(expr: AST.CaseExpr, col: number, depth: number = 0): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
-    return formatCaseSimple(expr);
+    throwFormatterDepthError();
   }
   const pad = ' '.repeat(col);
   let result = 'CASE';
@@ -1462,9 +1586,7 @@ function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   for (const c of node.leadingComments) lines.push(c.text);
   if (node.privileges.length === 0 || !node.object || node.recipients.length === 0) {
-    const fallback = (node.raw || '').replace(/\s+/g, ' ').trim();
-    lines.push((fallback || node.kind) + ';');
-    return lines.join('\n');
+    throw new Error('Invalid grant statement AST: missing privileges, object, or recipients');
   }
 
   const head = node.kind
@@ -1652,7 +1774,10 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
 
   const actions = node.actions && node.actions.length > 0
     ? node.actions.map(formatAlterAction)
-    : [node.action];
+    : [];
+  if (actions.length === 0) {
+    throw new Error('Invalid alter_table AST: missing actions');
+  }
   for (let i = 0; i < actions.length; i++) {
     const comma = i < actions.length - 1 ? ',' : ';';
     lines.push(' '.repeat(8) + actions[i] + comma);

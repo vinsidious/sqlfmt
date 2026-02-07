@@ -11,10 +11,10 @@ const cliPath = join(root, 'src', 'cli.ts');
 const bunPath = process.execPath;
 const decoder = new TextDecoder();
 
-function runCli(args: string[]) {
+function runCli(args: string[], cwd: string = root) {
   const proc = Bun.spawnSync({
     cmd: [bunPath, cliPath, ...args],
-    cwd: root,
+    cwd,
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -58,7 +58,12 @@ describe('formatter depth limit', () => {
     for (let i = 0; i < 200; i++) {
       conditions.push(`c${i} = ${i}`);
     }
-    const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(i => i % 2 === 0 ? ' AND ' : ' OR ') + ';';
+    const mixed: string[] = [];
+    for (let i = 0; i < conditions.length; i++) {
+      mixed.push(conditions[i]);
+      if (i < conditions.length - 1) mixed.push(i % 2 === 0 ? 'AND' : 'OR');
+    }
+    const sql = 'SELECT 1 FROM t WHERE ' + mixed.join(' ') + ';';
     const result = formatSQL(sql);
     expect(result).toContain('SELECT');
   });
@@ -153,17 +158,18 @@ describe('input size validation', () => {
 });
 
 describe('CLI path validation for --write', () => {
-  it('writes files in temp directories with absolute paths', () => {
+  it('skips absolute paths outside cwd', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-pathval-'));
     const file = join(dir, 'test.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
     const res = runCli(['--write', file]);
     expect(res.code).toBe(0);
-    expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
+    expect(res.err).toContain('path resolves outside working directory');
+    expect(readFileSync(file, 'utf8')).toBe('select 1;');
   });
 
-  it('creates and cleans up temp file during atomic write', () => {
+  it('does not leave temp files when write is skipped by path validation', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-atomic-'));
     const file = join(dir, 'atomic.sql');
     writeFileSync(file, 'select 1;', 'utf8');
@@ -173,8 +179,8 @@ describe('CLI path validation for --write', () => {
     // No .tmp files should remain in the directory
     const remaining = readdirSync(dir).filter(f => f.endsWith('.tmp'));
     expect(remaining).toEqual([]);
-    // Original file should have formatted content
-    expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
+    // Original file should be unchanged
+    expect(readFileSync(file, 'utf8')).toBe('select 1;');
   });
 });
 
@@ -229,7 +235,7 @@ describe('ignore pattern safety', () => {
     writeFileSync(file, 'select 1;', 'utf8');
     const pattern = 'unlikely-prefix-' + '*'.repeat(300) + '?.sql';
 
-    const res = runCli(['--write', '--ignore', pattern, file]);
+    const res = runCli(['--write', '--ignore', pattern, 'query.sql'], dir);
     expect(res.code).toBe(0);
     expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
   });
@@ -328,5 +334,40 @@ describe('memory and consistency checks', () => {
     const result = formatSQL(sql);
     // Output should be roughly similar in size to input (within 5x for formatting additions)
     expect(result.length).toBeLessThan(sql.length * 5);
+  });
+});
+
+describe('fuzz smoke tests', () => {
+  it('formats randomized predicate chains without throwing and remains idempotent', () => {
+    let seed = 123456789;
+    const next = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed;
+    };
+
+    for (let i = 0; i < 40; i++) {
+      const termCount = 5 + (next() % 12);
+      const terms: string[] = [];
+      for (let t = 0; t < termCount; t++) {
+        const col = `c${next() % 7}`;
+        const val = next() % 1000;
+        terms.push(`${col} = ${val}`);
+      }
+      const ops: string[] = [];
+      for (let t = 0; t < termCount - 1; t++) {
+        ops.push((next() & 1) === 0 ? 'AND' : 'OR');
+      }
+
+      let where = '';
+      for (let t = 0; t < termCount; t++) {
+        where += terms[t];
+        if (t < ops.length) where += ` ${ops[t]} `;
+      }
+
+      const sql = `SELECT * FROM fuzz_t WHERE ${where};`;
+      const once = formatSQL(sql);
+      const twice = formatSQL(once);
+      expect(twice).toBe(once);
+    }
   });
 });

@@ -19,12 +19,34 @@ describe('parser syntax coverage', () => {
     expect(stmt.orderBy.items[1].nulls).toBe('FIRST');
   });
 
+  it('preserves trailing comments on ORDER BY items', () => {
+    const stmt = parseFirst('SELECT * FROM t ORDER BY a, -- first sort key\nb DESC -- final key\n;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.orderBy.items[0].trailingComment?.text).toBe('-- first sort key');
+    expect(stmt.orderBy.items[1].trailingComment?.text).toBe('-- final key');
+  });
+
   it('parses FOR UPDATE/SHARE locking clauses', () => {
     const forUpdate = parseFirst('SELECT * FROM t FOR UPDATE;');
     expect(forUpdate.lockingClause).toBe('UPDATE');
 
     const forShare = parseFirst('SELECT * FROM t FOR SHARE NOWAIT;');
     expect(forShare.lockingClause).toBe('SHARE NOWAIT');
+  });
+
+  it('preserves trailing comments on JOIN clauses', () => {
+    const stmt = parseFirst('SELECT * FROM a JOIN b ON a.id = b.id -- join comment\nWHERE a.id > 0;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.joins[0].trailingComment?.text).toBe('-- join comment');
+    expect(stmt.where).toBeDefined();
+  });
+
+  it('parses BETWEEN with trailing AND predicates correctly', () => {
+    const stmt = parseFirst('SELECT * FROM t WHERE x BETWEEN 1 AND 10 AND y = 1;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.where.condition.type).toBe('binary');
+    expect(stmt.where.condition.operator).toBe('AND');
+    expect(stmt.where.condition.left.type).toBe('between');
   });
 
   it('parses DELETE ... USING', () => {
@@ -133,6 +155,23 @@ describe('parser syntax coverage', () => {
     expect(stmt.elements[0].checkExpr?.type).toBe('between');
   });
 
+  it('formats complex table constraints with foreign-key actions', () => {
+    const sql = `CREATE TABLE orders (
+      id BIGINT PRIMARY KEY,
+      customer_id BIGINT NOT NULL,
+      quantity INT NOT NULL,
+      CONSTRAINT qty_check CHECK(quantity BETWEEN 1 AND 99),
+      CONSTRAINT fk_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE SET NULL ON UPDATE CASCADE
+    );`;
+    const out = formatSQL(sql);
+    expect(out).toContain('CONSTRAINT qty_check');
+    expect(out).toContain('CHECK(quantity BETWEEN 1 AND 99)');
+    expect(out).toContain('CONSTRAINT fk_customer');
+    expect(out).toContain('FOREIGN KEY (customer_id)');
+    expect(out).toContain('ON DELETE SET NULL');
+    expect(out).toContain('ON UPDATE CASCADE');
+  });
+
   it('parses ALTER actions into structured actions list', () => {
     const stmt = parseFirst('ALTER TABLE users ADD COLUMN status TEXT DEFAULT \'active\', RENAME COLUMN status TO state;');
     expect(stmt.type).toBe('alter_table');
@@ -199,7 +238,7 @@ describe('parser/code-quality safety checks', () => {
   });
 
   it('enforces maximum nesting depth', () => {
-    const deep = 'SELECT ' + '('.repeat(130) + '1' + ')'.repeat(130) + ';';
+    const deep = 'SELECT ' + '('.repeat(240) + '1' + ')'.repeat(240) + ';';
     expect(() => formatSQL(deep)).toThrow();
   });
 });
@@ -234,6 +273,23 @@ describe('parser recovery callback', () => {
       })
     ).toThrow(ParseError);
     expect(called).toBe(false);
+  });
+
+  it('invokes onDropStatement when raw recovery is unavailable', () => {
+    const dropped: string[] = [];
+    const parser = new Parser(tokenize('SELECT (;'), {
+      recover: true,
+      onDropStatement: (error) => dropped.push(error.message),
+    }) as any;
+
+    parser.parseRawStatement = function () {
+      this.pos = this.tokens.length - 1;
+      return null;
+    };
+
+    parser.parseStatements();
+    expect(dropped.length).toBe(1);
+    expect(dropped[0]).toContain('Expected');
   });
 });
 

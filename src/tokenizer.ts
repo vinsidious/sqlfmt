@@ -164,7 +164,7 @@ function readQuotedString(
     }
     pos++;
   }
-  const errPos = start - 1;
+  const errPos = pos;
   if (lineOffsets) {
     const { line, column } = posToLineCol(lineOffsets, errPos);
     throw new TokenizeError('Unterminated string literal', errPos, line, column);
@@ -613,15 +613,15 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
-    // Remaining simple single-char operators: = + * /
-    if ('=+*/'.includes(ch)) {
+    // Remaining simple single-char operators: = + * / % ^
+    if ('=+*/%^'.includes(ch)) {
       pos++;
       emit('operator', ch, ch, start);
       continue;
     }
 
-    // Punctuation (including [ and ])
-    if ('(),;.[]'.includes(ch)) {
+    // Punctuation (including [ ], and : for array slices)
+    if ('(),;.[]:'.includes(ch)) {
       pos++;
       emit('punctuation', ch, ch, start);
       continue;
@@ -652,9 +652,14 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
-    // Unknown character — just consume it
-    pos++;
-    emit('identifier', ch, ch, start);
+    // Unknown character
+    const codePoint = ch.codePointAt(0) ?? ch.charCodeAt(0);
+    const printable =
+      codePoint <= 0x1f || codePoint === 0x7f
+        ? `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`
+        : `'${ch}'`;
+    const { line: eLine, column: eCol } = lc(start);
+    throw new TokenizeError(`Unexpected character ${printable}`, start, eLine, eCol);
   }
 
   emit('eof', '', '', pos);

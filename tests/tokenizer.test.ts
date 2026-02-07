@@ -100,6 +100,10 @@ describe('tokenizer robustness', () => {
   it('throws on unterminated dollar-quoted string', () => {
     expect(() => tokenize('SELECT $tag$no end')).toThrow(/expected closing \$tag\$/);
   });
+
+  it('throws on unexpected control characters', () => {
+    expect(() => tokenize('SELECT 1 \u0001 FROM t;')).toThrow(TokenizeError);
+  });
 });
 
 describe('tokenizer Unicode edge cases', () => {

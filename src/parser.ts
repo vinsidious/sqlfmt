@@ -1,6 +1,7 @@
 import { tokenize, Token } from './tokenizer';
 import * as AST from './ast';
 import { parseComparisonExpression, parsePrimaryExpression } from './parser/expressions';
+import { DEFAULT_MAX_DEPTH } from './constants';
 import {
   type DmlParser,
   parseDeleteStatement,
@@ -8,8 +9,6 @@ import {
   parseSetItem as parseDmlSetItem,
   parseUpdateStatement,
 } from './parser/dml';
-
-const DEFAULT_MAX_DEPTH = 100;
 const CLAUSE_KEYWORDS = new Set([
   'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'LIMIT', 'OFFSET',
   'UNION', 'INTERSECT', 'EXCEPT', 'ON', 'SET', 'VALUES',
@@ -48,7 +47,7 @@ export interface ParseOptions {
    * Maximum allowed nesting depth. Exceeding this limit throws an error
    * to prevent stack overflow on deeply nested or adversarial input.
    *
-   * @default 100
+   * @default 200
    */
   maxDepth?: number;
 
@@ -60,6 +59,14 @@ export interface ParseOptions {
    * `MaxDepthError` (which always throws).
    */
   onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
+
+  /**
+   * Optional callback invoked when recovery cannot produce raw text for a
+   * failed statement (for example, the error occurs at end-of-input).
+   *
+   * This makes statement drops explicit to callers in recovery mode.
+   */
+  onDropStatement?: (error: ParseError) => void;
 }
 
 /**
@@ -92,7 +99,7 @@ export class ParseError extends Error {
   readonly column: number;
 
   constructor(expected: string, token: Token) {
-    const got = token.type === 'eof' ? 'EOF' : `${token.type} "${token.value}"`;
+    const got = token.type === 'eof' ? 'end of input' : `"${token.value}" (${token.type})`;
     super(`Expected ${expected}, got ${got}`);
     this.name = 'ParseError';
     this.expected = expected;
@@ -148,6 +155,7 @@ export class Parser {
   private readonly recover: boolean;
   private readonly maxDepth: number;
   private readonly onRecover?: (error: ParseError, raw: AST.RawExpression | null) => void;
+  private readonly onDropStatement?: (error: ParseError) => void;
   private depth: number = 0;
 
   constructor(tokens: Token[], options: ParseOptions = {}) {
@@ -168,6 +176,7 @@ export class Parser {
     this.recover = options.recover ?? true;
     this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
     this.onRecover = options.onRecover;
+    this.onDropStatement = options.onDropStatement;
   }
 
   /**
@@ -210,7 +219,11 @@ export class Parser {
         this.pos = stmtStart;
         const raw = this.parseRawStatement();
         this.onRecover?.(err, raw);
-        if (raw) stmts.push(raw);
+        if (raw) {
+          stmts.push(raw);
+        } else {
+          this.onDropStatement?.(err);
+        }
       }
       this.skipSemicolons();
     }
@@ -224,7 +237,10 @@ export class Parser {
   private parseStatement(): AST.Node | null {
     const comments = this.consumeComments();
 
-    if (this.isAtEnd()) return null;
+    if (this.isAtEnd()) {
+      if (comments.length === 0) return null;
+      return this.commentsToRaw(comments);
+    }
 
     // Parenthesized top-level query expression
     if (this.check('(')) {
@@ -249,7 +265,22 @@ export class Parser {
 
     // Unknown statement — consume until semicolon
     const raw = this.parseRawStatement();
-    return raw;
+    if (!raw) {
+      if (comments.length === 0) return null;
+      return this.commentsToRaw(comments);
+    }
+    if (comments.length === 0) return raw;
+    return {
+      type: 'raw',
+      text: `${this.commentsToRaw(comments).text}\n${raw.text}`.trim(),
+    };
+  }
+
+  private commentsToRaw(comments: AST.CommentNode[]): AST.RawExpression {
+    return {
+      type: 'raw',
+      text: comments.map(c => c.text).join('\n'),
+    };
   }
 
   private parseRawStatement(): AST.RawExpression | null {
@@ -617,6 +648,7 @@ export class Parser {
 
     let on: AST.Expression | undefined;
     let usingClause: string[] | undefined;
+    let trailingComment: AST.CommentNode | undefined;
 
     if (this.peekUpper() === 'ON') {
       this.advance();
@@ -632,7 +664,16 @@ export class Parser {
       this.expect(')');
     }
 
-    return { joinType: joinType.trim(), table, alias, aliasColumns, lateral, on, usingClause };
+    if (this.peekType() === 'line_comment') {
+      const t = this.advance();
+      trailingComment = {
+        type: 'comment',
+        style: 'line',
+        text: t.value,
+      };
+    }
+
+    return { joinType: joinType.trim(), table, alias, aliasColumns, lateral, on, usingClause, trailingComment };
   }
 
   private parseGroupByClause(): AST.GroupByClause {
@@ -841,6 +882,14 @@ export class Parser {
     items.push(this.parseOrderByItem());
     while (this.check(',')) {
       this.advance();
+      if (this.peekType() === 'line_comment' && !items[items.length - 1].trailingComment) {
+        const t = this.advance();
+        items[items.length - 1].trailingComment = {
+          type: 'comment',
+          style: 'line',
+          text: t.value,
+        };
+      }
       items.push(this.parseOrderByItem());
     }
     return items;
@@ -864,7 +913,15 @@ export class Parser {
         throw new ParseError('FIRST or LAST', this.peek());
       }
     }
-    return { expr, direction, nulls };
+    let trailingComment: AST.CommentNode | undefined;
+    if (this.peekType() === 'line_comment') {
+      trailingComment = {
+        type: 'comment',
+        style: 'line',
+        text: this.advance().value,
+      };
+    }
+    return { expr, direction, nulls, trailingComment };
   }
 
   // Expression parser using precedence climbing
@@ -1803,13 +1860,6 @@ export class Parser {
       grantedBy,
       cascade: cascade || undefined,
       restrict: restrict || undefined,
-      raw: [
-        kind,
-        grantOptionFor ? 'GRANT OPTION FOR' : '',
-        privileges.join(', '),
-        object ? `ON ${object}` : '',
-        recipients.length > 0 ? `${recipientKeyword} ${recipients.join(', ')}` : '',
-      ].filter(Boolean).join(' '),
       leadingComments: comments,
     };
   }
@@ -2012,13 +2062,10 @@ export class Parser {
         break;
       }
     }
-    const action = actions.map(a => this.formatAlterActionCompact(a)).join(', ');
-
     return {
       type: 'alter_table',
       objectType,
       objectName,
-      action,
       actions,
       leadingComments: comments,
     };
@@ -2144,37 +2191,6 @@ export class Parser {
       type: 'raw',
       text: this.tokensToSql(tokens),
     };
-  }
-
-  private formatAlterActionCompact(action: AST.AlterAction): string {
-    switch (action.type) {
-      case 'add_column': {
-        let out = 'ADD COLUMN ';
-        if (action.ifNotExists) out += 'IF NOT EXISTS ';
-        out += action.columnName;
-        if (action.definition) out += ' ' + action.definition;
-        return out;
-      }
-      case 'drop_column': {
-        let out = 'DROP COLUMN ';
-        if (action.ifExists) out += 'IF EXISTS ';
-        out += action.columnName;
-        if (action.behavior) out += ' ' + action.behavior;
-        return out;
-      }
-      case 'rename_to':
-        return `RENAME TO ${action.newName}`;
-      case 'rename_column':
-        return `RENAME COLUMN ${action.columnName} TO ${action.newName}`;
-      case 'set_schema':
-        return `SET SCHEMA ${action.schema}`;
-      case 'set_tablespace':
-        return `SET TABLESPACE ${action.tablespace}`;
-      case 'raw':
-        return action.text;
-      default:
-        return '';
-    }
   }
 
   // DROP TABLE [IF EXISTS] name
@@ -2595,9 +2611,12 @@ export class Parser {
  * returned array.
  *
  * By default, **recovery mode** is enabled: statements that cannot be parsed
- * are silently captured as `RawExpression` nodes (type `'raw'`) so the
- * formatter can pass them through unchanged. To get strict parsing where
- * every syntax error throws, set `recover: false`.
+ * are captured as `RawExpression` nodes (type `'raw'`) so the formatter can
+ * pass them through unchanged. If recovery cannot produce raw text (for
+ * example, an error at end-of-input), the statement is dropped and callers can
+ * observe it via `onDropStatement`.
+ *
+ * To get strict parsing where every syntax error throws, set `recover: false`.
  *
  * Note: {@link MaxDepthError} always throws even in recovery mode, because
  * exceeding the nesting limit is a security boundary, not a syntax issue.

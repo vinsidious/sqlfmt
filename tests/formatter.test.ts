@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { formatSQL } from '../src/format';
+import { formatStatements } from '../src/formatter';
+import { MaxDepthError } from '../src/parser';
+import type * as AST from '../src/ast';
 
 function assertFormat(name: string, input: string, expected: string) {
   it(name, () => {
@@ -1600,6 +1603,61 @@ describe('Formatter depth limit', () => {
     const result = formatSQL(sql);
     expect(result).toContain('SELECT');
     expect(result).toContain('CASE');
+  });
+
+  it('throws MaxDepthError instead of emitting fallback comments', () => {
+    const makeSelect = (expr: AST.Expression): AST.SelectStatement => ({
+      type: 'select',
+      distinct: false,
+      columns: [{ expr }],
+      joins: [],
+      leadingComments: [],
+    });
+
+    let expr: AST.Expression = { type: 'literal', value: '1', literalType: 'number' };
+    for (let i = 0; i < 220; i++) {
+      expr = {
+        type: 'subquery',
+        query: makeSelect(expr),
+      };
+    }
+
+    expect(() => formatStatements([makeSelect(expr)])).toThrow(MaxDepthError);
+  });
+});
+
+describe('Comment preservation regressions', () => {
+  it('preserves trailing JOIN comments without splitting WHERE into raw SQL', () => {
+    const sql = 'SELECT id FROM a JOIN b ON a.id = b.id -- join comment\\nWHERE a.id > 0;';
+    const out = formatSQL(sql);
+    expect(out).toContain('-- join comment');
+    expect(out).toContain('WHERE a.id > 0;');
+    expect(out).not.toContain('\n;\n');
+  });
+
+  it('preserves trailing ORDER BY comments without emitting extra statements', () => {
+    const sql = 'SELECT id FROM t ORDER BY id, -- sort 1\\ncreated_at DESC -- sort 2\\n;';
+    const out = formatSQL(sql);
+    expect(out).toContain('-- sort 1');
+    expect(out).toContain('-- sort 2');
+    expect(out).not.toContain('\n;\n');
+  });
+
+  it('preserves standalone trailing comments between statements', () => {
+    const sql = 'SELECT 1; -- trailing note';
+    const out = formatSQL(sql);
+    expect(out).toContain('SELECT 1;');
+    expect(out).toContain('-- trailing note');
+  });
+});
+
+describe('CJK width-aware layout', () => {
+  it('wraps wide-character SELECT lists using display-width heuristics', () => {
+    const sql = 'SELECT 顾客编号 AS 顾客编号列, 订单编号 AS 订单编号列, 商品编号 AS 商品编号列, 发货编号 AS 发货编号列 FROM 销售记录;';
+    const out = formatSQL(sql);
+    expect(out).toContain('SELECT 顾客编号 AS 顾客编号列,');
+    expect(out).toContain('\n       订单编号 AS 订单编号列,');
+    expect(out).toContain('\n  FROM 销售记录;');
   });
 });
 

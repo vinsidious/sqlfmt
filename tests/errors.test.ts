@@ -43,7 +43,7 @@ describe('error line/column tracking', () => {
       expect(err).toBeInstanceOf(TokenizeError);
       const te = err as TokenizeError;
       expect(te.line).toBe(2);
-      expect(te.column).toBe(3);
+      expect(te.column).toBe(10);
     }
   });
 
@@ -137,7 +137,7 @@ describe('error line/column accuracy for multi-line SQL', () => {
       expect(err).toBeInstanceOf(TokenizeError);
       const te = err as TokenizeError;
       expect(te.line).toBe(3);
-      expect(te.column).toBe(11);
+      expect(te.column).toBe(15);
     }
   });
 
