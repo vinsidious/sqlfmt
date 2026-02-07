@@ -1084,16 +1084,38 @@ export class Parser {
     // Handle array subscript: expr[idx] or expr[lo:hi]
     while (this.check('[')) {
       this.advance(); // consume [
-      const idx = this.parseExpression();
       if (this.check(':')) {
-        // Slice: expr[lo:hi]
         this.advance();
-        const hi = this.parseExpression();
+        const upper = this.check(']') ? undefined : this.parseExpression();
         this.expect(']');
-        expr = { type: 'raw', text: fmtExprForRaw(expr) + '[' + fmtExprForRaw(idx) + ':' + fmtExprForRaw(hi) + ']' } as AST.RawExpression;
+        expr = {
+          type: 'array_subscript',
+          array: expr,
+          isSlice: true,
+          upper,
+        } as AST.ArraySubscriptExpr;
       } else {
+        const lower = this.parseExpression();
+        if (this.check(':')) {
+          this.advance();
+          const upper = this.check(']') ? undefined : this.parseExpression();
+          this.expect(']');
+          expr = {
+            type: 'array_subscript',
+            array: expr,
+            isSlice: true,
+            lower,
+            upper,
+          } as AST.ArraySubscriptExpr;
+          continue;
+        }
         this.expect(']');
-        expr = { type: 'raw', text: fmtExprForRaw(expr) + '[' + fmtExprForRaw(idx) + ']' } as AST.RawExpression;
+        expr = {
+          type: 'array_subscript',
+          array: expr,
+          isSlice: false,
+          lower,
+        } as AST.ArraySubscriptExpr;
       }
     }
 
@@ -1547,12 +1569,12 @@ export class Parser {
     if (this.peekUpper() === 'AS') {
       this.advance();
       const alias = this.advance().value;
-      return { type: 'raw', text: `${fmtExprForRaw(expr)} AS ${alias.startsWith('"') ? alias : alias.toLowerCase()}` };
+      return { type: 'aliased', expr, alias } as AST.AliasedExpr;
     }
 
     if (this.peekType() === 'identifier' && !this.check(',') && !this.check(';')) {
       const alias = this.advance().value;
-      return { type: 'raw', text: `${fmtExprForRaw(expr)} AS ${alias.startsWith('"') ? alias : alias.toLowerCase()}` };
+      return { type: 'aliased', expr, alias } as AST.AliasedExpr;
     }
 
     return expr;
@@ -1904,8 +1926,8 @@ export class Parser {
   private parseIndexColumn(): AST.Expression {
     const expr = this.parseExpression();
     if (this.peekUpper() === 'ASC' || this.peekUpper() === 'DESC') {
-      const dir = this.advance().upper;
-      return { type: 'raw', text: `${fmtExprForRaw(expr)} ${dir}` };
+      const dir = this.advance().upper as 'ASC' | 'DESC';
+      return { type: 'ordered_expr', expr, direction: dir } as AST.OrderedExpr;
     }
     return expr;
   }
@@ -2030,13 +2052,91 @@ export class Parser {
   }
 
   private parseGrant(comments: AST.CommentNode[]): AST.GrantStatement {
-    let raw = '';
-    while (!this.isAtEnd() && !this.check(';')) {
-      const t = this.advance();
-      if (raw) raw += ' ';
-      raw += t.type === 'keyword' ? t.upper : t.value;
+    const kind = this.advance().upper as 'GRANT' | 'REVOKE';
+    let grantOptionFor = false;
+    if (
+      kind === 'REVOKE'
+      && this.peekUpper() === 'GRANT'
+      && this.peekUpperAt(1) === 'OPTION'
+      && this.peekUpperAt(2) === 'FOR'
+    ) {
+      this.advance();
+      this.advance();
+      this.advance();
+      grantOptionFor = true;
     }
-    return { type: 'grant', raw, leadingComments: comments };
+
+    const privilegeTokens = this.collectTokensUntilTopLevelKeyword(new Set(['ON']));
+    this.expectKeyword('ON');
+    const recipientKeyword = kind === 'GRANT' ? 'TO' : 'FROM';
+    const objectTokens = this.collectTokensUntilTopLevelKeyword(new Set([recipientKeyword]));
+    this.expectKeyword(recipientKeyword);
+
+    const recipientTokens: Token[] = [];
+    while (!this.isAtEnd() && !this.check(';')) {
+      if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'GRANT' && this.peekUpperAt(2) === 'OPTION') break;
+      if (this.peekUpper() === 'GRANTED' && this.peekUpperAt(1) === 'BY') break;
+      if (this.peekUpper() === 'CASCADE' || this.peekUpper() === 'RESTRICT') break;
+      recipientTokens.push(this.advance());
+    }
+
+    let withGrantOption = false;
+    let grantedBy: string | undefined;
+    let cascade = false;
+    let restrict = false;
+    while (!this.isAtEnd() && !this.check(';')) {
+      if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'GRANT' && this.peekUpperAt(2) === 'OPTION') {
+        this.advance();
+        this.advance();
+        this.advance();
+        withGrantOption = true;
+        continue;
+      }
+      if (this.peekUpper() === 'GRANTED' && this.peekUpperAt(1) === 'BY') {
+        this.advance();
+        this.advance();
+        const grantedByTokens = this.collectTokensUntilTopLevelKeyword(new Set(['CASCADE', 'RESTRICT']));
+        grantedBy = this.tokensToSql(grantedByTokens);
+        continue;
+      }
+      if (this.peekUpper() === 'CASCADE') {
+        this.advance();
+        cascade = true;
+        continue;
+      }
+      if (this.peekUpper() === 'RESTRICT') {
+        this.advance();
+        restrict = true;
+        continue;
+      }
+      break;
+    }
+
+    const privileges = this.splitTopLevelByComma(privilegeTokens).map(toks => this.tokensToSql(toks)).filter(Boolean);
+    const object = this.tokensToSql(objectTokens);
+    const recipients = this.splitTopLevelByComma(recipientTokens).map(toks => this.tokensToSql(toks)).filter(Boolean);
+
+    return {
+      type: 'grant',
+      kind,
+      grantOptionFor: grantOptionFor || undefined,
+      privileges,
+      object,
+      recipientKeyword: recipientKeyword as 'TO' | 'FROM',
+      recipients,
+      withGrantOption: withGrantOption || undefined,
+      grantedBy,
+      cascade: cascade || undefined,
+      restrict: restrict || undefined,
+      raw: [
+        kind,
+        grantOptionFor ? 'GRANT OPTION FOR' : '',
+        privileges.join(', '),
+        object ? `ON ${object}` : '',
+        recipients.length > 0 ? `${recipientKeyword} ${recipients.join(', ')}` : '',
+      ].filter(Boolean).join(' '),
+      leadingComments: comments,
+    };
   }
 
   private parseTruncate(comments: AST.CommentNode[]): AST.TruncateStatement {
@@ -2124,28 +2224,17 @@ export class Parser {
 
       if (this.peekUpper() === 'CHECK') {
         this.advance();
-        let body = 'CHECK';
-        let depth = 0;
-        if (this.check('(')) {
-          body += this.advance().value;
-          depth = 1;
-          while (depth > 0 && !this.isAtEnd()) {
-            const t = this.advance();
-            if (t.value === '(') depth++;
-            if (t.value === ')') depth--;
-            if (depth > 0) {
-              body += (t.type === 'keyword') ? t.upper : t.value;
-              if (!this.check(')') && depth > 0) body += ' ';
-            } else {
-              body += ')';
-            }
-          }
-        }
+        this.expect('(');
+        const checkExpr = this.parseExpression();
+        this.expect(')');
+        const body = 'CHECK';
         return {
           elementType: 'constraint',
           raw: `CONSTRAINT ${constraintName} ${body}`,
           constraintName,
           constraintBody: body,
+          constraintType: 'check',
+          checkExpr,
         };
       }
 
@@ -2239,24 +2328,16 @@ export class Parser {
     }
     const objectType = objectTypeToken.upper;
     const objectName = this.advance().value;
-
-    let action = '';
+    const actions: AST.AlterAction[] = [];
     while (!this.check(';') && !this.isAtEnd()) {
-      const t = this.advance();
-      const val = t.type === 'keyword' ? t.upper : t.value;
-      if (val === '(') {
-        action += val;
-      } else if (val === ')') {
-        action += val;
-      } else if (val === ',') {
-        action += val;
+      actions.push(this.parseAlterAction());
+      if (this.check(',')) {
+        this.advance();
       } else {
-        if (action && !action.endsWith('(')) {
-          action += ' ';
-        }
-        action += val;
+        break;
       }
     }
+    const action = actions.map(a => this.formatAlterActionCompact(a)).join(', ');
 
     return {
       type: 'alter_table',
@@ -2264,8 +2345,162 @@ export class Parser {
       objectName,
       tableName: objectName,
       action,
+      actions,
       leadingComments: comments,
     };
+  }
+
+  private parseAlterAction(): AST.AlterAction {
+    const start = this.pos;
+    const rename = this.tryParseAlterRenameAction();
+    if (rename) return rename;
+    this.pos = start;
+
+    const addColumn = this.tryParseAlterAddColumnAction();
+    if (addColumn) return addColumn;
+    this.pos = start;
+
+    const dropColumn = this.tryParseAlterDropColumnAction();
+    if (dropColumn) return dropColumn;
+    this.pos = start;
+
+    const setSchema = this.tryParseAlterSetSchemaAction();
+    if (setSchema) return setSchema;
+    this.pos = start;
+
+    const setTablespace = this.tryParseAlterSetTablespaceAction();
+    if (setTablespace) return setTablespace;
+    this.pos = start;
+
+    return this.parseRawAlterAction();
+  }
+
+  private tryParseAlterRenameAction(): AST.AlterAction | null {
+    if (this.peekUpper() !== 'RENAME') return null;
+    this.advance();
+    if (this.peekUpper() === 'TO') {
+      this.advance();
+      const newName = this.advance().value;
+      return { type: 'rename_to', newName };
+    }
+    if (this.peekUpper() === 'COLUMN') {
+      this.advance();
+      const columnName = this.advance().value;
+      this.expectKeyword('TO');
+      const newName = this.advance().value;
+      return { type: 'rename_column', columnName, newName };
+    }
+    return null;
+  }
+
+  private tryParseAlterAddColumnAction(): AST.AlterAction | null {
+    if (this.peekUpper() !== 'ADD') return null;
+    this.advance();
+    if (this.peekUpper() === 'CONSTRAINT') return null;
+
+    if (this.peekUpper() === 'COLUMN') this.advance();
+
+    let ifNotExists = false;
+    if (this.peekUpper() === 'IF' && this.peekUpperAt(1) === 'NOT' && this.peekUpperAt(2) === 'EXISTS') {
+      this.advance();
+      this.advance();
+      this.advance();
+      ifNotExists = true;
+    }
+
+    if (this.peekType() !== 'identifier' && this.peekType() !== 'keyword') return null;
+    const columnName = this.advance().value;
+    const definitionTokens = this.consumeTokensUntilActionBoundary();
+    const definition = this.tokensToSql(definitionTokens);
+    return {
+      type: 'add_column',
+      ifNotExists: ifNotExists || undefined,
+      columnName,
+      definition: definition || undefined,
+    };
+  }
+
+  private tryParseAlterDropColumnAction(): AST.AlterAction | null {
+    if (this.peekUpper() !== 'DROP') return null;
+    this.advance();
+
+    if (this.peekUpper() === 'COLUMN') this.advance();
+
+    let ifExists = false;
+    if (this.peekUpper() === 'IF' && this.peekUpperAt(1) === 'EXISTS') {
+      this.advance();
+      this.advance();
+      ifExists = true;
+    }
+
+    if (this.peekType() !== 'identifier' && this.peekType() !== 'keyword') return null;
+    const columnName = this.advance().value;
+
+    let behavior: 'CASCADE' | 'RESTRICT' | undefined;
+    if (this.peekUpper() === 'CASCADE') {
+      this.advance();
+      behavior = 'CASCADE';
+    } else if (this.peekUpper() === 'RESTRICT') {
+      this.advance();
+      behavior = 'RESTRICT';
+    }
+
+    return { type: 'drop_column', ifExists: ifExists || undefined, columnName, behavior };
+  }
+
+  private tryParseAlterSetSchemaAction(): AST.AlterAction | null {
+    if (this.peekUpper() !== 'SET' || this.peekUpperAt(1) !== 'SCHEMA') return null;
+    this.advance();
+    this.advance();
+    const schema = this.advance().value;
+    return { type: 'set_schema', schema };
+  }
+
+  private tryParseAlterSetTablespaceAction(): AST.AlterAction | null {
+    if (this.peekUpper() !== 'SET' || this.peekUpperAt(1) !== 'TABLESPACE') return null;
+    this.advance();
+    this.advance();
+    const tablespace = this.advance().value;
+    return { type: 'set_tablespace', tablespace };
+  }
+
+  private parseRawAlterAction(): AST.AlterRawAction {
+    const tokens = this.consumeTokensUntilActionBoundary();
+    return {
+      type: 'raw',
+      text: this.tokensToSql(tokens),
+    };
+  }
+
+  private formatAlterActionCompact(action: AST.AlterAction): string {
+    switch (action.type) {
+      case 'add_column': {
+        let out = 'ADD COLUMN ';
+        if (action.ifNotExists) out += 'IF NOT EXISTS ';
+        out += action.columnName;
+        if (action.definition) out += ' ' + action.definition;
+        return out;
+      }
+      case 'drop_column': {
+        let out = 'DROP COLUMN ';
+        if (action.ifExists) out += 'IF EXISTS ';
+        out += action.columnName;
+        if (action.behavior) out += ' ' + action.behavior;
+        return out;
+      }
+      case 'rename_to':
+        return `RENAME TO ${action.newName}`;
+      case 'rename_column':
+        return `RENAME COLUMN ${action.columnName} TO ${action.newName}`;
+      case 'set_schema':
+        return `SET SCHEMA ${action.schema}`;
+      case 'set_tablespace':
+        return `SET TABLESPACE ${action.tablespace}`;
+      case 'raw':
+        return action.text;
+      default:
+        return '';
+    }
   }
 
   // DROP TABLE [IF EXISTS] name
@@ -2506,6 +2741,89 @@ export class Parser {
     return parts.join(' ');
   }
 
+  private collectTokensUntilTopLevelKeyword(stopKeywords: Set<string>): Token[] {
+    const tokens: Token[] = [];
+    let depth = 0;
+    while (!this.isAtEnd() && !this.check(';')) {
+      const t = this.peek();
+      if (depth === 0 && t.type === 'keyword' && stopKeywords.has(t.upper)) break;
+      this.advance();
+      tokens.push(t);
+      if (this.isOpenGroupToken(t)) depth++;
+      else if (this.isCloseGroupToken(t)) depth = Math.max(0, depth - 1);
+    }
+    return tokens;
+  }
+
+  private splitTopLevelByComma(tokens: Token[]): Token[][] {
+    const groups: Token[][] = [];
+    let current: Token[] = [];
+    let depth = 0;
+    for (const t of tokens) {
+      if (depth === 0 && t.value === ',') {
+        groups.push(current);
+        current = [];
+        continue;
+      }
+      current.push(t);
+      if (this.isOpenGroupToken(t)) depth++;
+      else if (this.isCloseGroupToken(t)) depth = Math.max(0, depth - 1);
+    }
+    if (current.length > 0) groups.push(current);
+    return groups;
+  }
+
+  private consumeTokensUntilActionBoundary(): Token[] {
+    const tokens: Token[] = [];
+    let depth = 0;
+    while (!this.isAtEnd() && !this.check(';')) {
+      const t = this.peek();
+      if (depth === 0 && t.value === ',') break;
+      this.advance();
+      tokens.push(t);
+      if (this.isOpenGroupToken(t)) depth++;
+      else if (this.isCloseGroupToken(t)) depth = Math.max(0, depth - 1);
+    }
+    return tokens;
+  }
+
+  private isOpenGroupToken(token: Token): boolean {
+    return token.value === '(' || token.value === '[' || token.value === '{';
+  }
+
+  private isCloseGroupToken(token: Token): boolean {
+    return token.value === ')' || token.value === ']' || token.value === '}';
+  }
+
+  private tokenToSqlValue(token: Token): string {
+    if (token.upper === 'TABLES') return 'TABLES';
+    return token.type === 'keyword' ? token.upper : token.value;
+  }
+
+  private tokensToSql(tokens: Token[]): string {
+    if (tokens.length === 0) return '';
+    const parts = tokens.map(t => this.tokenToSqlValue(t));
+    let out = '';
+    for (let i = 0; i < parts.length; i++) {
+      const curr = parts[i];
+      const prev = i > 0 ? parts[i - 1] : '';
+      if (i === 0) {
+        out += curr;
+        continue;
+      }
+
+      const noSpaceBefore = curr === ',' || curr === ')' || curr === ']' || curr === ';' || curr === '.' || curr === '(';
+      const noSpaceAfterPrev = prev === '(' || prev === '[' || prev === '.' || prev === '::';
+      const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::';
+      if (noSpaceBefore || noSpaceAfterPrev || noSpaceAroundPair) {
+        out += curr;
+      } else {
+        out += ' ' + curr;
+      }
+    }
+    return out.trim();
+  }
+
   // Helper methods
 
   private consumeComments(): AST.CommentNode[] {
@@ -2618,143 +2936,4 @@ export function parse(input: string, options: ParseOptions = {}): AST.Node[] {
   if (!input.trim()) return [];
   const parser = new Parser(tokenize(input), options);
   return parser.parseStatements();
-}
-
-function assertNever(x: never): never {
-  throw new Error(`Unhandled expression type: ${(x as { type?: string }).type ?? 'unknown'}`);
-}
-
-// Helper for building raw text from AST during parse
-function fmtExprForRaw(expr: AST.Expression): string {
-  switch (expr.type) {
-    case 'identifier':
-      return expr.quoted ? expr.value : expr.value.toLowerCase();
-    case 'literal':
-      if (expr.literalType === 'boolean') return expr.value.toUpperCase();
-      return expr.value;
-    case 'null':
-      return 'NULL';
-    case 'interval':
-      return `INTERVAL ${expr.value}`;
-    case 'typed_string':
-      return `${expr.dataType} ${expr.value}`;
-    case 'star':
-      return expr.qualifier ? expr.qualifier.toLowerCase() + '.*' : '*';
-    case 'binary':
-      return fmtExprForRaw(expr.left) + ' ' + expr.operator + ' ' + fmtExprForRaw(expr.right);
-    case 'unary':
-      if (expr.operator === '-') return '-' + fmtExprForRaw(expr.operand);
-      if (expr.operator === '~') return '~' + fmtExprForRaw(expr.operand);
-      return expr.operator + ' ' + fmtExprForRaw(expr.operand);
-    case 'function_call': {
-      const name = expr.name;
-      const distinct = expr.distinct ? 'DISTINCT ' : '';
-      const args = expr.args.map(fmtExprForRaw).join(', ');
-      let out = name + '(' + distinct + args + ')';
-      if (expr.orderBy && expr.orderBy.length > 0) {
-        out += ' ORDER BY ' + expr.orderBy.map(i => {
-          let s = fmtExprForRaw(i.expr);
-          if (i.direction) s += ' ' + i.direction;
-          if (i.nulls) s += ` NULLS ${i.nulls}`;
-          return s;
-        }).join(', ');
-      }
-      return out;
-    }
-    case 'subquery':
-      return '(' + (expr.query.type === 'select' ? '[SELECT]' : '[QUERY]') + ')';
-    case 'case': {
-      let out = 'CASE';
-      if (expr.operand) out += ' ' + fmtExprForRaw(expr.operand);
-      for (const wc of expr.whenClauses) {
-        out += ' WHEN ' + fmtExprForRaw(wc.condition) + ' THEN ' + fmtExprForRaw(wc.result);
-      }
-      if (expr.elseResult) out += ' ELSE ' + fmtExprForRaw(expr.elseResult);
-      return out + ' END';
-    }
-    case 'between': {
-      const neg = expr.negated ? 'NOT ' : '';
-      return `${fmtExprForRaw(expr.expr)} ${neg}BETWEEN ${fmtExprForRaw(expr.low)} AND ${fmtExprForRaw(expr.high)}`;
-    }
-    case 'in': {
-      const neg = expr.negated ? 'NOT ' : '';
-      if ((expr.values as AST.SubqueryExpr).type === 'subquery') {
-        return `${fmtExprForRaw(expr.expr)} ${neg}IN (${(expr.values as AST.SubqueryExpr).query.type})`;
-      }
-      return `${fmtExprForRaw(expr.expr)} ${neg}IN (${(expr.values as AST.Expression[]).map(fmtExprForRaw).join(', ')})`;
-    }
-    case 'is':
-      return `${fmtExprForRaw(expr.expr)} IS ${expr.value}`;
-    case 'like': {
-      const neg = expr.negated ? 'NOT ' : '';
-      let out = `${fmtExprForRaw(expr.expr)} ${neg}LIKE ${fmtExprForRaw(expr.pattern)}`;
-      if (expr.escape) out += ` ESCAPE ${fmtExprForRaw(expr.escape)}`;
-      return out;
-    }
-    case 'ilike': {
-      const neg = expr.negated ? 'NOT ' : '';
-      let out = `${fmtExprForRaw(expr.expr)} ${neg}ILIKE ${fmtExprForRaw(expr.pattern)}`;
-      if (expr.escape) out += ` ESCAPE ${fmtExprForRaw(expr.escape)}`;
-      return out;
-    }
-    case 'similar_to': {
-      const neg = expr.negated ? 'NOT ' : '';
-      return `${fmtExprForRaw(expr.expr)} ${neg}SIMILAR TO ${fmtExprForRaw(expr.pattern)}`;
-    }
-    case 'exists':
-      return `EXISTS (${expr.subquery.query.type})`;
-    case 'paren':
-      return '(' + fmtExprForRaw(expr.expr) + ')';
-    case 'cast':
-      return 'CAST(' + fmtExprForRaw(expr.expr) + ' AS ' + expr.targetType + ')';
-    case 'pg_cast':
-      return fmtExprForRaw(expr.expr as AST.Expression) + '::' + expr.targetType;
-    case 'extract':
-      return 'EXTRACT(' + expr.field + ' FROM ' + fmtExprForRaw(expr.source) + ')';
-    case 'position':
-      return `POSITION(${fmtExprForRaw(expr.substring)} IN ${fmtExprForRaw(expr.source)})`;
-    case 'substring': {
-      let out = `SUBSTRING(${fmtExprForRaw(expr.source)} FROM ${fmtExprForRaw(expr.start)}`;
-      if (expr.length) out += ` FOR ${fmtExprForRaw(expr.length)}`;
-      return out + ')';
-    }
-    case 'overlay': {
-      let out = `OVERLAY(${fmtExprForRaw(expr.source)} PLACING ${fmtExprForRaw(expr.replacement)} FROM ${fmtExprForRaw(expr.start)}`;
-      if (expr.length) out += ` FOR ${fmtExprForRaw(expr.length)}`;
-      return out + ')';
-    }
-    case 'trim': {
-      let out = 'TRIM(';
-      if (expr.side) {
-        out += expr.side;
-        if (expr.trimChar) out += ` ${fmtExprForRaw(expr.trimChar)} FROM ${fmtExprForRaw(expr.source)}`;
-        else if (expr.fromSyntax) out += ` FROM ${fmtExprForRaw(expr.source)}`;
-        else out += ` ${fmtExprForRaw(expr.source)}`;
-      } else if (expr.trimChar) {
-        out += `${fmtExprForRaw(expr.trimChar)} FROM ${fmtExprForRaw(expr.source)}`;
-      } else if (expr.fromSyntax) {
-        out += `FROM ${fmtExprForRaw(expr.source)}`;
-      } else {
-        out += fmtExprForRaw(expr.source);
-      }
-      return out + ')';
-    }
-    case 'array_constructor':
-      return 'ARRAY[' + expr.elements.map(e => fmtExprForRaw(e as AST.Expression)).join(', ') + ']';
-    case 'is_distinct_from': {
-      const kw = expr.negated ? 'IS NOT DISTINCT FROM' : 'IS DISTINCT FROM';
-      return `${fmtExprForRaw(expr.left as AST.Expression)} ${kw} ${fmtExprForRaw(expr.right as AST.Expression)}`;
-    }
-    case 'regex_match':
-      return `${fmtExprForRaw(expr.left as AST.Expression)} ${expr.operator} ${fmtExprForRaw(expr.right as AST.Expression)}`;
-    case 'window_function': {
-      const func = fmtExprForRaw(expr.func);
-      if (expr.windowName) return `${func} OVER ${expr.windowName}`;
-      return `${func} OVER (...)`;
-    }
-    case 'raw':
-      return expr.text;
-  }
-
-  return assertNever(expr);
 }
