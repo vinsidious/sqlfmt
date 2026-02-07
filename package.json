@@ -41,6 +41,9 @@
     "type": "git",
     "url": "git+https://github.com/vinsidious/sqlfmt.git"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "homepage": "https://github.com/vinsidious/sqlfmt",
   "bugs": {
     "url": "https://github.com/vinsidious/sqlfmt/issues"
