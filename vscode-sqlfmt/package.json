@@ -2,9 +2,26 @@
   "name": "sqlfmt",
   "displayName": "sqlfmt",
   "description": "Format SQL files using sqlfmt (river-aligned, sqlstyle.guide)",
-  "version": "0.0.1",
+  "version": "1.1.1",
   "publisher": "vcoppola",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vinsidious/sqlfmt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vinsidious/sqlfmt/issues"
+  },
+  "homepage": "https://github.com/vinsidious/sqlfmt",
+  "keywords": [
+    "sql",
+    "formatter",
+    "format",
+    "postgres",
+    "postgresql",
+    "sqlstyle",
+    "river-alignment"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -12,7 +29,8 @@
     "Formatters"
   ],
   "activationEvents": [
-    "onLanguage:sql"
+    "onLanguage:sql",
+    "onLanguage:pgsql"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -20,6 +38,26 @@
       {
         "id": "sql",
         "aliases": ["SQL"]
+      },
+      {
+        "id": "pgsql",
+        "aliases": ["PostgreSQL"]
+      }
+    ],
+    "configuration": {
+      "title": "sqlfmt",
+      "properties": {
+        "sqlfmt.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable the sqlfmt formatter."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "sqlfmt.format",
+        "title": "Format SQL with sqlfmt"
       }
     ]
   },
