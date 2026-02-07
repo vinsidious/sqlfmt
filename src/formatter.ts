@@ -1597,12 +1597,11 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   // from the node to avoid double-emitting in formatSelect/formatUnion)
   if (node.mainQuery.leadingComments && node.mainQuery.leadingComments.length > 0) {
     emitComments(node.mainQuery.leadingComments, lines);
-    node.mainQuery.leadingComments = [];
   }
   if (node.mainQuery.type === 'select') {
-    lines.push(formatSelect(node.mainQuery, mainCtx));
+    lines.push(formatSelect({ ...node.mainQuery, leadingComments: [] }, mainCtx));
   } else {
-    lines.push(formatUnion(node.mainQuery, mainCtx));
+    lines.push(formatUnion({ ...node.mainQuery, leadingComments: [] }, mainCtx));
   }
 
   return lines.join('\n');
