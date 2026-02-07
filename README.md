@@ -1,5 +1,10 @@
 # sqlfmt
 
+[![npm version](https://img.shields.io/npm/v/@vcoppola/sqlfmt)](https://www.npmjs.com/package/@vcoppola/sqlfmt)
+[![npm downloads](https://img.shields.io/npm/dm/@vcoppola/sqlfmt)](https://www.npmjs.com/package/@vcoppola/sqlfmt)
+[![license](https://img.shields.io/npm/l/@vcoppola/sqlfmt)](https://github.com/vinsidious/sqlfmt/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/vinsidious/sqlfmt/ci.yml?branch=main&label=CI)](https://github.com/vinsidious/sqlfmt/actions)
+
 An opinionated, zero-config SQL formatter that implements the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/) ([GitHub](https://github.com/treffynnon/sqlstyle.guide)).
 
 ## What it does
@@ -18,6 +23,90 @@ SELECT e.name, e.salary, d.department_name
  WHERE e.salary > 50000
    AND d.department_name IN ('Sales', 'Engineering')
  ORDER BY e.salary DESC;
+```
+
+### More examples
+
+**Multi-table JOINs:**
+
+```sql
+-- Input
+select o.id, c.name, p.title, o.total from orders o join customers c on o.customer_id = c.id left join products p on o.product_id = p.id left join shipping s on o.id = s.order_id where o.created_at > '2024-01-01' and s.status = 'delivered' order by o.created_at desc;
+
+-- Output
+SELECT o.id, c.name, p.title, o.total
+  FROM orders AS o
+  JOIN customers AS c
+    ON o.customer_id = c.id
+
+       LEFT JOIN products AS p
+       ON o.product_id = p.id
+
+       LEFT JOIN shipping AS s
+       ON o.id = s.order_id
+ WHERE o.created_at > '2024-01-01'
+   AND s.status = 'delivered'
+ ORDER BY o.created_at DESC;
+```
+
+**CTEs (Common Table Expressions):**
+
+```sql
+-- Input
+with monthly_totals as (select date_trunc('month', created_at) as month, sum(amount) as total from payments group by 1), running as (select month, total, sum(total) over (order by month) as cumulative from monthly_totals) select * from running where cumulative > 10000;
+
+-- Output
+  WITH monthly_totals AS (
+           SELECT DATE_TRUNC('month', created_at) AS month,
+                  SUM(amount) AS total
+             FROM payments
+            GROUP BY 1
+       ),
+       running AS (
+           SELECT month, total, SUM(total) OVER (ORDER BY month) AS cumulative
+             FROM monthly_totals
+       )
+SELECT *
+  FROM running
+ WHERE cumulative > 10000;
+```
+
+**Window functions:**
+
+```sql
+-- Input
+select department, employee, salary, rank() over (partition by department order by salary desc) as dept_rank, salary - avg(salary) over (partition by department) as diff_from_avg from employees;
+
+-- Output
+SELECT department,
+       employee,
+       salary,
+       RANK() OVER (PARTITION BY department
+                        ORDER BY salary DESC) AS dept_rank,
+       salary - AVG(salary) OVER (PARTITION BY department) AS diff_from_avg
+  FROM employees;
+```
+
+**CASE expressions:**
+
+```sql
+-- Input
+select name, case status when 'A' then 'Active' when 'I' then 'Inactive' when 'P' then 'Pending' else 'Unknown' end as status_label, case when balance > 10000 then 'high' when balance > 1000 then 'medium' else 'low' end as tier from accounts;
+
+-- Output
+SELECT name,
+       CASE status
+       WHEN 'A' THEN 'Active'
+       WHEN 'I' THEN 'Inactive'
+       WHEN 'P' THEN 'Pending'
+       ELSE 'Unknown'
+       END AS status_label,
+       CASE
+       WHEN balance > 10000 THEN 'high'
+       WHEN balance > 1000 THEN 'medium'
+       ELSE 'low'
+       END AS tier
+  FROM accounts;
 ```
 
 ## Style Guide
@@ -83,6 +172,15 @@ cat query.sql | npx sqlfmt
 
 # Check if a file is already formatted (exits non-zero if not)
 npx sqlfmt --check query.sql
+
+# List files that would change (useful in CI)
+npx sqlfmt --list-different "src/**/*.sql"
+npx sqlfmt -l "migrations/*.sql"
+
+# Pipe patterns
+pbpaste | npx sqlfmt | pbcopy          # Format clipboard (macOS)
+pg_dump mydb --schema-only | npx sqlfmt > schema.sql
+echo "select 1" | npx sqlfmt
 ```
 
 ### As a library
@@ -98,6 +196,37 @@ console.log(formatted);
 // SELECT name, email
 //   FROM users
 //  WHERE active = TRUE;
+```
+
+## Documentation
+
+- [Integrations](docs/integrations.md) -- Pre-commit hooks, CI pipelines, and editor setup recipes
+- [Style Guide Mapping](docs/style-guide.md) -- How sqlfmt maps to each rule in the Simon Holywell SQL Style Guide
+- [Contributing](CONTRIBUTING.md) -- Development setup, running tests, and submitting changes
+
+## Error Handling
+
+`formatSQL` throws typed errors that you can catch and handle:
+
+```typescript
+import { formatSQL, TokenizeError, ParseError } from '@vcoppola/sqlfmt';
+
+try {
+  const result = formatSQL(input);
+} catch (err) {
+  if (err instanceof TokenizeError) {
+    // Invalid token encountered during lexing (e.g., unterminated string)
+    console.error(`Tokenize error at position ${err.position}: ${err.message}`);
+  } else if (err instanceof ParseError) {
+    // Structural error in the SQL (e.g., unmatched parentheses)
+    console.error(`Parse error: ${err.message}`);
+  } else if (err instanceof RangeError) {
+    // Input exceeded size limits
+    console.error(`Input too large: ${err.message}`);
+  } else {
+    throw err;
+  }
+}
 ```
 
 ## Development
@@ -127,6 +256,10 @@ The pipeline is:
 3. **Formatter** (`src/formatter.ts`) — Walks the AST and produces formatted output
 
 The key formatting concept is the **river**. For each statement, `sqlfmt` derives a river width from the longest top-level aligned keyword in that statement (for example, `RETURNING` can widen DML alignment). Clause/logical keywords are then right-aligned to that width so content starts in a consistent column. Nested blocks may use their own derived widths. This approach comes directly from the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
+
+## Performance
+
+sqlfmt has zero runtime dependencies and formats SQL through a single tokenize-parse-format pass. Typical throughput is 5,000+ statements per second on modern hardware. Input is bounded by default size limits to prevent excessive memory use on untrusted input.
 
 ## Limitations
 
