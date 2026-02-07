@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { formatSQL } from '../src/format';
 import { formatStatements } from '../src/formatter';
-import { MaxDepthError } from '../src/parser';
 import type * as AST from '../src/ast';
 
 function assertFormat(name: string, input: string, expected: string) {
@@ -1605,7 +1604,7 @@ describe('Formatter depth limit', () => {
     expect(result).toContain('CASE');
   });
 
-  it('throws MaxDepthError instead of emitting fallback comments', () => {
+  it('emits fallback marker instead of throwing MaxDepthError', () => {
     const makeSelect = (expr: AST.Expression): AST.SelectStatement => ({
       type: 'select',
       distinct: false,
@@ -1622,7 +1621,8 @@ describe('Formatter depth limit', () => {
       };
     }
 
-    expect(() => formatStatements([makeSelect(expr)])).toThrow(MaxDepthError);
+    const out = formatStatements([makeSelect(expr)]);
+    expect(out).toContain('/* depth exceeded */');
   });
 });
 
@@ -1857,5 +1857,63 @@ describe('edge cases for identifier lengths', () => {
     const sql = `SELECT ${longId} FROM t;`;
     const out = formatSQL(sql);
     expect(out).toContain(longId);
+  });
+});
+
+describe('production-readiness formatting regressions', () => {
+  it('formats COLLATE expressions without alias confusion', () => {
+    const out = formatSQL('SELECT name COLLATE "C" FROM users;');
+    expect(out).toContain('SELECT name COLLATE "C"');
+    expect(out).toContain('\n  FROM users;');
+  });
+
+  it('formats DISTINCT ON with correct column alignment', () => {
+    const sql = 'SELECT DISTINCT ON (customer_id) customer_id, order_id, created_at, total_amount FROM orders ORDER BY customer_id, created_at DESC;';
+    const out = formatSQL(sql);
+    expect(out).toContain('SELECT DISTINCT ON (customer_id) customer_id,');
+    expect(out).toContain('\n       order_id, created_at, total_amount');
+  });
+
+  it('formats EXPLAIN statements and nested query body', () => {
+    const sql = 'EXPLAIN ANALYZE SELECT * FROM t WHERE id = 1;';
+    const out = formatSQL(sql);
+    expect(out).toContain('EXPLAIN (ANALYZE)');
+    expect(out).toContain('\nSELECT *');
+    expect(out).toContain('\n WHERE id = 1;');
+  });
+
+  it('formats recursive CTE SEARCH/CYCLE clauses', () => {
+    const sql = 'WITH RECURSIVE t(n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET ord CYCLE n SET cyc USING path SELECT * FROM t;';
+    const out = formatSQL(sql);
+    expect(out).toContain('SEARCH DEPTH FIRST BY n SET ord');
+    expect(out).toContain('CYCLE n SET cyc USING path');
+  });
+
+  it('wraps long JOIN ON predicates at logical boundaries', () => {
+    const sql = 'SELECT * FROM orders o JOIN shipments s ON o.super_long_customer_identifier = s.super_long_customer_identifier AND o.super_long_order_identifier = s.super_long_order_identifier AND o.super_long_tracking_identifier = s.super_long_tracking_identifier;';
+    const out = formatSQL(sql);
+    expect(out).toContain('\n       AND o.super_long_order_identifier = s.super_long_order_identifier');
+    expect(out).toContain('\n       AND o.super_long_tracking_identifier = s.super_long_tracking_identifier');
+  });
+
+  it('wraps long BETWEEN expressions at AND boundary', () => {
+    const sql = 'SELECT * FROM t WHERE extraordinarily_long_column_identifier BETWEEN extraordinarily_long_lower_bound_value AND extraordinarily_long_upper_bound_value;';
+    const out = formatSQL(sql);
+    expect(out).toContain('BETWEEN extraordinarily_long_lower_bound_value');
+    expect(out).toContain('\n                                                  AND extraordinarily_long_upper_bound_value');
+  });
+
+  it('wraps IN (SELECT ...) subqueries in predicate context', () => {
+    const sql = "SELECT * FROM users WHERE id IN (SELECT user_id FROM order_items WHERE status = 'very_long_status_value' AND category = 'extremely_long_category_name');";
+    const out = formatSQL(sql);
+    expect(out).toContain('WHERE id IN');
+    expect(out).toContain('\n       (SELECT user_id');
+  });
+
+  it('preserves line-comment boundaries in recovery-mode raw output', () => {
+    const sql = 'SELECT CASE WHEN x = 1 -- note\nTHEN y ELSE z END FROM t;';
+    const out = formatSQL(sql);
+    expect(out.trimEnd()).toBe(sql);
+    expect(out).toContain('-- note\nTHEN');
   });
 });

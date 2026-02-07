@@ -3,8 +3,9 @@ export type { FormatOptions } from './format';
 export { tokenize, TokenizeError } from './tokenizer';
 export type { Token, TokenType } from './tokenizer';
 export { Parser, parse, ParseError, MaxDepthError } from './parser';
-export type { ParseOptions } from './parser';
+export type { ParseOptions, ParseRecoveryContext } from './parser';
 export { formatStatements } from './formatter';
+export type { FormatterOptions } from './formatter';
 export type {
   Statement,
   Node,
@@ -16,12 +17,19 @@ export type {
   DeleteStatement,
   MergeStatement,
   CTEStatement,
+  CTESearchClause,
+  CTECycleClause,
   UnionStatement,
+  ExplainStatement,
   CommentNode,
   ColumnExpr,
   JoinClause,
   FromClause,
   RawExpression,
+  RawReason,
+  FrameSpec,
+  FrameBound,
+  ColumnConstraint,
   CreateTableStatement,
   CreateIndexStatement,
   CreateViewStatement,

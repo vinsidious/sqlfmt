@@ -334,7 +334,18 @@ export class Parser {
     for (let i = start; i < end; i++) {
       const token = this.tokens[i];
       text += token.value;
-      if (i < end - 1) text += ' ';
+      if (i >= end - 1) continue;
+
+      const next = this.tokens[i + 1];
+      const gap = next.position - (token.position + token.value.length);
+      if (gap <= 0) continue;
+
+      const lineDelta = Math.max(0, next.line - token.line);
+      if (lineDelta > 0) {
+        text += '\n'.repeat(lineDelta);
+      } else {
+        text += ' ';
+      }
     }
     text = text.trim();
 

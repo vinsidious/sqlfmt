@@ -1,7 +1,5 @@
 import * as AST from './ast';
 import { FUNCTION_KEYWORDS } from './keywords';
-import { MaxDepthError } from './parser';
-import type { Token } from './tokenizer';
 import { DEFAULT_MAX_DEPTH, TERMINAL_WIDTH } from './constants';
 
 function isInExprSubquery(expr: AST.InExpr): expr is AST.InExprSubquery {
@@ -22,21 +20,6 @@ function getInExprList(expr: AST.InExprList): AST.Expression[] {
 
 const DEFAULT_RIVER = 6; // length of SELECT keyword
 const MAX_FORMATTER_DEPTH = DEFAULT_MAX_DEPTH;
-
-const FORMATTER_DEPTH_TOKEN: Token = {
-  type: 'eof',
-  value: '',
-  upper: '',
-  position: -1,
-  line: 0,
-  column: 0,
-};
-
-// Formatter depth is a structural safety guard. We reuse MaxDepthError so
-// callers can handle parser/formatter depth failures consistently.
-function throwFormatterDepthError(): never {
-  throw new MaxDepthError(MAX_FORMATTER_DEPTH, FORMATTER_DEPTH_TOKEN);
-}
 
 // Approximate monospace display width with East Asian wide/full-width support.
 // Used for line-length heuristics so CJK-heavy SQL wraps more predictably.
@@ -271,9 +254,6 @@ function deriveSelectRiverWidth(node: AST.SelectStatement): number {
 }
 
 function formatNode(node: AST.Node, ctx: FormatContext): string {
-  if (ctx.depth >= MAX_FORMATTER_DEPTH) {
-    throwFormatterDepthError();
-  }
   switch (node.type) {
     case 'select': return formatSelect(node, ctx);
     case 'insert': return formatInsert(node, ctx);
@@ -1297,7 +1277,7 @@ function formatQueryExpressionForSubquery(
 // then shift subsequent lines by (col+1) to align under SELECT.
 function formatSubqueryAtColumn(expr: AST.SubqueryExpr, col: number, depth: number = 0): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
-    throwFormatterDepthError();
+    return '(/* depth exceeded */)';
   }
   const inner = formatQueryExpressionForSubquery(expr.query, col + 1, depth + 1);
   return wrapSubqueryLines(inner, col);
@@ -1318,7 +1298,7 @@ function wrapSubqueryLines(innerFormatted: string, col: number): string {
 
 function formatCaseAtColumn(expr: AST.CaseExpr, col: number, depth: number = 0): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
-    throwFormatterDepthError();
+    return formatCaseSimple(expr, depth);
   }
   const pad = ' '.repeat(col);
   let result = 'CASE';

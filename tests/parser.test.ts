@@ -371,13 +371,16 @@ describe('parser GROUPS window frame', () => {
     const stmt = parseFirst('SELECT SUM(amount) OVER (ORDER BY date GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM sales;');
     expect(stmt.type).toBe('select');
     expect(stmt.columns[0].expr.type).toBe('window_function');
-    expect(stmt.columns[0].expr.frame).toContain('GROUPS');
+    expect(stmt.columns[0].expr.frame?.unit).toBe('GROUPS');
+    expect(stmt.columns[0].expr.frame?.start.kind).toBe('PRECEDING');
+    expect(stmt.columns[0].expr.frame?.end?.kind).toBe('FOLLOWING');
   });
 
   it('parses GROUPS UNBOUNDED PRECEDING', () => {
     const stmt = parseFirst('SELECT AVG(x) OVER (ORDER BY y GROUPS UNBOUNDED PRECEDING) FROM t;');
     expect(stmt.type).toBe('select');
-    expect(stmt.columns[0].expr.frame).toContain('GROUPS');
+    expect(stmt.columns[0].expr.frame?.unit).toBe('GROUPS');
+    expect(stmt.columns[0].expr.frame?.start.kind).toBe('UNBOUNDED PRECEDING');
   });
 });
 
@@ -470,5 +473,104 @@ describe('parser shared parseOptionalAlias', () => {
     const stmt = parseFirst('SELECT * FROM generate_series(1, 3) AS g(n);');
     expect(stmt.from.alias).toBe('g');
     expect(stmt.from.aliasColumns).toEqual(['n']);
+  });
+});
+
+describe('parser production-readiness regressions', () => {
+  it('parses COLLATE as a collate expression (not alias)', () => {
+    const stmt = parseFirst('SELECT name COLLATE "C" FROM users;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('collate');
+    expect(stmt.columns[0].expr.collation).toBe('"C"');
+  });
+
+  it('parses DISTINCT ON expression list', () => {
+    const stmt = parseFirst('SELECT DISTINCT ON (id, created_at) * FROM events ORDER BY id, created_at DESC;');
+    expect(stmt.type).toBe('select');
+    expect(stmt.distinct).toBe(true);
+    expect(stmt.distinctOn).toHaveLength(2);
+    expect(stmt.columns[0].expr.type).toBe('star');
+  });
+
+  it('parses EXPLAIN options and nested query statement', () => {
+    const stmt = parseFirst('EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, FORMAT JSON) SELECT * FROM t;');
+    expect(stmt.type).toBe('explain');
+    expect(stmt.analyze).toBe(true);
+    expect(stmt.verbose).toBe(true);
+    expect(stmt.costs).toBe(false);
+    expect(stmt.format).toBe('JSON');
+    expect(stmt.statement.type).toBe('select');
+  });
+
+  it('parses recursive CTE SEARCH/CYCLE clauses', () => {
+    const stmt = parseFirst('WITH RECURSIVE t(n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET ord CYCLE n SET cyc USING path SELECT * FROM t;');
+    expect(stmt.type).toBe('cte');
+    expect(stmt.search?.mode).toBe('DEPTH FIRST');
+    expect(stmt.search?.by).toEqual(['n']);
+    expect(stmt.search?.set).toBe('ord');
+    expect(stmt.cycle?.columns).toEqual(['n']);
+    expect(stmt.cycle?.set).toBe('cyc');
+    expect(stmt.cycle?.using).toBe('path');
+  });
+
+  it('parses CREATE TABLE column constraints into structured nodes', () => {
+    const stmt = parseFirst('CREATE TABLE t (id INT NOT NULL DEFAULT 1 REFERENCES parent(id) ON DELETE CASCADE, qty INT CHECK (qty > 0), code TEXT GENERATED ALWAYS AS IDENTITY, email TEXT UNIQUE);');
+    expect(stmt.type).toBe('create_table');
+
+    const idCol = stmt.elements[0];
+    expect(idCol.elementType).toBe('column');
+    expect(idCol.columnConstraints?.map((c: any) => c.type)).toEqual(['not_null', 'default', 'references']);
+    expect(idCol.columnConstraints?.[2].actions?.[0]).toEqual({ event: 'DELETE', action: 'CASCADE' });
+
+    const qtyCol = stmt.elements[1];
+    expect(qtyCol.columnConstraints?.[0].type).toBe('check');
+
+    const codeCol = stmt.elements[2];
+    expect(codeCol.columnConstraints?.[0].type).toBe('generated_identity');
+
+    const emailCol = stmt.elements[3];
+    expect(emailCol.columnConstraints?.[0].type).toBe('unique');
+  });
+
+  it('parses adjacent string literals as implicit concatenation', () => {
+    const stmt = parseFirst("SELECT 'hello' 'world';");
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('binary');
+    expect(stmt.columns[0].expr.operator).toBe('||');
+  });
+});
+
+describe('parser recovery metadata', () => {
+  it('tags raw nodes with parse/unsupported/comment-only reasons', () => {
+    const parseErr = parse('SELECT (;', { recover: true });
+    expect(parseErr[0].type).toBe('raw');
+    expect(parseErr[0].reason).toBe('parse_error');
+
+    const unsupported = parse('VACUUM FULL users;', { recover: true });
+    expect(unsupported[0].type).toBe('raw');
+    expect(unsupported[0].reason).toBe('unsupported');
+
+    const commentOnly = parse('-- just a comment', { recover: true });
+    expect(commentOnly[0].type).toBe('raw');
+    expect(commentOnly[0].reason).toBe('comment_only');
+  });
+
+  it('passes statement index context to onRecover callbacks', () => {
+    const contexts: Array<{ statementIndex: number; totalStatements: number }> = [];
+    parse('SELECT 1; SELECT (; SELECT 2;', {
+      recover: true,
+      onRecover: (_error, _raw, context) => contexts.push(context),
+    });
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]).toEqual({ statementIndex: 2, totalStatements: 3 });
+  });
+
+  it('keeps statement ordering after recovery in multi-statement inputs', () => {
+    const out = formatSQL('SELECT 1; SELECT (; SELECT 2;');
+    expect(out).toContain('SELECT 1;');
+    expect(out).toContain('SELECT (;');
+    expect(out).toContain('SELECT 2;');
+    expect(out.indexOf('SELECT 1;')).toBeLessThan(out.indexOf('SELECT 2;'));
   });
 });

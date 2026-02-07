@@ -61,6 +61,11 @@ describe('tokenizer literals and parameters', () => {
     expect(num).toEqual(['0xFF', '0X1a']);
   });
 
+  it('tokenizes numeric literals with underscores', () => {
+    const num = tokenize('SELECT 1_000_000, 0xFF_FF, 1.2_3e4_5;').filter(t => t.type === 'number').map(t => t.value);
+    expect(num).toEqual(['1_000_000', '0xFF_FF', '1.2_3e4_5']);
+  });
+
   it('tokenizes E-strings', () => {
     const str = tokenize("SELECT E'\\n\\t', e'\\\\x';").filter(t => t.type === 'string').map(t => t.value);
     expect(str).toEqual(["E'\\n\\t'", "e'\\\\x'"]);
@@ -69,6 +74,11 @@ describe('tokenizer literals and parameters', () => {
   it('tokenizes B and X prefixed strings', () => {
     const str = tokenize("SELECT B'1010', b'0101', X'FF', x'aa';").filter(t => t.type === 'string').map(t => t.value);
     expect(str).toEqual(["B'1010'", "b'0101'", "X'FF'", "x'aa'"]);
+  });
+
+  it('tokenizes U& prefixed Unicode escape strings', () => {
+    const str = tokenize("SELECT U&'\\0041\\0042';").filter(t => t.type === 'string').map(t => t.value);
+    expect(str).toEqual(["U&'\\0041\\0042'"]);
   });
 });
 
