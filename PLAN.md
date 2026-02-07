@@ -9,4 +9,4 @@
 - [x] 7. Centralize formatter width/wrapping thresholds into a policy object instead of scattered magic numbers.
 - [x] 8. Replace fragile function/frame string special-casing with more general and structured formatting logic.
 - [x] 9. Remove AST mutation during formatting (e.g., mutating `leadingComments`) and keep formatting operations pure.
-- [ ] 10. Preserve original comment styles by default in CTE comment handling, avoiding heuristic `--` to `/* ... */` rewrites.
+- [x] 10. Preserve original comment styles by default in CTE comment handling, avoiding heuristic `--` to `/* ... */` rewrites.

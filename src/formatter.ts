@@ -1607,94 +1607,17 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   return lines.join('\n');
 }
 
-// Check if a comment is a decorative section header (contains ====, ####, ****, etc.)
-function isSectionHeaderComment(comment: AST.CommentNode): boolean {
-  // Match comments that consist of decorative characters
-  const text = comment.text.replace(/^--\s*/, '');
-  return /^[=#+*\-]{4,}$/.test(text.trim());
-}
-
-// Emit CTE leading comments, converting single CTE description comments to /* ... */ format
-function emitCTELeadingComments(comments: AST.CommentNode[], lines: string[], cteIndentCol: number): void {
-  const cteIndent = ' '.repeat(cteIndentCol);
-
-  // Classify: is this a section header block or a simple CTE description?
-  // A section header block starts with a decorative line (===, ###, ***, etc.)
-  // A simple description is a single comment line without decorative patterns
-
-  // Find groups: section headers vs descriptions
-  // A section header is a contiguous group of comments where the first/last lines are decorative
-  const hasSectionHeaders = comments.some(c => isSectionHeaderComment(c));
-
-  if (hasSectionHeaders) {
-    // Check if the last comment(s) after the section headers are simple description comments
-    // Find the last section header comment index
-    let lastSectionIdx = -1;
-    for (let i = comments.length - 1; i >= 0; i--) {
-      if (isSectionHeaderComment(comments[i])) {
-        lastSectionIdx = i;
-        break;
-      }
-    }
-
-    // Emit section header comments at column 0
-    for (let i = 0; i <= lastSectionIdx; i++) {
-      const c = comments[i];
-      // Cap blank lines at 1 between CTE definitions (the closing ), already provides line break)
-      const blanks = Math.min(c.blankLinesBefore || 0, 1);
-      for (let j = 0; j < blanks; j++) {
-        lines.push('');
-      }
-      lines.push(c.text);
-    }
-
-    // Check for trailing description comments after the section headers
-    const trailingDescComments = comments.slice(lastSectionIdx + 1);
-    if (trailingDescComments.length === 1 && !isSectionHeaderComment(trailingDescComments[0])) {
-      // Single trailing description comment — convert to /* ... */
-      const text = trailingDescComments[0].text.replace(/^--\s*/, '');
+// Emit CTE-leading comments as-is so comment style is preserved.
+function emitCTELeadingComments(comments: AST.CommentNode[], lines: string[], _cteIndentCol: number): void {
+  for (const c of comments) {
+    const blanks = Math.min(c.blankLinesBefore || 0, 1);
+    for (let i = 0; i < blanks; i++) {
       lines.push('');
-      lines.push(cteIndent + '/* ' + text + ' */');
-    } else if (trailingDescComments.length > 0) {
-      // Multiple trailing description comments — emit at column 0
-      for (const c of trailingDescComments) {
-        const blanks = c.blankLinesBefore || 0;
-        for (let j = 0; j < blanks; j++) {
-          lines.push('');
-        }
-        lines.push(c.text);
-      }
-      if (lines.length > 0 && lines[lines.length - 1] !== '') {
-        lines.push('');
-      }
-    } else {
-      // No trailing description comments — just add blank line after section
-      if (lines.length > 0 && lines[lines.length - 1] !== '') {
-        lines.push('');
-      }
     }
-  } else {
-    // Simple CTE description comments - convert to /* ... */ at CTE indent level
-    // Typically this is a single comment line
-    if (comments.length === 1) {
-      const text = comments[0].text.replace(/^--\s*/, '');
-      if (lines.length > 0 && lines[lines.length - 1] !== '') {
-        lines.push('');
-      }
-      lines.push(cteIndent + '/* ' + text + ' */');
-    } else {
-      // Multiple description comments - emit as line comments at column 0
-      for (const c of comments) {
-        const blanks = c.blankLinesBefore || 0;
-        for (let i = 0; i < blanks; i++) {
-          lines.push('');
-        }
-        lines.push(c.text);
-      }
-      if (lines.length > 0 && lines[lines.length - 1] !== '') {
-        lines.push('');
-      }
-    }
+    lines.push(c.text);
+  }
+  if (lines.length > 0 && lines[lines.length - 1] !== '') {
+    lines.push('');
   }
 }
 
