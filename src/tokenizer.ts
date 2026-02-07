@@ -323,6 +323,15 @@ export function tokenize(input: string): Token[] {
       }
     }
 
+    // Unicode-escape prefixed strings: U&'...'
+    if ((ch === 'U' || ch === 'u') && input[pos + 1] === '&' && input[pos + 2] === "'") {
+      pos += 3;
+      pos = readQuotedString(input, pos, true, lineOffsets);
+      const val = input.slice(start, pos);
+      emit('string', val, val, start);
+      continue;
+    }
+
     // Prefixed strings: E'...', B'...', X'...'
     if ('EeBbXx'.includes(ch) && input[pos + 1] === "'") {
       const allowBackslashEscapes = ch === 'E' || ch === 'e';
@@ -378,19 +387,40 @@ export function tokenize(input: string): Token[] {
 
     // Number
     if (isDigit(ch) || (ch === '.' && isDigit(input[pos + 1]))) {
+      const consumeDigitsWithUnderscores = (digitCheck: (c: string | undefined) => boolean): void => {
+        let sawDigit = false;
+        let canUnderscore = false;
+        while (pos < len) {
+          const curr = input[pos];
+          if (digitCheck(curr)) {
+            sawDigit = true;
+            canUnderscore = true;
+            pos++;
+            continue;
+          }
+          if (curr === '_' && canUnderscore && digitCheck(input[pos + 1])) {
+            canUnderscore = false;
+            pos++;
+            continue;
+          }
+          break;
+        }
+        if (!sawDigit) return;
+      };
+
       // Hex numeric literal: 0xFF / 0XFF
       if (ch === '0' && (input[pos + 1] === 'x' || input[pos + 1] === 'X') && isHexDigit(input[pos + 2])) {
         pos += 2;
-        while (pos < len && isHexDigit(input[pos])) pos++;
+        consumeDigitsWithUnderscores(isHexDigit);
       } else {
         if (ch === '.') {
           pos++;
-          while (pos < len && isDigit(input[pos])) pos++;
+          consumeDigitsWithUnderscores(isDigit);
         } else {
-          while (pos < len && isDigit(input[pos])) pos++;
+          consumeDigitsWithUnderscores(isDigit);
           if (pos < len && input[pos] === '.') {
             pos++;
-            while (pos < len && isDigit(input[pos])) pos++;
+            consumeDigitsWithUnderscores(isDigit);
           }
         }
 
@@ -406,7 +436,7 @@ export function tokenize(input: string): Token[] {
           if (!isDigit(input[pos])) {
             pos = expStart;
           } else {
-            while (pos < len && isDigit(input[pos])) pos++;
+            consumeDigitsWithUnderscores(isDigit);
           }
         }
       }
