@@ -25,6 +25,23 @@ function runCli(args: string[]) {
   };
 }
 
+function runCliWithStdin(args: string[], stdinContent: string) {
+  const proc = Bun.spawnSync({
+    cmd: [bunPath, cliPath, ...args],
+    cwd: root,
+    stdin: new TextEncoder().encode(stdinContent),
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: process.env,
+  });
+
+  return {
+    code: proc.exitCode,
+    out: decoder.decode(proc.stdout),
+    err: decoder.decode(proc.stderr),
+  };
+}
+
 describe('cli flags and UX', () => {
   it('supports --version', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string };
@@ -124,12 +141,11 @@ describe('glob pattern expansion', () => {
     expect(res.err).toContain('not formatted');
   });
 
-  it('treats non-matching glob as literal path (ENOENT)', () => {
+  it('errors on non-matching glob pattern with clear message', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-glob-'));
     const res = runCli([join(dir, '*.sql')]);
-    // No matches; treated as literal, should error on I/O
     expect(res.code).toBe(1);
-    expect(res.err).toContain('I/O error');
+    expect(res.err).toContain('No files matched pattern');
   });
 });
 
@@ -193,5 +209,151 @@ describe('--no-color flag', () => {
     // Ensure no ANSI escape sequences
     expect(res.err).not.toContain('\x1b[');
     expect(res.err).toContain('not formatted');
+  });
+});
+
+describe('--verbose flag', () => {
+  it('prints file progress to stderr', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
+    const fileA = join(dir, 'a.sql');
+    const fileB = join(dir, 'b.sql');
+    writeFileSync(fileA, 'select 1;', 'utf8');
+    writeFileSync(fileB, 'SELECT 2;\n', 'utf8');
+
+    const res = runCli(['--verbose', '--write', fileA, fileB]);
+    expect(res.code).toBe(0);
+    // Should print "Formatting N files..." header
+    expect(res.err).toContain('Formatting 2 files...');
+    // Should print each filename
+    expect(res.err).toContain(fileA);
+    expect(res.err).toContain(fileB);
+    // Should print summary with changed count
+    expect(res.err).toContain('Formatted 2 files (1 changed)');
+  });
+
+  it('prints singular form for 1 file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
+    const file = join(dir, 'a.sql');
+    writeFileSync(file, 'SELECT 1;\n', 'utf8');
+
+    const res = runCli(['--verbose', '--write', file]);
+    expect(res.code).toBe(0);
+    expect(res.err).toContain('Formatting 1 file...');
+    expect(res.err).toContain('Formatted 1 file (0 changed)');
+  });
+});
+
+describe('--quiet flag', () => {
+  it('suppresses normal output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-quiet-'));
+    const file = join(dir, 'q.sql');
+    writeFileSync(file, 'select 1;', 'utf8');
+
+    const res = runCli(['--quiet', '--check', file]);
+    expect(res.code).toBe(1);
+    // stderr should have no "not formatted" message
+    expect(res.err).toBe('');
+  });
+
+  it('still uses proper exit codes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-quiet-'));
+    const file = join(dir, 'ok.sql');
+    writeFileSync(file, 'SELECT 1;\n', 'utf8');
+
+    const res = runCli(['--quiet', '--check', file]);
+    expect(res.code).toBe(0);
+    expect(res.err).toBe('');
+  });
+
+  it('is mutually exclusive with --verbose', () => {
+    const res = runCli(['--verbose', '--quiet']);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('--verbose and --quiet cannot be used together');
+  });
+});
+
+describe('--ignore flag', () => {
+  it('excludes files matching ignore pattern', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-'));
+    const migrations = join(dir, 'migrations');
+    mkdirSync(migrations);
+    writeFileSync(join(dir, 'query.sql'), 'select 1;', 'utf8');
+    writeFileSync(join(migrations, 'v1.sql'), 'select 2;', 'utf8');
+
+    const res = runCli([
+      '--write',
+      '--ignore', 'migrations/**',
+      join(dir, '**/*.sql'),
+    ]);
+    expect(res.code).toBe(0);
+    // query.sql should be formatted
+    expect(readFileSync(join(dir, 'query.sql'), 'utf8')).toBe('SELECT 1;\n');
+    // migrations/v1.sql should be untouched
+    expect(readFileSync(join(migrations, 'v1.sql'), 'utf8')).toBe('select 2;');
+  });
+
+  it('supports multiple --ignore patterns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-'));
+    const vendor = join(dir, 'vendor');
+    const migrations = join(dir, 'migrations');
+    mkdirSync(vendor);
+    mkdirSync(migrations);
+    writeFileSync(join(dir, 'app.sql'), 'select 1;', 'utf8');
+    writeFileSync(join(vendor, 'lib.sql'), 'select 2;', 'utf8');
+    writeFileSync(join(migrations, 'v1.sql'), 'select 3;', 'utf8');
+
+    const res = runCli([
+      '--write',
+      '--ignore', 'vendor/**',
+      '--ignore', 'migrations/**',
+      join(dir, '**/*.sql'),
+    ]);
+    expect(res.code).toBe(0);
+    expect(readFileSync(join(dir, 'app.sql'), 'utf8')).toBe('SELECT 1;\n');
+    expect(readFileSync(join(vendor, 'lib.sql'), 'utf8')).toBe('select 2;');
+    expect(readFileSync(join(migrations, 'v1.sql'), 'utf8')).toBe('select 3;');
+  });
+
+  it('errors when --ignore has no argument', () => {
+    const res = runCli(['--ignore']);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('--ignore requires');
+  });
+});
+
+describe('--stdin-filepath flag', () => {
+  it('shows filepath in error messages when reading from stdin', () => {
+    const res = runCliWithStdin(
+      ['--stdin-filepath', 'query.sql'],
+      "SELECT 'unterminated",
+    );
+    expect(res.code).toBe(2);
+    expect(res.err).toContain('query.sql');
+  });
+
+  it('formats stdin normally when no error', () => {
+    const res = runCliWithStdin(
+      ['--stdin-filepath', 'query.sql'],
+      'select 1;',
+    );
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('SELECT 1;');
+  });
+
+  it('errors when --stdin-filepath has no argument', () => {
+    const res = runCli(['--stdin-filepath']);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('--stdin-filepath requires');
+  });
+});
+
+describe('--help flag', () => {
+  it('shows all new flags in help output', () => {
+    const res = runCli(['--help']);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('--verbose');
+    expect(res.out).toContain('--quiet');
+    expect(res.out).toContain('--ignore');
+    expect(res.out).toContain('--stdin-filepath');
   });
 });

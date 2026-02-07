@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { tokenize, type TokenType } from '../src/tokenizer';
+import { tokenize, TokenizeError, type TokenType } from '../src/tokenizer';
 
 function nonWhitespaceTypes(sql: string): TokenType[] {
   return tokenize(sql)
@@ -98,6 +98,134 @@ describe('tokenizer robustness', () => {
   });
 
   it('throws on unterminated dollar-quoted string', () => {
-    expect(() => tokenize('SELECT $tag$no end')).toThrow();
+    expect(() => tokenize('SELECT $tag$no end')).toThrow(/expected closing \$tag\$/);
+  });
+});
+
+describe('tokenizer Unicode edge cases', () => {
+  it('handles CJK characters in string literals', () => {
+    const tokens = tokenize("SELECT '数据库', '用户名' FROM t;");
+    const strings = tokens.filter(t => t.type === 'string').map(t => t.value);
+    expect(strings).toEqual(["'数据库'", "'用户名'"]);
+  });
+
+  it('handles emoji in string literals', () => {
+    const tokens = tokenize("SELECT '🎉 party', '🔥🔥' FROM t;");
+    const strings = tokens.filter(t => t.type === 'string').map(t => t.value);
+    expect(strings).toEqual(["'🎉 party'", "'🔥🔥'"]);
+  });
+
+  it('handles mixed CJK identifiers and string literals', () => {
+    const tokens = tokenize("SELECT 名前 AS 名, '値' FROM テーブル;");
+    const ids = tokens.filter(t => t.type === 'identifier').map(t => t.value);
+    expect(ids).toContain('名前');
+    expect(ids).toContain('名');
+    expect(ids).toContain('テーブル');
+    const strings = tokens.filter(t => t.type === 'string').map(t => t.value);
+    expect(strings).toEqual(["'値'"]);
+  });
+
+  it('tracks line/column correctly with multi-byte characters', () => {
+    // '数' is 1 JS string index, so column should be 8 for SELECT after "SELECT 数,\n"
+    const tokens = tokenize("SELECT '数',\n  1;");
+    const numToken = tokens.find(t => t.type === 'number');
+    expect(numToken?.line).toBe(2);
+    expect(numToken?.column).toBe(3);
+  });
+});
+
+describe('tokenizer dollar-quoted nesting', () => {
+  it('handles nested dollar-quoted strings with different tags', () => {
+    const sql = "SELECT $outer$ text $inner$ nested $inner$ more $outer$;";
+    const tokens = tokenize(sql);
+    const stringTokens = tokens.filter(t => t.type === 'string');
+    expect(stringTokens).toHaveLength(1);
+    expect(stringTokens[0].value).toBe('$outer$ text $inner$ nested $inner$ more $outer$');
+  });
+
+  it('handles $$ inside $tag$ dollar-quoted strings', () => {
+    const sql = "SELECT $fn$body $$ not a delim $$ end$fn$;";
+    const tokens = tokenize(sql);
+    const stringTokens = tokens.filter(t => t.type === 'string');
+    expect(stringTokens).toHaveLength(1);
+    expect(stringTokens[0].value).toBe('$fn$body $$ not a delim $$ end$fn$');
+  });
+});
+
+describe('tokenizer scientific notation edge cases', () => {
+  it('backtracks on 1e followed by non-digit (e.g., SELECT 1e FROM t)', () => {
+    const tokens = tokenize('SELECT 1e FROM t;').filter(t => t.type !== 'whitespace');
+    // '1' should be a number, 'e' should be an identifier (keyword or ident)
+    const values = tokens.map(t => t.value);
+    expect(values[0]).toBe('SELECT');
+    expect(values[1]).toBe('1');
+    expect(values[2]).toBe('e');
+    expect(values[3]).toBe('FROM');
+    const numTokens = tokens.filter(t => t.type === 'number');
+    expect(numTokens).toHaveLength(1);
+    expect(numTokens[0].value).toBe('1');
+  });
+
+  it('backtracks on 1E+ followed by non-digit', () => {
+    const tokens = tokenize('SELECT 1E FROM t;').filter(t => t.type !== 'whitespace');
+    expect(tokens[1].value).toBe('1');
+    expect(tokens[1].type).toBe('number');
+    expect(tokens[2].value).toBe('E');
+  });
+
+  it('handles 1e+x (sign followed by non-digit) by backtracking', () => {
+    const tokens = tokenize('SELECT 1e+x;').filter(t => t.type !== 'whitespace');
+    expect(tokens[1].value).toBe('1');
+    expect(tokens[1].type).toBe('number');
+    expect(tokens[2].value).toBe('e');
+    expect(tokens[2].type).toBe('identifier');
+  });
+});
+
+describe('tokenizer edge cases', () => {
+  it('tokenizes empty dollar-quoted string $$$$', () => {
+    const tokens = tokenize('SELECT $$$$;');
+    const stringTokens = tokens.filter(t => t.type === 'string');
+    expect(stringTokens).toHaveLength(1);
+    expect(stringTokens[0].value).toBe('$$$$');
+  });
+
+  it('dollar-quote error includes expected delimiter', () => {
+    try {
+      tokenize('SELECT $mytag$unterminated');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      expect((err as TokenizeError).message).toContain('$mytag$');
+    }
+  });
+
+  it('$$ error includes expected delimiter', () => {
+    try {
+      tokenize('SELECT $$unterminated');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TokenizeError);
+      expect((err as TokenizeError).message).toContain('$$');
+    }
+  });
+
+  it('throws TokenizeError when token count exceeds limit', () => {
+    // Each "1," produces 3 tokens (number, punctuation, and likely whitespace or not).
+    // To hit 1,000,000 tokens we need a lot of simple tokens. Use a repeated "1 " pattern.
+    // Each "1 " produces 2 tokens (number + whitespace). So 500,001 repetitions = 1,000,002 tokens + eof.
+    // That's too large to construct. Instead, verify the error type with a smaller mock.
+    // We can test by generating enough simple single-char tokens.
+    // ";" produces 1 punctuation token each. 1,000,001 semicolons should trigger it.
+    const bigInput = ';'.repeat(1_000_001);
+    expect(() => tokenize(bigInput)).toThrow(TokenizeError);
+  });
+
+  it('valid input just under token limit does not throw', () => {
+    // 999,999 semicolons = 999,999 punctuation tokens + 1 eof = 1,000,000 total
+    const input = ';'.repeat(999_999);
+    const tokens = tokenize(input);
+    expect(tokens[tokens.length - 1].type).toBe('eof');
+    expect(tokens).toHaveLength(1_000_000);
   });
 });
