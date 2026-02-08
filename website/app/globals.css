@@ -10,22 +10,28 @@
   }
 
   body {
-    @apply bg-zinc-950 text-zinc-50;
+    @apply bg-[#050505] text-zinc-50;
+    background-image: radial-gradient(
+      rgba(255, 255, 255, 0.03) 1px,
+      transparent 1px
+    );
+    background-size: 24px 24px;
   }
 
   ::selection {
-    @apply bg-indigo-500/20 text-zinc-50;
+    background: rgba(62, 207, 142, 0.2);
+    color: #fafafa;
   }
 
-  /* Scrollbar — thin, near-invisible */
+  /* Scrollbar */
   * {
     scrollbar-width: thin;
-    scrollbar-color: #27272a transparent;
+    scrollbar-color: #1a1a1a transparent;
   }
 
   *::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
+    width: 6px;
+    height: 6px;
   }
 
   *::-webkit-scrollbar-track {
@@ -33,22 +39,22 @@
   }
 
   *::-webkit-scrollbar-thumb {
-    background-color: #27272a;
-    border-radius: 2px;
+    background-color: #1a1a1a;
+    border-radius: 3px;
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background-color: #3f3f46;
+    background-color: #2a2a2a;
   }
 
-  /* Code/pre defaults */
+  /* Code defaults */
   code,
   pre {
     font-family: var(--font-mono), 'JetBrains Mono', 'Fira Code', monospace;
   }
 
   pre {
-    @apply rounded-lg bg-zinc-900/50 border border-zinc-800/60 p-4 text-sm overflow-x-auto;
+    @apply rounded-xl bg-[#0A0A0A] border border-white/[0.06] p-4 text-sm overflow-x-auto;
   }
 
   code {
@@ -56,12 +62,58 @@
   }
 
   :not(pre) > code {
-    @apply rounded bg-zinc-900/50 border border-zinc-800/60 px-1.5 py-0.5;
+    @apply rounded-md bg-[#0A0A0A] border border-white/[0.06] px-1.5 py-0.5;
   }
 
-  /* CodeMirror placeholder styling */
   .cm-placeholder {
-    color: #52525b !important;
+    color: #2a2a2a !important;
     font-style: italic;
   }
+}
+
+/* Animations */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
+
+.animate-delay-1 {
+  animation-delay: 0.1s;
+}
+.animate-delay-2 {
+  animation-delay: 0.2s;
+}
+.animate-delay-3 {
+  animation-delay: 0.3s;
+}
+.animate-delay-4 {
+  animation-delay: 0.4s;
+}
+.animate-delay-5 {
+  animation-delay: 0.5s;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 4s ease-in-out infinite;
 }

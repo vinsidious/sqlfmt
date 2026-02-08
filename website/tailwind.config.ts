@@ -9,9 +9,15 @@ const config: Config = {
         sans: ['"Inter"', 'system-ui', 'sans-serif'],
       },
       colors: {
+        brand: {
+          DEFAULT: '#3ECF8E',
+          dark: '#24B47E',
+          light: '#6EE7B7',
+        },
         surface: {
-          DEFAULT: '#18181b',
-          light: '#27272a',
+          DEFAULT: '#0A0A0A',
+          light: '#111111',
+          lighter: '#1a1a1a',
         },
       },
     },

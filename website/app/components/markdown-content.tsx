@@ -5,7 +5,7 @@ import type { Components } from 'react-markdown';
 const components: Components = {
   h1: ({ children, ...props }) => (
     <h1
-      className="text-3xl font-bold text-zinc-50 mb-6 mt-8 first:mt-0"
+      className="text-3xl font-bold text-white mb-6 mt-8 first:mt-0"
       {...props}
     >
       {children}
@@ -13,7 +13,7 @@ const components: Components = {
   ),
   h2: ({ children, ...props }) => (
     <h2
-      className="text-2xl font-semibold text-zinc-50 mb-4 mt-8 border-b border-zinc-800 pb-2"
+      className="text-2xl font-semibold text-white mb-4 mt-10 pb-3 border-b border-white/[0.06]"
       {...props}
     >
       {children}
@@ -25,20 +25,22 @@ const components: Components = {
     </h3>
   ),
   p: ({ children, ...props }) => (
-    <p className="text-base text-zinc-300 mb-4 leading-relaxed" {...props}>
+    <p
+      className="text-[15px] text-zinc-400 mb-4 leading-relaxed"
+      {...props}
+    >
       {children}
     </p>
   ),
   a: ({ children, ...props }) => (
     <a
-      className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
+      className="text-brand hover:text-brand-light underline underline-offset-2 transition-colors duration-200"
       {...props}
     >
       {children}
     </a>
   ),
   code: ({ children, className, ...props }) => {
-    // If this code element is inside a pre (code block), use block styling
     const isBlock = className?.startsWith('language-');
     if (isBlock) {
       return (
@@ -51,10 +53,9 @@ const components: Components = {
         </code>
       );
     }
-    // Inline code styling
     return (
       <code
-        className="bg-zinc-800 text-indigo-300 px-1.5 py-0.5 rounded text-sm"
+        className="bg-brand/10 text-brand px-1.5 py-0.5 rounded-md text-sm"
         style={{ fontFamily: 'var(--font-mono)' }}
         {...props}
       >
@@ -64,7 +65,7 @@ const components: Components = {
   },
   pre: ({ children, ...props }) => (
     <pre
-      className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 mb-4 overflow-x-auto"
+      className="bg-[#0A0A0A] border border-white/[0.06] rounded-xl p-4 mb-4 overflow-x-auto"
       {...props}
     >
       {children}
@@ -72,7 +73,7 @@ const components: Components = {
   ),
   ul: ({ children, ...props }) => (
     <ul
-      className="list-disc list-inside mb-4 text-zinc-300 space-y-1"
+      className="list-disc list-inside mb-4 text-zinc-400 space-y-1.5"
       {...props}
     >
       {children}
@@ -80,48 +81,54 @@ const components: Components = {
   ),
   ol: ({ children, ...props }) => (
     <ol
-      className="list-decimal list-inside mb-4 text-zinc-300 space-y-1"
+      className="list-decimal list-inside mb-4 text-zinc-400 space-y-1.5"
       {...props}
     >
       {children}
     </ol>
   ),
   li: ({ children, ...props }) => (
-    <li className="leading-relaxed" {...props}>
+    <li className="leading-relaxed text-[15px]" {...props}>
       {children}
     </li>
   ),
   table: ({ children, ...props }) => (
-    <div className="overflow-x-auto mb-4">
+    <div className="overflow-x-auto mb-4 rounded-xl border border-white/[0.06]">
       <table className="w-full text-sm" {...props}>
         {children}
       </table>
     </div>
   ),
   thead: ({ children, ...props }) => (
-    <thead className="border-b border-zinc-700" {...props}>
+    <thead className="border-b border-white/[0.06] bg-white/[0.02]" {...props}>
       {children}
     </thead>
   ),
   th: ({ children, ...props }) => (
-    <th className="text-left p-2 text-zinc-300 font-medium" {...props}>
+    <th
+      className="text-left p-3 text-zinc-300 font-medium text-sm"
+      {...props}
+    >
       {children}
     </th>
   ),
   td: ({ children, ...props }) => (
-    <td className="p-2 text-zinc-400 border-b border-zinc-800" {...props}>
+    <td
+      className="p-3 text-zinc-500 border-b border-white/[0.04] text-sm"
+      {...props}
+    >
       {children}
     </td>
   ),
   blockquote: ({ children, ...props }) => (
     <blockquote
-      className="border-l-2 border-indigo-500 pl-4 italic text-zinc-400 mb-4"
+      className="border-l-2 border-brand/40 pl-4 italic text-zinc-500 mb-4"
       {...props}
     >
       {children}
     </blockquote>
   ),
-  hr: (props) => <hr className="border-zinc-800 my-8" {...props} />,
+  hr: (props) => <hr className="border-white/[0.06] my-8" {...props} />,
 };
 
 export function MarkdownContent({ content }: { content: string }) {

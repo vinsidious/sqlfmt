@@ -1,73 +1,48 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { Playground } from './components/playground';
+import { CopyInstall } from './components/copy-install';
 
 export const metadata: Metadata = {
-  title: 'holywell — Format SQL in Your Browser',
+  title: 'holywell — Beautiful, Readable SQL',
   description:
-    'Zero-config SQL formatter with river alignment. Format SQL instantly in your browser with full PostgreSQL support.',
+    'SQL formatter that makes your queries beautiful and readable. Format SQL instantly in your browser with full PostgreSQL support.',
 };
-
-const FEATURES = [
-  {
-    title: 'Zero Config',
-    description: 'One style, everywhere. No toggles, no config files.',
-  },
-  {
-    title: 'PostgreSQL-First',
-    description: 'Type casts, JSON ops, dollar-quoting, arrays — all supported.',
-  },
-  {
-    title: 'Idempotent',
-    description: 'Format once or a hundred times. Same result.',
-  },
-  {
-    title: 'Blazing Fast',
-    description: '5,000+ statements/sec. Zero dependencies.',
-  },
-] as const;
 
 export default function HomePage() {
   return (
-    <div className="py-16 sm:py-24">
+    <div className="relative">
       {/* Hero */}
-      <section className="mx-auto max-w-6xl px-4 sm:px-6 text-center mb-16 sm:mb-20">
-        <div className="inline-flex items-baseline gap-1">
-          <h1 className="text-5xl sm:text-7xl font-bold text-zinc-50 font-mono tracking-tighter">
-            holywell
-          </h1>
-          <span className="text-indigo-400 font-mono text-5xl sm:text-7xl font-bold">
-            .
-          </span>
-        </div>
-        <p className="mt-4 text-base sm:text-lg text-zinc-500 max-w-md mx-auto">
-          Zero-config SQL formatter with river alignment
-        </p>
-        <div className="mt-6 inline-flex items-center gap-2.5 rounded-lg border border-zinc-800/60 bg-zinc-900/50 px-4 py-2">
-          <code className="font-mono text-sm text-zinc-400">
-            npm i holywell
-          </code>
+      <section className="relative overflow-hidden pt-12 pb-8 sm:pt-16 sm:pb-10">
+        <div className="relative mx-auto max-w-5xl px-4 sm:px-6 text-center">
+          {/* Heading */}
+          <div className="animate-fade-in-up">
+            <h1 className="text-4xl sm:text-5xl font-bold text-white font-mono tracking-tighter">
+              holywell
+            </h1>
+          </div>
+
+          {/* Subtitle */}
+          <p className="animate-fade-in-up animate-delay-1 mt-3 text-base text-zinc-500">
+            Beautifully readable SQL.
+          </p>
+
+          {/* CTAs */}
+          <div className="animate-fade-in-up animate-delay-2 mt-5 flex flex-col sm:flex-row items-center justify-center gap-3">
+            <CopyInstall />
+            <Link
+              href="/docs"
+              className="text-sm text-zinc-500 hover:text-brand transition-colors duration-200"
+            >
+              Documentation <span className="ml-0.5">&rarr;</span>
+            </Link>
+          </div>
         </div>
       </section>
 
       {/* Playground */}
-      <section className="mx-auto max-w-7xl px-4 sm:px-6 mb-24 sm:mb-32">
+      <section className="animate-fade-in-up animate-delay-3 mx-auto max-w-7xl px-4 sm:px-6 pb-28 sm:pb-36">
         <Playground />
-      </section>
-
-      {/* Features */}
-      <section className="mx-auto max-w-4xl px-4 sm:px-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-zinc-800/40 rounded-xl overflow-hidden border border-zinc-800/60">
-          {FEATURES.map((feature) => (
-            <div key={feature.title} className="bg-zinc-950 p-6">
-              <h3 className="text-sm font-semibold text-zinc-200">
-                {feature.title}
-              </h3>
-              <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
-                {feature.description}
-              </p>
-            </div>
-          ))}
-        </div>
       </section>
     </div>
   );

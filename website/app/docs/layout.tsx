@@ -26,7 +26,7 @@ export default function DocsLayout({
       <button
         type="button"
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="fixed bottom-4 right-4 z-40 md:hidden bg-zinc-800 border border-zinc-700 rounded-lg p-3 text-zinc-300"
+        className="fixed bottom-4 right-4 z-40 md:hidden bg-surface-light border border-white/[0.06] rounded-lg p-3 text-zinc-300 transition-all duration-200 hover:border-brand/20 hover:bg-surface-lighter"
         aria-label="Toggle documentation sidebar"
       >
         <svg
@@ -49,7 +49,7 @@ export default function DocsLayout({
       {/* Sidebar overlay for mobile */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -58,16 +58,16 @@ export default function DocsLayout({
       <aside
         className={`
           fixed top-14 left-0 z-30 h-[calc(100vh-3.5rem)] w-64 shrink-0
-          bg-zinc-950 border-r border-zinc-800 py-6 px-4
+          bg-[#050505] border-r border-white/[0.04] py-6 px-4
           transition-transform duration-200 ease-in-out
           md:sticky md:translate-x-0
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}
       >
-        <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-4">
+        <h2 className="text-[11px] uppercase tracking-widest text-zinc-600 mb-4 px-3">
           Documentation
         </h2>
-        <nav className="flex flex-col gap-1">
+        <nav className="flex flex-col gap-0.5">
           {SIDEBAR_LINKS.map(({ href, label }) => {
             const isActive = pathname === href;
             return (
@@ -75,10 +75,10 @@ export default function DocsLayout({
                 key={href}
                 href={href}
                 onClick={() => setSidebarOpen(false)}
-                className={`px-3 py-1.5 rounded text-sm transition-colors ${
+                className={`px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
                   isActive
-                    ? 'text-indigo-400 bg-zinc-900'
-                    : 'text-zinc-400 hover:text-zinc-200'
+                    ? 'text-brand bg-brand/10 font-medium'
+                    : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.03]'
                 }`}
               >
                 {label}
@@ -89,7 +89,7 @@ export default function DocsLayout({
       </aside>
 
       {/* Content */}
-      <div className="flex-1 min-w-0 max-w-3xl py-8 px-4 md:px-6">
+      <div className="flex-1 min-w-0 max-w-3xl py-8 px-4 md:px-8">
         {children}
       </div>
     </div>

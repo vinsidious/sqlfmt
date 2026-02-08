@@ -15,17 +15,20 @@ export function Footer() {
   }
 
   return (
-    <footer className="border-t border-zinc-800/50">
+    <footer className="border-t border-white/[0.04]">
       <div className="mx-auto flex max-w-7xl flex-col items-center gap-4 px-4 py-5 sm:flex-row sm:justify-between sm:px-6">
         <button
           onClick={handleCopy}
-          className="group flex items-center gap-2 text-zinc-500 transition-colors hover:text-zinc-300"
+          className="group flex items-center gap-2 text-zinc-600 transition-colors duration-200 hover:text-zinc-300"
           title="Copy install command"
         >
+          <span className="text-brand/50 font-mono text-xs">$</span>
           <code className="font-mono text-xs">{INSTALL_CMD}</code>
           <span
-            className={`text-[10px] uppercase tracking-wider transition-colors ${
-              copied ? 'text-emerald-500' : 'text-zinc-600 group-hover:text-zinc-500'
+            className={`text-[10px] uppercase tracking-wider transition-colors duration-200 ${
+              copied
+                ? 'text-brand'
+                : 'text-zinc-700 group-hover:text-zinc-500'
             }`}
           >
             {copied ? 'copied' : 'copy'}
@@ -37,7 +40,7 @@ export function Footer() {
             href="https://github.com/vinsidious/holywell"
             target="_blank"
             rel="noopener noreferrer"
-            className="transition-colors hover:text-zinc-400"
+            className="transition-colors duration-200 hover:text-zinc-300"
           >
             GitHub
           </a>
@@ -45,11 +48,11 @@ export function Footer() {
             href="https://www.npmjs.com/package/holywell"
             target="_blank"
             rel="noopener noreferrer"
-            className="transition-colors hover:text-zinc-400"
+            className="transition-colors duration-200 hover:text-zinc-300"
           >
             npm
           </a>
-          <span>MIT</span>
+          <span className="text-zinc-700">MIT</span>
         </div>
       </div>
     </footer>
