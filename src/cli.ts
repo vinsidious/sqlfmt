@@ -1020,7 +1020,7 @@ function main(): void {
         try {
           ({ output, recoveries } = formatOneInput(input, runtimeFormatOptions));
         } catch (err) {
-          handleParseError(err, input);
+          handleParseError(err, input, file);
         }
 
         printRecoveryWarnings(recoveries);

@@ -433,9 +433,8 @@ try {
 
 ## How the formatter works
 
-```mermaid
-graph LR
-    A[SQL Text] --> B[Tokenizer] --> C[Parser] --> D[AST] --> E[Formatter] --> F[Formatted SQL]
+```
+SQL Text → Tokenizer → Parser → AST → Formatter → Formatted SQL
 ```
 
 1. **Tokenizer** (`src/tokenizer.ts`) -- Splits SQL text into tokens (keywords, identifiers, literals, operators, comments)
@@ -474,7 +473,7 @@ A: In default (recovery) mode, unrecognized statements are passed through unchan
 A: ~5,000 statements/second on modern hardware. A typical migration file formats in <10ms.
 
 **Q: Does holywell modify SQL semantics?**
-A: No. holywell only changes whitespace and keyword casing. The semantic meaning is preserved.
+A: No. holywell changes whitespace, uppercases SQL keywords, lowercases unquoted identifiers, and normalizes alias syntax (e.g., inserting AS). Quoted identifiers and string literals are preserved exactly. The semantic meaning is preserved.
 
 **Q: Does holywell respect `.editorconfig`?**
 A: No. holywell does not read `.editorconfig`. It does read `.holywellrc.json` (or `--config`) for operational settings, but style output remains deterministic.

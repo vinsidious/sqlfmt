@@ -23,5 +23,8 @@ export default defineConfig([
     banner: {
       js: '#!/usr/bin/env node',
     },
+    define: {
+      '__HOLYWELL_VERSION__': JSON.stringify(version),
+    },
   },
 ]);

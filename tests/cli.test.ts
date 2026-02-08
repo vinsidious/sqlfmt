@@ -70,7 +70,7 @@ describe('cli flags and UX', () => {
     writeFileSync(file, "SELECT 'broken", 'utf8');
     const res = runCli([file]);
     expect(res.code).toBe(2);
-    expect(res.err).toContain('Parse error');
+    expect(res.err).toContain('broken.sql');
   });
 
   it('supports --check with normalized edge whitespace', () => {
