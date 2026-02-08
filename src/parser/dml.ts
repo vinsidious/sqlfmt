@@ -22,7 +22,9 @@ export function parseInsertStatement(
   comments: AST.CommentNode[]
 ): AST.InsertStatement {
   ctx.expect('INSERT');
-  ctx.expect('INTO');
+  if (ctx.peekUpper() === 'INTO') {
+    ctx.advance();
+  }
   let table = ctx.advance().value;
   while (ctx.check('.')) {
     ctx.advance(); // consume dot

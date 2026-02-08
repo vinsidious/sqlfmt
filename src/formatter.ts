@@ -399,9 +399,10 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
     : node.distinct
       ? ' DISTINCT'
       : '';
-  const colStartCol = contentCol(ctx) + stringDisplayWidth(distinctStr);
+  const topStr = node.top ? ` ${node.top}` : '';
+  const colStartCol = contentCol(ctx) + stringDisplayWidth(distinctStr + topStr);
   const colStr = formatColumnList(node.columns, colStartCol, ctx);
-  lines.push(selectKw + distinctStr + ' ' + colStr);
+  lines.push(selectKw + distinctStr + topStr + ' ' + colStr);
 
   if (node.into) {
     lines.push(rightAlign('INTO', ctx) + ' ' + node.into);

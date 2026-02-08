@@ -82,6 +82,7 @@ export interface SelectStatement {
   readonly type: 'select';
   readonly distinct: boolean;
   readonly distinctOn?: readonly Expression[];
+  readonly top?: string;
   readonly into?: string;
   readonly columns: readonly ColumnExpr[];
   readonly from?: FromClause;
@@ -420,7 +421,7 @@ export interface IntervalExpr {
 
 export interface TypedStringExpr {
   readonly type: 'typed_string';
-  readonly dataType: 'DATE' | 'TIME' | 'TIMESTAMP';
+  readonly dataType: 'DATE' | 'TIME' | 'TIMESTAMP' | 'TIMESTAMPTZ';
   readonly value: string;
 }
 

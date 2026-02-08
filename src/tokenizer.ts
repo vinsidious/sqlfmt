@@ -222,6 +222,38 @@ function readQuotedString(
   throw new TokenizeError('Unterminated string literal', errPos);
 }
 
+function readSmartQuotedString(
+  input: string,
+  start: number,
+  openQuote: '‘' | '’',
+  lineOffsets?: number[],
+): number {
+  const closeQuote = openQuote === '‘' ? '’' : openQuote;
+  let pos = start;
+  while (pos < input.length) {
+    const ch = input[pos];
+    if (ch === closeQuote) {
+      // Treat doubled smart quotes as an escaped quote.
+      if (pos + 1 < input.length && input[pos + 1] === closeQuote) {
+        pos += 2;
+        continue;
+      }
+      return pos + 1;
+    }
+    pos += 1;
+  }
+  const errPos = pos;
+  if (lineOffsets) {
+    const { line, column } = posToLineCol(lineOffsets, errPos);
+    throw new TokenizeError('Unterminated string literal', errPos, line, column);
+  }
+  throw new TokenizeError('Unterminated string literal', errPos);
+}
+
+function normalizeSmartQuotes(value: string): string {
+  return value.replace(/[‘’]/g, "'");
+}
+
 // Precompute line start offsets for O(1) line/column lookup.
 // Note: positions and columns use JavaScript string indices (UTF-16 code units),
 // which is consistent with how most editors (VS Code, etc.) report columns.
@@ -438,6 +470,16 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       pos = readQuotedString(input, pos, false, lineOffsets);
       const val = input.slice(start, pos);
       emit('string', val, val, start);
+      continue;
+    }
+
+    // Smart-quote string literals copied from rich-text editors.
+    if (ch === '‘' || ch === '’') {
+      pos++;
+      pos = readSmartQuotedString(input, pos, ch, lineOffsets);
+      const raw = input.slice(start, pos);
+      const normalized = normalizeSmartQuotes(raw);
+      emit('string', normalized, normalized, start);
       continue;
     }
 

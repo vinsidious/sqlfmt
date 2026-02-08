@@ -354,6 +354,21 @@ function tryParseLiteralPrimary(ctx: PrimaryExpressionParser, token: Token): AST
   }
   if (token.type === 'number') {
     ctx.advance();
+
+    // KWDB-style compact duration literals: 10y, 12mon, 1000ms, etc.
+    const maybeUnit = ctx.peekAt(0);
+    if (
+      isCompactDurationUnit(maybeUnit)
+      && maybeUnit.position === token.position + token.value.length
+    ) {
+      ctx.advance();
+      return {
+        type: 'raw',
+        text: token.value + maybeUnit.value,
+        reason: 'verbatim',
+      };
+    }
+
     return { type: 'literal', value: token.value, literalType: 'number' };
   }
   if (token.type === 'string') {
@@ -388,10 +403,31 @@ function tryParseLiteralPrimary(ctx: PrimaryExpressionParser, token: Token): AST
   return null;
 }
 
+function isCompactDurationUnit(token: Token | undefined): boolean {
+  if (!token) return false;
+  if (token.type !== 'identifier' && token.type !== 'keyword') return false;
+  const unit = token.upper;
+  return (
+    unit === 'Y'
+    || unit === 'MON'
+    || unit === 'W'
+    || unit === 'D'
+    || unit === 'H'
+    || unit === 'M'
+    || unit === 'S'
+    || unit === 'MS'
+  );
+}
+
 function tryParseTypedStringPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (
     !(
-      (token.upper === 'DATE' || token.upper === 'TIME' || token.upper === 'TIMESTAMP')
+      (
+        token.upper === 'DATE'
+        || token.upper === 'TIME'
+        || token.upper === 'TIMESTAMP'
+        || token.upper === 'TIMESTAMPTZ'
+      )
       && ctx.peekTypeAt(1) === 'string'
     )
   ) {
@@ -400,9 +436,19 @@ function tryParseTypedStringPrimary(ctx: PrimaryExpressionParser, token: Token):
 
   ctx.advance();
   const strToken = ctx.advance();
+
+  // KWDB-style typed literals are written without a separating space.
+  if (token.upper === 'TIMESTAMPTZ') {
+    return {
+      type: 'raw',
+      text: `${token.upper}${strToken.value}`,
+      reason: 'verbatim',
+    };
+  }
+
   return {
     type: 'typed_string',
-    dataType: token.upper as 'DATE' | 'TIME' | 'TIMESTAMP',
+    dataType: token.upper as 'DATE' | 'TIME' | 'TIMESTAMP' | 'TIMESTAMPTZ',
     value: strToken.value,
   };
 }

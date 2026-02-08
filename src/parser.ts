@@ -37,7 +37,7 @@ const IMPLICIT_STATEMENT_STARTERS = new Set([
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
   'START', 'VALUES', 'COPY', 'DELIMITER',
-  'GO', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE',
+  'GO', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE', 'SP_RENAME',
 ]);
 
 // Lookup table for multi-word SQL type names.
@@ -429,7 +429,9 @@ export class Parser {
     }
 
     if (kw === 'CREATE' && this.looksLikeCreateRoutineStatement()) {
-      return this.parseStatementUntilEndBlock(comments, 'unsupported');
+      const routineKind = this.getCreateRoutineKind();
+      const normalizeKeywords = routineKind === 'TRIGGER';
+      return this.parseStatementUntilEndBlock(comments, 'unsupported', { normalizeKeywords });
     }
     if (kw === 'BEGIN' && this.hasKeywordAhead('END')) {
       return this.parseStatementUntilEndBlock(comments, 'unsupported');
@@ -468,6 +470,10 @@ export class Parser {
       return this.parseSingleLineStatement(comments, 'unsupported');
     }
     if (kw === 'COMMENT' || kw === 'CALL') {
+      return this.parseVerbatimStatement(comments, 'unsupported', true);
+    }
+
+    if (this.peekType() === 'identifier' && this.peekUpper() === 'SP_RENAME') {
       return this.parseVerbatimStatement(comments, 'unsupported', true);
     }
 
@@ -511,13 +517,13 @@ export class Parser {
     };
   }
 
-  private looksLikeCreateRoutineStatement(): boolean {
-    if (this.peekUpper() !== 'CREATE') return false;
+  private getCreateRoutineKind(): 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT' | null {
+    if (this.peekUpper() !== 'CREATE') return null;
     for (let i = 1; i < 40; i++) {
       const token = this.peekAt(i);
       if (token.type === 'eof' || token.value === ';') break;
       if (token.upper === 'TABLE' || token.upper === 'INDEX' || token.upper === 'VIEW' || token.upper === 'POLICY') {
-        return false;
+        return null;
       }
       if (
         token.upper === 'PROCEDURE'
@@ -525,10 +531,14 @@ export class Parser {
         || token.upper === 'TRIGGER'
         || token.upper === 'EVENT'
       ) {
-        return true;
+        return token.upper as 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT';
       }
     }
-    return false;
+    return null;
+  }
+
+  private looksLikeCreateRoutineStatement(): boolean {
+    return this.getCreateRoutineKind() !== null;
   }
 
   private hasKeywordAhead(keyword: string, maxLookahead: number = 500): boolean {
@@ -547,8 +557,10 @@ export class Parser {
   private parseStatementUntilEndBlock(
     comments: AST.CommentNode[],
     reason: AST.RawReason,
+    options: { normalizeKeywords?: boolean } = {},
   ): AST.RawExpression | null {
     const startPos = this.peek().position;
+    const startIndex = this.pos;
     let endPos = startPos;
     let beginDepth = 0;
     let sawBegin = false;
@@ -580,6 +592,15 @@ export class Parser {
       if (token.value === ';' && !sawBegin) {
         break;
       }
+    }
+
+    if (options.normalizeKeywords) {
+      const statementTokens = this.tokens.slice(startIndex, this.pos);
+      const text = this.tokensToSql(statementTokens);
+      const raw = text
+        ? ({ type: 'raw', text, reason } as AST.RawExpression)
+        : null;
+      return this.combineCommentsWithRaw(comments, raw, reason);
     }
 
     return this.buildRawFromSourceSlice(comments, startPos, endPos, reason);
@@ -981,6 +1002,34 @@ export class Parser {
       this.advance();
     }
 
+    let top: string | undefined;
+    if (this.peekUpper() === 'TOP') {
+      const topTokens: Token[] = [];
+      topTokens.push(this.advance()); // TOP
+
+      if (this.check('(')) {
+        let depth = 0;
+        do {
+          const token = this.advance();
+          topTokens.push(token);
+          if (token.value === '(') depth++;
+          if (token.value === ')') depth--;
+        } while (!this.isAtEnd() && depth > 0);
+      } else {
+        topTokens.push(this.advance());
+      }
+
+      if (this.peekUpper() === 'PERCENT') {
+        topTokens.push(this.advance());
+      }
+      if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'TIES') {
+        topTokens.push(this.advance());
+        topTokens.push(this.advance());
+      }
+
+      top = this.tokensToSql(topTokens);
+    }
+
     const columns = this.parseColumnList();
     let into: string | undefined;
     if (this.peekUpper() === 'INTO') {
@@ -1104,6 +1153,7 @@ export class Parser {
       type: 'select',
       distinct,
       distinctOn,
+      top,
       into,
       columns,
       from,
@@ -1220,12 +1270,76 @@ export class Parser {
       if (subquery) {
         return subquery;
       }
+
+      const parenthesizedJoin = this.tryParseParenthesizedJoinExpression();
+      if (parenthesizedJoin) {
+        return parenthesizedJoin;
+      }
+
       this.advance();
       const expr = this.parseExpression();
       this.expect(')');
       return { type: 'paren', expr } as AST.ParenExpr;
     }
     return this.parsePrimary();
+  }
+
+  private tryParseParenthesizedJoinExpression(): AST.Expression | null {
+    const checkpoint = this.pos;
+    if (!this.check('(')) return null;
+
+    const tokens: Token[] = [];
+    let depth = 0;
+
+    do {
+      const token = this.advance();
+      tokens.push(token);
+      if (token.value === '(') depth++;
+      if (token.value === ')') depth--;
+    } while (!this.isAtEnd() && depth > 0);
+
+    if (depth !== 0) {
+      this.pos = checkpoint;
+      return null;
+    }
+
+    let nesting = 0;
+    let sawJoinKeyword = false;
+    for (let i = 1; i < tokens.length - 1; i++) {
+      const token = tokens[i];
+      if (this.isOpenGroupToken(token)) {
+        nesting++;
+        continue;
+      }
+      if (this.isCloseGroupToken(token)) {
+        nesting = Math.max(0, nesting - 1);
+        continue;
+      }
+      if (nesting > 0) continue;
+      if (
+        token.upper === 'JOIN'
+        || token.upper === 'NATURAL'
+        || token.upper === 'INNER'
+        || token.upper === 'LEFT'
+        || token.upper === 'RIGHT'
+        || token.upper === 'FULL'
+        || token.upper === 'CROSS'
+      ) {
+        sawJoinKeyword = true;
+        break;
+      }
+    }
+
+    if (!sawJoinKeyword) {
+      this.pos = checkpoint;
+      return null;
+    }
+
+    return {
+      type: 'raw',
+      text: this.tokensToSql(tokens),
+      reason: 'verbatim',
+    };
   }
 
   private tryParseSubqueryAtCurrent(): AST.SubqueryExpr | null {
@@ -2892,6 +3006,24 @@ export class Parser {
         constraints.push(this.parseGeneratedIdentityConstraint(name));
         continue;
       }
+      if (kw === 'IDENTITY') {
+        const identityTokens: Token[] = [this.advance()];
+        if (this.check('(')) {
+          let depth = 0;
+          do {
+            const token = this.advance();
+            identityTokens.push(token);
+            if (token.value === '(') depth++;
+            if (token.value === ')') depth--;
+          } while (!this.isAtEnd() && depth > 0);
+        }
+        constraints.push({
+          type: 'raw',
+          name,
+          text: this.tokensToSql(identityTokens),
+        });
+        continue;
+      }
       if (kw === 'PRIMARY' && this.peekUpperAt(1) === 'KEY') {
         this.advance();
         this.advance();
@@ -3061,7 +3193,7 @@ export class Parser {
 
   private isAtColumnConstraintBoundary(): boolean {
     const kw = this.peekUpper();
-    if (kw === 'CONSTRAINT' || kw === 'DEFAULT' || kw === 'CHECK' || kw === 'REFERENCES' || kw === 'GENERATED' || kw === 'UNIQUE' || kw === 'NULL') {
+    if (kw === 'CONSTRAINT' || kw === 'DEFAULT' || kw === 'CHECK' || kw === 'REFERENCES' || kw === 'GENERATED' || kw === 'IDENTITY' || kw === 'UNIQUE' || kw === 'NULL') {
       return true;
     }
     if (kw === 'NOT' && this.peekUpperAt(1) === 'NULL') return true;
@@ -3494,19 +3626,25 @@ export class Parser {
 
   private tokensToSqlPreserveCase(tokens: Token[]): string {
     if (tokens.length === 0) return '';
-    const parts = tokens.map(t => t.value);
     let out = '';
-    for (let i = 0; i < parts.length; i++) {
-      const curr = parts[i];
-      const prev = i > 0 ? parts[i - 1] : '';
+    for (let i = 0; i < tokens.length; i++) {
+      const currToken = tokens[i];
+      const curr = currToken.value;
+      const prevToken = i > 0 ? tokens[i - 1] : undefined;
+      const prev = prevToken?.value ?? '';
       if (i === 0) {
         out += curr;
         continue;
       }
 
+      if (prevToken?.type === 'line_comment') {
+        out += '\n' + curr;
+        continue;
+      }
+
       const noSpaceBefore = curr === ',' || curr === ')' || curr === ']' || curr === ';' || curr === '.' || curr === '(' || curr === ':';
       const noSpaceAfterPrev = prev === '(' || prev === '[' || prev === '.' || prev === '::' || prev === ':';
-      const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::';
+      const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::' || curr === '@' || prev === '@';
       if (noSpaceBefore || noSpaceAfterPrev || noSpaceAroundPair) {
         out += curr;
       } else {
@@ -3518,19 +3656,25 @@ export class Parser {
 
   private tokensToSql(tokens: Token[]): string {
     if (tokens.length === 0) return '';
-    const parts = tokens.map(t => this.tokenToSqlValue(t));
     let out = '';
-    for (let i = 0; i < parts.length; i++) {
-      const curr = parts[i];
-      const prev = i > 0 ? parts[i - 1] : '';
+    for (let i = 0; i < tokens.length; i++) {
+      const currToken = tokens[i];
+      const curr = this.tokenToSqlValue(currToken);
+      const prevToken = i > 0 ? tokens[i - 1] : undefined;
+      const prev = prevToken ? this.tokenToSqlValue(prevToken) : '';
       if (i === 0) {
         out += curr;
         continue;
       }
 
+      if (prevToken?.type === 'line_comment') {
+        out += '\n' + curr;
+        continue;
+      }
+
       const noSpaceBefore = curr === ',' || curr === ')' || curr === ']' || curr === ';' || curr === '.' || curr === '(' || curr === ':';
       const noSpaceAfterPrev = prev === '(' || prev === '[' || prev === '.' || prev === '::' || prev === ':';
-      const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::';
+      const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::' || curr === '@' || prev === '@';
       if (noSpaceBefore || noSpaceAfterPrev || noSpaceAroundPair) {
         out += curr;
       } else {
