@@ -229,7 +229,7 @@ export interface DropTableStatement {
   readonly concurrently?: boolean;
   readonly ifExists: boolean;
   readonly objectName: string;
-  readonly behavior?: 'CASCADE' | 'RESTRICT';
+  readonly behavior?: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINTS';
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -351,7 +351,7 @@ export interface GrantStatement {
   readonly kind: 'GRANT' | 'REVOKE';
   readonly grantOptionFor?: boolean;
   readonly privileges: readonly string[];
-  readonly object: string;
+  readonly object?: string;
   readonly recipientKeyword: 'TO' | 'FROM';
   readonly recipients: readonly string[];
   readonly withGrantOption?: boolean;

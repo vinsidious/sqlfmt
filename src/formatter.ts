@@ -1934,8 +1934,8 @@ function formatCreatePolicy(node: AST.CreatePolicyStatement, ctx: FormatContext)
 function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
-  if (node.privileges.length === 0 || !node.object || node.recipients.length === 0) {
-    throw new Error('Invalid grant statement AST: missing privileges, object, or recipients');
+  if (node.privileges.length === 0 || node.recipients.length === 0) {
+    throw new Error('Invalid grant statement AST: missing privileges or recipients');
   }
 
   const head = node.kind
@@ -1945,11 +1945,19 @@ function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
   lines.push(head);
 
   if (node.kind === 'GRANT') {
-    lines.push('   ON ' + node.object);
-    lines.push('   TO ' + node.recipients.join(', '));
+    if (node.object) {
+      lines.push('   ON ' + node.object);
+      lines.push('   TO ' + node.recipients.join(', '));
+    } else {
+      lines.push('   TO ' + node.recipients.join(', '));
+    }
   } else {
-    lines.push('  ON ' + node.object);
-    lines.push('FROM ' + node.recipients.join(', '));
+    if (node.object) {
+      lines.push('  ON ' + node.object);
+      lines.push('FROM ' + node.recipients.join(', '));
+    } else {
+      lines.push('FROM ' + node.recipients.join(', '));
+    }
   }
 
   if (node.withGrantOption) {

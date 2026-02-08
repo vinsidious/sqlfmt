@@ -166,6 +166,13 @@ function isInlineMetaCommand(input: string, pos: number): boolean {
   return isAsciiLetterCode(code);
 }
 
+function previousSignificantToken(tokens: Token[]): Token | undefined {
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    if (tokens[i].type !== 'whitespace') return tokens[i];
+  }
+  return undefined;
+}
+
 function readDollarDelimiter(input: string, start: number): string | null {
   if (input[start] !== '$') return null;
 
@@ -468,6 +475,50 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       continue;
     }
 
+    // SQL Server bracket-quoted identifier: [identifier]
+    // Distinguish from array subscripts by context (dot/no-gap patterns).
+    if (ch === '[') {
+      const prev = previousSignificantToken(tokens);
+      const hasGapFromPrev = !!prev && start > (prev.position + prev.value.length);
+      const canStartBracketIdentifier =
+        !prev
+        || prev.value === '.'
+        || hasGapFromPrev;
+
+      if (canStartBracketIdentifier) {
+        pos++;
+        let closed = false;
+        while (pos < len) {
+          if (input[pos] === ']') {
+            if (input[pos + 1] === ']') {
+              pos += 2; // escaped closing bracket
+              continue;
+            }
+            pos++;
+            closed = true;
+            break;
+          }
+          pos++;
+          if (pos - start > MAX_IDENTIFIER_LENGTH) {
+            const { line: eLine, column: eCol } = lc(start);
+            throw new TokenizeError(
+              `Identifier exceeds maximum length of ${MAX_IDENTIFIER_LENGTH} characters`,
+              start,
+              eLine,
+              eCol,
+            );
+          }
+        }
+        if (!closed) {
+          const { line: eLine, column: eCol } = lc(start);
+          throw new TokenizeError('Unterminated bracket-quoted identifier', start, eLine, eCol);
+        }
+        const val = input.slice(start, pos);
+        emit('identifier', val, val, start);
+        continue;
+      }
+    }
+
     // Backtick-quoted identifier (MySQL style)
     if (ch === '`') {
       pos++;
@@ -653,6 +704,25 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
     // # operators: #>> then #> then #
     if (ch === '#') {
+      // SQL Server temporary tables: #tmp / ##tmp / #1
+      const hashNext = input[pos + 1];
+      const hashNext2 = input[pos + 2];
+      const hashStartsIdent = !!hashNext && (isIdentifierContinuation(hashNext) || isDigit(hashNext));
+      const hashStartsGlobalTemp = hashNext === '#' && !!hashNext2 && (isIdentifierContinuation(hashNext2) || isDigit(hashNext2));
+      if (
+        hashStartsGlobalTemp
+        || hashStartsIdent
+      ) {
+        pos++;
+        if (input[pos] === '#') pos++;
+        while (pos < len && (isIdentifierContinuation(input[pos]) || isDigit(input[pos]))) {
+          pos++;
+        }
+        const val = input.slice(start, pos);
+        emit('identifier', val, val.toUpperCase(), start);
+        continue;
+      }
+
       if (pos + 2 < len && input[pos + 1] === '>' && input[pos + 2] === '>') {
         pos += 3;
         emit('operator', '#>>', '#>>', start);
@@ -670,6 +740,25 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
     // @ operators: @> then @? then @@ then bare @
     if (ch === '@') {
+      // T-SQL variables: @name / @@name
+      const atNext = input[pos + 1];
+      const atNext2 = input[pos + 2];
+      const atStartsIdent = !!atNext && (isIdentifierContinuation(atNext) || isDigit(atNext));
+      const atStartsGlobal = atNext === '@' && !!atNext2 && (isIdentifierContinuation(atNext2) || isDigit(atNext2));
+      if (
+        atStartsGlobal
+        || atStartsIdent
+      ) {
+        pos++;
+        if (input[pos] === '@') pos++;
+        while (pos < len && (isIdentifierContinuation(input[pos]) || isDigit(input[pos]))) {
+          pos++;
+        }
+        const val = input.slice(start, pos);
+        emit('identifier', val, val.toUpperCase(), start);
+        continue;
+      }
+
       if (pos + 1 < len) {
         const next = input[pos + 1];
         if (next === '>') {
@@ -727,6 +816,35 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
     // & operators: && then &
     if (ch === '&') {
+      // SQL*Plus substitution vars: &name / &&name
+      const prev = start > 0 ? input[start - 1] : '';
+      const atTokenBoundary = start === 0 || isWhitespaceCode(prev.charCodeAt(0)) || '([=,+-*/%<>;'.includes(prev);
+      if (atTokenBoundary) {
+        const ampNext = input[pos + 1];
+        const ampNext2 = input[pos + 2];
+        const ampStartsIdent = !!ampNext && (isIdentifierContinuation(ampNext) || isDigit(ampNext));
+        const ampStartsDouble = ampNext === '&' && !!ampNext2 && (isIdentifierContinuation(ampNext2) || isDigit(ampNext2));
+
+        if (ampStartsDouble) {
+          pos += 2;
+          while (pos < len && (isIdentifierContinuation(input[pos]) || isDigit(input[pos]))) {
+            pos++;
+          }
+          const val = input.slice(start, pos);
+          emit('parameter', val, val, start);
+          continue;
+        }
+        if (ampStartsIdent) {
+          pos++;
+          while (pos < len && (isIdentifierContinuation(input[pos]) || isDigit(input[pos]))) {
+            pos++;
+          }
+          const val = input.slice(start, pos);
+          emit('parameter', val, val, start);
+          continue;
+        }
+      }
+
       if (pos + 1 < len && input[pos + 1] === '&') {
         pos += 2;
         emit('operator', '&&', '&&', start);

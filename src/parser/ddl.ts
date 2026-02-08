@@ -579,6 +579,25 @@ function parseRawAlterAction(ctx: DdlParser): AST.AlterRawAction {
   };
 }
 
+const DROP_NAME_BOUNDARY_STARTERS = new Set([
+  'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'MERGE',
+  'CREATE', 'ALTER', 'DROP', 'TRUNCATE',
+  'GRANT', 'REVOKE', 'COMMENT', 'CALL',
+  'SET', 'RESET', 'ANALYZE', 'VACUUM',
+  'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
+  'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
+  'START', 'VALUES', 'COPY', 'DELIMITER',
+  'GO', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE',
+]);
+
+function isDropNameBoundaryToken(token: Token): boolean {
+  if (token.value === '/' || token.value.startsWith('@')) return true;
+  if (token.type === 'keyword' || token.type === 'identifier') {
+    return DROP_NAME_BOUNDARY_STARTERS.has(token.upper);
+  }
+  return false;
+}
+
 export function parseDropStatement(ctx: DdlParser, comments: AST.CommentNode[]): AST.DropTableStatement {
   ctx.expect('DROP');
   const objectTypeToken = ctx.advance();
@@ -595,16 +614,35 @@ export function parseDropStatement(ctx: DdlParser, comments: AST.CommentNode[]):
 
   const ifExists = ctx.consumeIfExists();
 
-  const objectNameTokens = ctx.collectTokensUntilTopLevelKeyword(new Set(['CASCADE', 'RESTRICT']));
+  const objectNameTokens: Token[] = [];
+  let depth = 0;
+  while (!ctx.isAtEnd() && !ctx.check(';')) {
+    const token = ctx.peek();
+    if (depth === 0) {
+      if (token.upper === 'CASCADE' || token.upper === 'RESTRICT') break;
+      if ((token.type === 'line_comment' || token.type === 'block_comment') && objectNameTokens.length > 0) break;
+      if (objectNameTokens.length > 0 && isDropNameBoundaryToken(token)) break;
+    }
+
+    const consumed = ctx.advance();
+    objectNameTokens.push(consumed);
+    if (consumed.value === '(' || consumed.value === '[' || consumed.value === '{') depth++;
+    if (consumed.value === ')' || consumed.value === ']' || consumed.value === '}') depth = Math.max(0, depth - 1);
+  }
   const objectName = ctx.tokensToSql(objectNameTokens);
   if (!objectName) {
     throw ctx.parseError('object name', ctx.peek());
   }
 
-  let behavior: 'CASCADE' | 'RESTRICT' | undefined;
+  let behavior: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINTS' | undefined;
   if (ctx.peekUpper() === 'CASCADE') {
     ctx.advance();
-    behavior = 'CASCADE';
+    if (ctx.peekUpper() === 'CONSTRAINTS') {
+      ctx.advance();
+      behavior = 'CASCADE CONSTRAINTS';
+    } else {
+      behavior = 'CASCADE';
+    }
   } else if (ctx.peekUpper() === 'RESTRICT') {
     ctx.advance();
     behavior = 'RESTRICT';

@@ -10,12 +10,12 @@ describe('master issue regressions', () => {
     expect(twice).toBe(once);
   });
 
-  it('#3 supports psql meta-commands in recovery mode and rejects in strict mode', () => {
+  it('#3 supports psql meta-commands in recovery mode and strict mode', () => {
     const sql = 'SELECT * FROM users;\n\\d users\nSELECT * FROM orders;';
     const out = formatSQL(sql);
     expect(out).toContain('\\d users');
     expect(out).toContain('SELECT *');
-    expect(() => parse(sql, { recover: false })).toThrow();
+    expect(() => parse(sql, { recover: false })).not.toThrow();
   });
 
   it('#3 handles inline psql meta-commands appended to SQL lines', () => {

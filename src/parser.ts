@@ -29,6 +29,16 @@ const FUNCTION_KEYWORD_OVERRIDES = new Set([
   'LEFT',
   'RIGHT',
 ]);
+const IMPLICIT_STATEMENT_STARTERS = new Set([
+  'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'MERGE',
+  'CREATE', 'ALTER', 'DROP', 'TRUNCATE',
+  'GRANT', 'REVOKE', 'COMMENT', 'CALL',
+  'SET', 'RESET', 'ANALYZE', 'VACUUM',
+  'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
+  'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
+  'START', 'VALUES', 'COPY', 'DELIMITER',
+  'GO', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE',
+]);
 
 // Lookup table for multi-word SQL type names.
 // Key = last consumed word, value = set of valid next words.
@@ -298,7 +308,13 @@ export class Parser {
       };
       try {
         const stmt = this.parseStatement();
-        if (stmt && stmt.type !== 'raw' && !this.isAtEnd() && !this.check(';')) {
+        if (
+          stmt
+          && stmt.type !== 'raw'
+          && !this.isAtEnd()
+          && !this.check(';')
+          && !this.hasImplicitStatementBoundary()
+        ) {
           throw new ParseError(';', this.peek());
         }
         if (stmt) stmts.push(stmt);
@@ -345,6 +361,30 @@ export class Parser {
     return hasBracketIdentifier && hasSqlKeyword;
   }
 
+  private isStatementStarterToken(token: Token | undefined): boolean {
+    if (!token || token.type === 'eof') return false;
+    if (token.value === '/' || token.value.startsWith('@')) return true;
+    if (IMPLICIT_STATEMENT_STARTERS.has(token.upper)) return true;
+    return false;
+  }
+
+  private hasImplicitStatementBoundary(): boolean {
+    if (this.pos <= 0 || this.pos >= this.tokens.length) return false;
+    const previous = this.tokens[this.pos - 1];
+    if (!previous || previous.type === 'eof') return false;
+
+    let lookahead = this.pos;
+    while (
+      lookahead < this.tokens.length
+      && (this.tokens[lookahead].type === 'line_comment' || this.tokens[lookahead].type === 'block_comment')
+    ) {
+      lookahead++;
+    }
+    const next = this.tokens[lookahead];
+    if (!this.isStatementStarterToken(next)) return false;
+    return (next?.line ?? 0) > previous.line;
+  }
+
   private skipSemicolons(): void {
     while (this.check(';')) this.advance();
   }
@@ -381,6 +421,12 @@ export class Parser {
     }
 
     const kw = this.peekUpper();
+    const currentToken = this.peek();
+
+    // SQL*Plus commands prefixed with @ and slash-execute lines.
+    if (currentToken.value === '/' || currentToken.value.startsWith('@')) {
+      return this.parseSingleLineStatement(comments, 'unsupported');
+    }
 
     if (kw === 'CREATE' && this.looksLikeCreateRoutineStatement()) {
       return this.parseStatementUntilEndBlock(comments, 'unsupported');
@@ -393,9 +439,19 @@ export class Parser {
     }
 
     if (kw === 'WITH') return this.parseCTE(comments);
-    if (kw === 'SELECT') return this.parseUnionOrSelect(comments);
+    if (kw === 'SELECT') {
+      if (this.hasKeywordAhead('CONNECT') && this.hasKeywordAhead('BY')) {
+        return this.parseVerbatimStatement(comments, 'unsupported', true);
+      }
+      return this.parseUnionOrSelect(comments);
+    }
     if (kw === 'EXPLAIN') return this.parseExplain(comments);
-    if (kw === 'INSERT') return this.parseInsert(comments);
+    if (kw === 'INSERT') {
+      if (this.peekUpperAt(1) === 'ALL') {
+        return this.parseVerbatimStatement(comments, 'unsupported', true);
+      }
+      return this.parseInsert(comments);
+    }
     if (kw === 'UPDATE') return this.parseUpdate(comments);
     if (kw === 'DELETE') return this.parseDelete(comments);
     if (kw === 'CREATE') return this.parseCreate(comments);
@@ -407,6 +463,13 @@ export class Parser {
     if (kw === 'VALUES') return this.parseStandaloneValues(comments);
     if (kw === 'COPY') return this.parseCopyStatement(comments);
     if (kw === 'DELIMITER') return this.parseDelimiterScript(comments);
+    if (kw === 'GO') return this.parseSingleLineStatement(comments, 'unsupported');
+    if (kw === 'ACCEPT' || kw === 'DESCRIBE' || kw === 'REM' || kw === 'DEFINE') {
+      return this.parseSingleLineStatement(comments, 'unsupported');
+    }
+    if (kw === 'COMMENT' || kw === 'CALL') {
+      return this.parseVerbatimStatement(comments, 'unsupported', true);
+    }
 
     if (
       kw === 'SET'
@@ -416,12 +479,13 @@ export class Parser {
       || kw === 'DECLARE'
       || kw === 'PREPARE'
       || kw === 'EXECUTE'
+      || kw === 'EXEC'
       || kw === 'DEALLOCATE'
       || kw === 'USE'
       || kw === 'DO'
       || kw === 'END'
     ) {
-      return this.parseVerbatimStatement(comments);
+      return this.parseVerbatimStatement(comments, 'unsupported', true);
     }
 
     // Transaction control — consume tokens without the semicolon (parseStatements handles it)
@@ -555,9 +619,29 @@ export class Parser {
   private parseVerbatimStatement(
     comments: AST.CommentNode[],
     reason: AST.RawReason = 'unsupported',
+    allowImplicitBoundary: boolean = false,
   ): AST.RawExpression | null {
-    const raw = this.parseRawStatement(reason);
+    const raw = this.parseRawStatement(reason, { allowImplicitBoundary });
     return this.combineCommentsWithRaw(comments, raw, reason);
+  }
+
+  private parseSingleLineStatement(
+    comments: AST.CommentNode[],
+    reason: AST.RawReason = 'unsupported',
+  ): AST.RawExpression | null {
+    const startToken = this.peek();
+    const startPos = startToken.position;
+    const startLine = startToken.line;
+    let endPos = startPos;
+
+    while (!this.isAtEnd()) {
+      const token = this.peek();
+      if (token.type === 'eof' || token.line !== startLine) break;
+      this.advance();
+      endPos = token.position + token.value.length;
+    }
+
+    return this.buildRawFromSourceSlice(comments, startPos, endPos, reason);
   }
 
   private parseCopyStatement(comments: AST.CommentNode[]): AST.RawExpression | null {
@@ -619,11 +703,26 @@ export class Parser {
     };
   }
 
-  private parseRawStatement(reason: AST.RawReason = 'unsupported'): AST.RawExpression | null {
+  private parseRawStatement(
+    reason: AST.RawReason = 'unsupported',
+    options: { allowImplicitBoundary?: boolean } = {},
+  ): AST.RawExpression | null {
     const start = this.pos;
     const startPos = this.peek().position;
+    let depth = 0;
     while (!this.isAtEnd() && !this.check(';')) {
-      this.advance();
+      if (
+        options.allowImplicitBoundary
+        && depth === 0
+        && this.pos > start
+        && this.hasImplicitStatementBoundary()
+      ) {
+        break;
+      }
+
+      const token = this.advance();
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
     }
     const end = this.pos;
 
@@ -2411,11 +2510,17 @@ export class Parser {
       grantOptionFor = true;
     }
 
-    const privilegeTokens = this.collectTokensUntilTopLevelKeyword(new Set(['ON']));
-    this.expect('ON');
     const recipientKeyword = kind === 'GRANT' ? 'TO' : 'FROM';
-    const objectTokens = this.collectTokensUntilTopLevelKeyword(new Set([recipientKeyword]));
-    this.expect(recipientKeyword);
+    const privilegeTokens = this.collectTokensUntilTopLevelKeyword(new Set(['ON', recipientKeyword]));
+
+    let objectTokens: Token[] = [];
+    if (this.peekUpper() === 'ON') {
+      this.advance();
+      objectTokens = this.collectTokensUntilTopLevelKeyword(new Set([recipientKeyword]));
+      this.expect(recipientKeyword);
+    } else {
+      this.expect(recipientKeyword);
+    }
 
     const recipientTokens: Token[] = [];
     while (!this.isAtEnd() && !this.check(';')) {
@@ -2458,7 +2563,7 @@ export class Parser {
     }
 
     const privileges = this.splitTopLevelByComma(privilegeTokens).map(toks => this.tokensToSql(toks)).filter(Boolean);
-    const object = this.tokensToSql(objectTokens);
+    const object = this.tokensToSql(objectTokens) || undefined;
     const recipients = this.splitTopLevelByComma(recipientTokens).map(toks => this.tokensToSql(toks)).filter(Boolean);
 
     return {
@@ -3571,7 +3676,7 @@ export function parse(input: string, options: ParseOptions = {}): AST.Node[] {
   const parser = new Parser(
     tokenize(input, {
       dialect: options.dialect,
-      allowMetaCommands: recover,
+      allowMetaCommands: true,
       maxTokenCount: options.maxTokenCount,
     }),
     options,
