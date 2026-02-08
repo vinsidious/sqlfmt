@@ -8,6 +8,8 @@
 
 An opinionated SQL formatter that implements [Simon Holywell's SQL Style Guide](https://www.sqlstyle.guide/). It faithfully applies the guide's formatting rules -- including river alignment, keyword uppercasing, and consistent indentation -- to produce deterministic, readable SQL with minimal configuration.
 
+**[Try it live in your browser at holywell.sh](https://holywell.sh)**
+
 ## Why?
 
 The [SQL Style Guide](https://www.sqlstyle.guide/) is an excellent resource for writing readable, maintainable SQL, but no formatter existed to enforce it automatically. holywell was created to fill that gap -- a zero-dependency TypeScript formatter that faithfully implements the guide's river alignment and formatting conventions with minimal configuration.
