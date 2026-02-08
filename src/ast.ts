@@ -146,6 +146,8 @@ export interface CreateTableStatement {
   readonly type: 'create_table';
   readonly tableName: string;
   readonly elements: readonly TableElement[];
+  readonly trailingComma?: boolean;
+  readonly asQuery?: QueryExpression;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -444,6 +446,7 @@ export interface FunctionCallExpr {
   readonly type: 'function_call';
   readonly name: string;
   readonly args: readonly Expression[];
+  readonly separator?: Expression;
   readonly distinct?: boolean;
   readonly orderBy?: readonly OrderByItem[];
   readonly filter?: Expression;

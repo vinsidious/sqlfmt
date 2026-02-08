@@ -1063,6 +1063,7 @@ function main(): void {
 
     let checkFailures = 0;
     let changedCount = 0;
+    let recoveryFailures = 0;
 
     if (expandedFiles.length === 0 && opts.files.length === 0) {
       // stdin mode
@@ -1076,6 +1077,7 @@ function main(): void {
       }
 
       printRecoveryWarnings(recoveries);
+      recoveryFailures += recoveries.length;
 
       if (opts.check) {
         const normalizedInput = normalizeForComparison(input);
@@ -1124,6 +1126,7 @@ function main(): void {
         }
 
         printRecoveryWarnings(recoveries);
+        recoveryFailures += recoveries.length;
 
         if (opts.write) {
           if (input !== output) {
@@ -1175,6 +1178,10 @@ function main(): void {
       if (!opts.quiet) {
         console.error(green('All files are formatted.'));
       }
+    }
+
+    if (recoveryFailures > 0) {
+      process.exit(EXIT_PARSE_ERROR);
     }
 
     if (checkFailures > 0) {

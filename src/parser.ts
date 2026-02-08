@@ -350,11 +350,28 @@ export class Parser {
   }
 
   private parseStatement(): AST.Node | null {
+    const statementStartPos = this.peek().position;
     const comments = this.consumeComments();
 
     if (this.isAtEnd()) {
       if (comments.length === 0) return null;
       return this.commentsToRaw(comments);
+    }
+
+    // Comment-only statement terminated by a semicolon.
+    if (this.check(';')) {
+      const semi = this.advance();
+      if (comments.length === 0) return null;
+      if (this.source !== undefined) {
+        const text = this.source.slice(statementStartPos, semi.position + semi.value.length).trim();
+        if (!text) return null;
+        return { type: 'raw', text, reason: 'comment_only' };
+      }
+      return {
+        type: 'raw',
+        text: `${comments.map(c => c.text).join('\n')};`,
+        reason: 'comment_only',
+      };
     }
 
     // Parenthesized top-level query expression
@@ -364,6 +381,16 @@ export class Parser {
     }
 
     const kw = this.peekUpper();
+
+    if (kw === 'CREATE' && this.looksLikeCreateRoutineStatement()) {
+      return this.parseStatementUntilEndBlock(comments, 'unsupported');
+    }
+    if (kw === 'BEGIN' && this.hasKeywordAhead('END')) {
+      return this.parseStatementUntilEndBlock(comments, 'unsupported');
+    }
+    if (kw === 'IF' && this.hasKeywordAhead('BEGIN') && this.hasKeywordAhead('END')) {
+      return this.parseStatementUntilEndBlock(comments, 'unsupported');
+    }
 
     if (kw === 'WITH') return this.parseCTE(comments);
     if (kw === 'SELECT') return this.parseUnionOrSelect(comments);
@@ -392,7 +419,6 @@ export class Parser {
       || kw === 'DEALLOCATE'
       || kw === 'USE'
       || kw === 'DO'
-      || kw === 'IF'
       || kw === 'END'
     ) {
       return this.parseVerbatimStatement(comments);
@@ -401,16 +427,7 @@ export class Parser {
     // Transaction control — consume tokens without the semicolon (parseStatements handles it)
     if (kw === 'BEGIN' || kw === 'COMMIT' || kw === 'ROLLBACK' || kw === 'SAVEPOINT' || kw === 'RELEASE'
         || (kw === 'START' && this.peekUpperAt(1) === 'TRANSACTION')) {
-      const parts: string[] = [];
-      while (!this.isAtEnd() && !this.check(';')) {
-        const tok = this.advance();
-        // Uppercase keywords, preserve identifier casing
-        parts.push(tok.type === 'keyword' ? tok.upper : tok.value);
-      }
-      const text = parts.join(' ') + ';';
-      const raw: AST.RawExpression = { type: 'raw', text, reason: 'transaction_control' };
-      if (comments.length === 0) return raw;
-      return { type: 'raw', text: `${this.commentsToRaw(comments).text}\n${text}`.trim(), reason: 'transaction_control' };
+      return this.parseVerbatimStatement(comments, 'transaction_control');
     }
 
     // Unknown statement — in strict mode, fail instead of falling back to raw
@@ -428,6 +445,80 @@ export class Parser {
       text: `${this.commentsToRaw(comments).text}\n${raw.text}`.trim(),
       reason: 'unsupported',
     };
+  }
+
+  private looksLikeCreateRoutineStatement(): boolean {
+    if (this.peekUpper() !== 'CREATE') return false;
+    for (let i = 1; i < 40; i++) {
+      const token = this.peekAt(i);
+      if (token.type === 'eof' || token.value === ';') break;
+      if (token.upper === 'TABLE' || token.upper === 'INDEX' || token.upper === 'VIEW' || token.upper === 'POLICY') {
+        return false;
+      }
+      if (
+        token.upper === 'PROCEDURE'
+        || token.upper === 'FUNCTION'
+        || token.upper === 'TRIGGER'
+        || token.upper === 'EVENT'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private hasKeywordAhead(keyword: string, maxLookahead: number = 500): boolean {
+    for (let i = 1; i <= maxLookahead; i++) {
+      const token = this.peekAt(i);
+      if (token.type === 'eof') break;
+      if (token.upper === keyword) return true;
+    }
+    return false;
+  }
+
+  private isControlFlowEndQualifier(kw: string): boolean {
+    return kw === 'IF' || kw === 'CASE' || kw === 'LOOP' || kw === 'WHILE' || kw === 'REPEAT';
+  }
+
+  private parseStatementUntilEndBlock(
+    comments: AST.CommentNode[],
+    reason: AST.RawReason,
+  ): AST.RawExpression | null {
+    const startPos = this.peek().position;
+    let endPos = startPos;
+    let beginDepth = 0;
+    let sawBegin = false;
+
+    while (!this.isAtEnd()) {
+      const token = this.advance();
+      endPos = token.position + token.value.length;
+
+      if (token.upper === 'BEGIN') {
+        sawBegin = true;
+        beginDepth++;
+        continue;
+      }
+
+      if (token.upper === 'END') {
+        if (!this.isControlFlowEndQualifier(this.peekUpper()) && beginDepth > 0) {
+          beginDepth--;
+          if (beginDepth === 0) {
+            if (this.check(';')) {
+              const semi = this.advance();
+              endPos = semi.position + semi.value.length;
+            }
+            break;
+          }
+        }
+        continue;
+      }
+
+      if (token.value === ';' && !sawBegin) {
+        break;
+      }
+    }
+
+    return this.buildRawFromSourceSlice(comments, startPos, endPos, reason);
   }
 
   private combineCommentsWithRaw(
@@ -600,10 +691,9 @@ export class Parser {
         orderBy = { items: this.parseOrderByItems() };
       }
 
-      if (this.peekUpper() === 'LIMIT') {
-        this.advance();
-        limit = { count: this.parsePrimary() };
-      }
+      const parsedLimit = this.parseLimitClause();
+      if (parsedLimit.limit) limit = parsedLimit.limit;
+      if (parsedLimit.offsetFromLimit) offset = parsedLimit.offsetFromLimit;
 
       if (this.peekUpper() === 'OFFSET') {
         this.advance();
@@ -637,6 +727,56 @@ export class Parser {
       } as AST.UnionStatement;
     }
 
+    let orderBy: AST.OrderByClause | undefined;
+    let limit: AST.LimitClause | undefined;
+    let offset: AST.OffsetClause | undefined;
+    let fetch: { count: AST.Expression; withTies?: boolean } | undefined;
+    let lockingClause: string | undefined;
+
+    if (first.parenthesized) {
+      if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
+        this.advance(); this.advance();
+        orderBy = { items: this.parseOrderByItems() };
+      }
+
+      const parsedLimit = this.parseLimitClause();
+      if (parsedLimit.limit) limit = parsedLimit.limit;
+      if (parsedLimit.offsetFromLimit) offset = parsedLimit.offsetFromLimit;
+
+      if (this.peekUpper() === 'OFFSET') {
+        this.advance();
+        const offsetCount = this.parsePrimary();
+        let rowsKeyword = false;
+        if (this.peekUpper() === 'ROWS') {
+          this.advance();
+          rowsKeyword = true;
+        }
+        offset = { count: offsetCount, rowsKeyword };
+      }
+
+      if (this.peekUpper() === 'FETCH') {
+        fetch = this.parseFetchClause();
+      }
+
+      if (this.peekUpper() === 'FOR') {
+        lockingClause = this.parseForClause();
+      }
+    }
+
+    if (first.parenthesized && (orderBy || limit || offset || fetch || lockingClause)) {
+      return {
+        type: 'union',
+        members: [first],
+        operators: [],
+        orderBy,
+        limit,
+        offset,
+        fetch,
+        lockingClause,
+        leadingComments: comments,
+      } as AST.UnionStatement;
+    }
+
     if (first.statement.type === 'union') {
       return {
         ...first.statement,
@@ -651,6 +791,21 @@ export class Parser {
       parenthesized: first.parenthesized || undefined,
       leadingComments: comments,
     };
+  }
+
+  private parseLimitClause(): { limit?: AST.LimitClause; offsetFromLimit?: AST.OffsetClause } {
+    if (this.peekUpper() !== 'LIMIT') return {};
+    this.advance();
+    const first = this.parsePrimary();
+    if (this.check(',')) {
+      this.advance();
+      const second = this.parsePrimary();
+      return {
+        limit: { count: second },
+        offsetFromLimit: { count: first, rowsKeyword: false },
+      };
+    }
+    return { limit: { count: first } };
   }
 
   private parseQueryExpression(comments: AST.CommentNode[] = []): AST.QueryExpression {
@@ -823,10 +978,9 @@ export class Parser {
       orderBy = { items: this.parseOrderByItems() };
     }
 
-    if (this.peekUpper() === 'LIMIT') {
-      this.advance();
-      limit = { count: this.parsePrimary() };
-    }
+    const parsedLimit = this.parseLimitClause();
+    if (parsedLimit.limit) limit = parsedLimit.limit;
+    if (parsedLimit.offsetFromLimit) offset = parsedLimit.offsetFromLimit;
 
     if (this.peekUpper() === 'OFFSET') {
       this.advance();
@@ -1643,6 +1797,7 @@ export class Parser {
       !this.clauseKeywords.has(name.upper) || FUNCTION_KEYWORD_OVERRIDES.has(name.upper);
     if (this.check('(') && canParseAsFunction) {
       this.advance(); // consume (
+      const upperName = fullName.toUpperCase();
 
       let distinct = false;
       if (this.peekUpper() === 'DISTINCT') {
@@ -1664,11 +1819,22 @@ export class Parser {
         }
       }
 
+      let separator: AST.Expression | undefined;
+      if (upperName === 'GROUP_CONCAT' && this.peekUpper() === 'SEPARATOR') {
+        this.advance();
+        separator = this.parseExpression();
+      }
+
       // Handle ORDER BY inside aggregate: e.g., ARRAY_AGG(x ORDER BY y), STRING_AGG(x, ',' ORDER BY y)
       let innerOrderBy: AST.OrderByItem[] | undefined;
       if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
         this.advance(); this.advance();
         innerOrderBy = this.parseOrderByItems();
+      }
+
+      if (upperName === 'GROUP_CONCAT' && this.peekUpper() === 'SEPARATOR') {
+        this.advance();
+        separator = this.parseExpression();
       }
 
       this.expect(')');
@@ -1700,6 +1866,7 @@ export class Parser {
         type: 'function_call',
         name: fullName,
         args,
+        separator,
         distinct,
         orderBy: innerOrderBy,
         filter,
@@ -2361,32 +2528,36 @@ export class Parser {
     return { type: 'standalone_values', rows, leadingComments: comments };
   }
 
-  private parseTableElements(): AST.TableElement[] {
+  private parseTableElements(): { elements: AST.TableElement[]; trailingComma: boolean } {
     const elements: AST.TableElement[] = [];
+    let trailingComma = false;
 
-    while (!this.check(')')) {
+    while (!this.check(')') && !this.isAtEnd()) {
       const elem = this.parseTableElement();
       elements.push(elem);
-      if (this.check(',')) this.advance();
+      if (this.check(',')) {
+        this.advance();
+        if (this.check(')')) {
+          trailingComma = true;
+          break;
+        }
+      }
     }
 
-    return elements;
+    return { elements, trailingComma };
   }
 
   private parseTableElement(): AST.TableElement {
     if (this.peekUpper() === 'PRIMARY' && this.peekUpperAt(1) === 'KEY') {
-      this.advance(); this.advance();
-      let raw = 'PRIMARY KEY';
-      this.expect('(');
-      raw += ' (';
-      const cols: string[] = [];
-      while (!this.check(')')) {
-        cols.push(this.advance().value);
-        if (this.check(',')) { this.advance(); }
-      }
-      this.expect(')');
-      raw += cols.join(', ') + ')';
-      return { elementType: 'primary_key', raw, name: cols.join(', ') };
+      return this.parsePrimaryKeyTableElement();
+    }
+
+    if (this.peekUpper() === 'FOREIGN' && this.peekUpperAt(1) === 'KEY') {
+      return this.parseForeignKeyTableElement();
+    }
+
+    if (this.peekUpper() === 'UNIQUE') {
+      return this.parseUniqueTableElement();
     }
 
     if (this.peekUpper() === 'CONSTRAINT') {
@@ -2410,91 +2581,15 @@ export class Parser {
       }
 
       if (this.peekUpper() === 'FOREIGN' && this.peekUpperAt(1) === 'KEY') {
-        this.advance(); this.advance();
-        this.expect('(');
-        const fkCols: string[] = [];
-        while (!this.check(')')) {
-          fkCols.push(this.advance().value);
-          if (this.check(',')) this.advance();
-        }
-        this.expect(')');
-
-        this.expect('REFERENCES');
-        const refTable = this.advance().value;
-        this.expect('(');
-        const refCols: string[] = [];
-        while (!this.check(')')) {
-          refCols.push(this.advance().value);
-          if (this.check(',')) this.advance();
-        }
-        this.expect(')');
-
-        let actions = '';
-        while (this.peekUpper() === 'ON') {
-          this.advance();
-          const actionType = this.advance().upper;
-          const actionValue = this.advance().upper;
-          actions += `ON ${actionType} ${actionValue}`;
-          if (this.peekUpper() === 'NULL' || this.peekUpper() === 'DEFAULT') {
-            actions += ' ' + this.advance().upper;
-          }
-          if (this.peekUpper() === 'ON') actions += '\n        ';
-        }
-
-        return {
-          elementType: 'foreign_key',
-          raw: `CONSTRAINT ${constraintName} FOREIGN KEY (${fkCols.join(', ')}) REFERENCES ${refTable} (${refCols.join(', ')})${actions ? ' ' + actions : ''}`,
-          constraintName,
-          fkColumns: fkCols.join(', '),
-          fkRefTable: refTable,
-          fkRefColumns: refCols.join(', '),
-          fkActions: actions || undefined,
-        };
+        return this.parseForeignKeyTableElement(constraintName);
       }
 
       if (this.peekUpper() === 'UNIQUE') {
-        this.advance(); // UNIQUE
-        let cols = '';
-        if (this.check('(')) {
-          this.advance(); // (
-          const colNames: string[] = [];
-          while (!this.check(')')) {
-            colNames.push(this.advance().value);
-            if (this.check(',')) this.advance();
-          }
-          this.expect(')');
-          cols = ' (' + colNames.join(', ') + ')';
-        }
-        return {
-          elementType: 'constraint',
-          raw: `CONSTRAINT ${constraintName} UNIQUE${cols}`,
-          constraintName,
-          constraintBody: `UNIQUE${cols}`,
-          constraintType: 'raw',
-        };
+        return this.parseUniqueTableElement(constraintName);
       }
 
       if (this.peekUpper() === 'PRIMARY' && this.peekUpperAt(1) === 'KEY') {
-        this.advance(); // PRIMARY
-        this.advance(); // KEY
-        let cols = '';
-        if (this.check('(')) {
-          this.advance(); // (
-          const colNames: string[] = [];
-          while (!this.check(')')) {
-            colNames.push(this.advance().value);
-            if (this.check(',')) this.advance();
-          }
-          this.expect(')');
-          cols = ' (' + colNames.join(', ') + ')';
-        }
-        return {
-          elementType: 'constraint',
-          raw: `CONSTRAINT ${constraintName} PRIMARY KEY${cols}`,
-          constraintName,
-          constraintBody: `PRIMARY KEY${cols}`,
-          constraintType: 'raw',
-        };
+        return this.parsePrimaryKeyTableElement(constraintName);
       }
 
       let raw = `CONSTRAINT ${constraintName}`;
@@ -2519,6 +2614,135 @@ export class Parser {
       constraints,
       columnConstraints: columnConstraints.length > 0 ? columnConstraints : undefined,
     };
+  }
+
+  private parsePrimaryKeyTableElement(constraintName?: string): AST.TableElement {
+    this.expect('PRIMARY');
+    this.expect('KEY');
+
+    let keyName: string | undefined;
+    if (!this.check('(') && (this.peekType() === 'identifier' || this.peekType() === 'keyword')) {
+      keyName = this.advance().value;
+    }
+
+    const columns = this.parseTableElementColumnList();
+    const cols = columns.length > 0 ? ` (${columns.join(', ')})` : '';
+    const body = `PRIMARY KEY${keyName ? ' ' + keyName : ''}${cols}`;
+
+    if (constraintName) {
+      return {
+        elementType: 'constraint',
+        raw: `CONSTRAINT ${constraintName} ${body}`,
+        constraintName,
+        constraintBody: body,
+        constraintType: 'raw',
+      };
+    }
+
+    return {
+      elementType: 'primary_key',
+      raw: body,
+      name: columns.join(', '),
+    };
+  }
+
+  private parseUniqueTableElement(constraintName?: string): AST.TableElement {
+    this.expect('UNIQUE');
+
+    let keyKeyword: string | undefined;
+    let keyName: string | undefined;
+    if (this.peekUpper() === 'KEY' || this.peekUpper() === 'INDEX') {
+      keyKeyword = this.advance().upper;
+      if (!this.check('(') && (this.peekType() === 'identifier' || this.peekType() === 'keyword')) {
+        keyName = this.advance().value;
+      }
+    }
+
+    const columns = this.parseTableElementColumnList();
+    const cols = columns.length > 0 ? ` (${columns.join(', ')})` : '';
+    const body = `UNIQUE${keyKeyword ? ' ' + keyKeyword : ''}${keyName ? ' ' + keyName : ''}${cols}`;
+
+    if (constraintName) {
+      return {
+        elementType: 'constraint',
+        raw: `CONSTRAINT ${constraintName} ${body}`,
+        constraintName,
+        constraintBody: body,
+        constraintType: 'raw',
+      };
+    }
+
+    return {
+      elementType: 'constraint',
+      raw: body,
+      constraintBody: body,
+      constraintType: 'raw',
+    };
+  }
+
+  private parseForeignKeyTableElement(constraintName?: string): AST.TableElement {
+    this.expect('FOREIGN');
+    this.expect('KEY');
+
+    const fkCols = this.parseTableElementColumnList();
+    this.expect('REFERENCES');
+    const refTable = this.parseQualifiedName();
+    const refCols = this.parseTableElementColumnList();
+
+    const actions: string[] = [];
+    while (this.peekUpper() === 'ON' && (this.peekUpperAt(1) === 'DELETE' || this.peekUpperAt(1) === 'UPDATE')) {
+      this.advance(); // ON
+      const event = this.advance().upper;
+      const action = this.parseReferentialActionText();
+      actions.push(`ON ${event} ${action}`);
+    }
+    const actionText = actions.join('\n        ');
+
+    const prefix = constraintName ? `CONSTRAINT ${constraintName} ` : '';
+    const raw = `${prefix}FOREIGN KEY (${fkCols.join(', ')}) REFERENCES ${refTable} (${refCols.join(', ')})${actionText ? ' ' + actionText : ''}`;
+    return {
+      elementType: 'foreign_key',
+      raw,
+      constraintName,
+      fkColumns: fkCols.join(', '),
+      fkRefTable: refTable,
+      fkRefColumns: refCols.join(', '),
+      fkActions: actionText || undefined,
+    };
+  }
+
+  private parseTableElementColumnList(): string[] {
+    const cols: string[] = [];
+    if (!this.check('(')) return cols;
+    this.advance();
+    while (!this.check(')') && !this.isAtEnd()) {
+      cols.push(this.advance().value);
+      if (this.check(',')) this.advance();
+    }
+    this.expect(')');
+    return cols;
+  }
+
+  private parseReferentialActionText(): string {
+    if (this.peekUpper() === 'NO' && this.peekUpperAt(1) === 'ACTION') {
+      this.advance();
+      this.advance();
+      return 'NO ACTION';
+    }
+    if (this.peekUpper() === 'SET' && this.peekUpperAt(1) === 'NULL') {
+      this.advance();
+      this.advance();
+      return 'SET NULL';
+    }
+    if (this.peekUpper() === 'SET' && this.peekUpperAt(1) === 'DEFAULT') {
+      this.advance();
+      this.advance();
+      return 'SET DEFAULT';
+    }
+    if (this.peekUpper() === 'RESTRICT' || this.peekUpper() === 'CASCADE') {
+      return this.advance().upper;
+    }
+    throw new ParseError('referential action', this.peek());
   }
 
   private parseColumnConstraints(): AST.ColumnConstraint[] {

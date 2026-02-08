@@ -355,7 +355,7 @@ function contentPad(ctx: FormatContext): string {
 
 function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   const options: string[] = [];
   if (node.analyze) options.push('ANALYZE');
@@ -390,7 +390,7 @@ function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
 function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   const lines: string[] = [];
 
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   // SELECT [DISTINCT] columns
   const selectKw = rightAlign('SELECT', ctx);
@@ -429,7 +429,8 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
     const current = node.joins[i];
     const joinHasClause = !!(current.on || current.usingClause);
     const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-    const needsBlank = fromHasSubquery || (i > 0 && (joinHasClause || prevHasClause));
+    const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+    const needsBlank = fromHasSubquery || (i > 0 && (joinHasClause || prevHasClause) && !bothPlain);
     const joinLines = formatJoin(node.joins[i], ctx, needsBlank);
     lines.push(joinLines);
   }
@@ -828,6 +829,9 @@ function formatFunctionCallMultiline(
     lines.push(name + '(');
     lines.push(innerPad + formatExprAtColumn(expr.args[0], innerCol, runtime));
     lines.push(innerPad + 'ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', '));
+    if (expr.separator) {
+      lines.push(innerPad + 'SEPARATOR ' + formatExpr(expr.separator));
+    }
     lines.push(closePad + ')');
     return lines.join('\n');
   }
@@ -1611,16 +1615,36 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
-  let header = rightAlign('INSERT', dmlCtx) + ' INTO ' + node.table;
-  if (node.columns.length > 0) {
-    header += ' (' + node.columns.join(', ') + ')';
+  const insertHead = rightAlign('INSERT', dmlCtx) + ' INTO ' + node.table;
+  const inlineColumns = node.columns.length > 0
+    ? ' (' + node.columns.join(', ') + ')'
+    : '';
+  const shouldWrapColumns =
+    node.columns.length > 0
+    && node.columns.length >= 8
+    && stringDisplayWidth(insertHead + inlineColumns) > dmlCtx.runtime.maxLineLength;
+
+  if (shouldWrapColumns) {
+    const colPad = contentPad(dmlCtx);
+    lines.push(insertHead + ' (');
+    for (let i = 0; i < node.columns.length; i++) {
+      const comma = i < node.columns.length - 1 ? ',' : '';
+      lines.push(colPad + node.columns[i] + comma);
+    }
+    let closeLine = colPad + ')';
+    if (node.overriding) {
+      closeLine += ' OVERRIDING ' + node.overriding;
+    }
+    lines.push(closeLine);
+  } else {
+    let header = insertHead + inlineColumns;
+    if (node.overriding) {
+      header += ' OVERRIDING ' + node.overriding;
+    }
+    lines.push(header);
   }
-  if (node.overriding) {
-    header += ' OVERRIDING ' + node.overriding;
-  }
-  lines.push(header);
 
   if (node.values) {
     const tuples = node.values.map(vl =>
@@ -1681,7 +1705,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
     riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   lines.push(rightAlign('UPDATE', dmlCtx) + ' ' + node.table);
   if (node.alias) {
@@ -1726,7 +1750,8 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
       const current = node.fromJoins[i];
       const joinHasClause = !!(current.on || current.usingClause);
       const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-      const needsBlank = !!fromHasSubquery || (i > 0 && (joinHasClause || prevHasClause));
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const needsBlank = !!fromHasSubquery || (i > 0 && (joinHasClause || prevHasClause) && !bothPlain);
       lines.push(formatJoin(current, dmlCtx, needsBlank));
     }
     if (node.where && hasSubqueryJoins && node.fromJoins.length > 1) {
@@ -1752,7 +1777,7 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
     riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   lines.push(rightAlign('DELETE', dmlCtx));
   lines.push(rightAlign('FROM', dmlCtx) + ' ' + node.from + (node.alias ? ' AS ' + formatAlias(node.alias) : ''));
@@ -1774,7 +1799,8 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
       const current = node.usingJoins[i];
       const joinHasClause = !!(current.on || current.usingClause);
       const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-      const needsBlank = !!usingHasSubquery || (i > 0 && (joinHasClause || prevHasClause));
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const needsBlank = !!usingHasSubquery || (i > 0 && (joinHasClause || prevHasClause) && !bothPlain);
       lines.push(formatJoin(current, dmlCtx, needsBlank));
     }
     if (node.where && hasSubqueryJoins && node.usingJoins.length > 1) {
@@ -1804,7 +1830,7 @@ function appendReturningClause(
 
 function formatStandaloneValues(node: AST.StandaloneValuesStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   if (node.rows.length === 0) return lines.join('\n') + 'VALUES;';
 
@@ -1825,7 +1851,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
     riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   let header = 'CREATE';
   if (node.unique) header += ' UNIQUE';
@@ -1853,7 +1879,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
 
 function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   let header = 'CREATE';
   if (node.orReplace) header += ' OR REPLACE';
@@ -1891,7 +1917,7 @@ function formatCreatePolicy(node: AST.CreatePolicyStatement, ctx: FormatContext)
     riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   lines.push(`CREATE POLICY ${node.name}`);
   lines.push(rightAlign('ON', policyCtx) + ' ' + node.table);
@@ -1907,7 +1933,7 @@ function formatCreatePolicy(node: AST.CreatePolicyStatement, ctx: FormatContext)
 
 function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
   if (node.privileges.length === 0 || !node.object || node.recipients.length === 0) {
     throw new Error('Invalid grant statement AST: missing privileges, object, or recipients');
   }
@@ -1944,7 +1970,7 @@ function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
 
 function formatTruncate(node: AST.TruncateStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   lines.push('TRUNCATE ' + (node.tableKeyword ? 'TABLE ' : '') + node.table);
   const opts: string[] = [];
@@ -1964,7 +1990,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
     riverWidth: deriveRiverWidth(node),
   };
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   const target = node.target.table + (node.target.alias ? ' AS ' + node.target.alias : '');
   const source = node.source.table + (node.source.alias ? ' AS ' + node.source.alias : '');
@@ -2060,7 +2086,18 @@ function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | 
 
 function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
+
+  if (node.asQuery) {
+    lines.push('CREATE TABLE ' + node.tableName + ' AS');
+    const query = formatQueryExpressionForSubquery(node.asQuery, ctx.runtime);
+    const queryLines = query.split('\n');
+    if (queryLines.length > 0) {
+      queryLines[queryLines.length - 1] = queryLines[queryLines.length - 1].replace(/;$/, '') + ';';
+    }
+    lines.push(...queryLines);
+    return lines.join('\n');
+  }
 
   lines.push('CREATE TABLE ' + node.tableName + ' (');
 
@@ -2077,7 +2114,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
   for (let i = 0; i < node.elements.length; i++) {
     const elem = node.elements[i];
     const isLast = i === node.elements.length - 1;
-    const comma = isLast ? '' : ',';
+    const comma = (!isLast || node.trailingComma) ? ',' : '';
 
     if (elem.elementType === 'primary_key') {
       lines.push('    ' + elem.raw + comma);
@@ -2099,16 +2136,30 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     } else if (elem.elementType === 'constraint') {
       // Indent constraint name to align with type column
       const constraintPad = ' '.repeat(4 + maxNameLen + 1);
-      lines.push(constraintPad + 'CONSTRAINT ' + elem.constraintName);
-      if (elem.constraintType === 'check' && elem.checkExpr) {
-        lines.push(constraintPad + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
+      if (elem.constraintName) {
+        lines.push(constraintPad + 'CONSTRAINT ' + elem.constraintName);
+        if (elem.constraintType === 'check' && elem.checkExpr) {
+          lines.push(constraintPad + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
+        } else if (elem.constraintBody) {
+          lines.push(constraintPad + elem.constraintBody);
+        } else {
+          lines.push(constraintPad + elem.raw);
+        }
+      } else if (elem.constraintType === 'check' && elem.checkExpr) {
+        lines.push('    CHECK(' + formatExpr(elem.checkExpr) + ')');
       } else if (elem.constraintBody) {
-        lines.push(constraintPad + elem.constraintBody);
+        lines.push('    ' + elem.constraintBody);
+      } else {
+        lines.push('    ' + elem.raw);
       }
-      // No comma after constraint body block — it's the last usually
+      if (comma) lines[lines.length - 1] += comma;
     } else if (elem.elementType === 'foreign_key') {
-      lines.push('    CONSTRAINT ' + elem.constraintName);
-      lines.push('        FOREIGN KEY (' + elem.fkColumns + ')');
+      if (elem.constraintName) {
+        lines.push('    CONSTRAINT ' + elem.constraintName);
+        lines.push('        FOREIGN KEY (' + elem.fkColumns + ')');
+      } else {
+        lines.push('    FOREIGN KEY (' + elem.fkColumns + ')');
+      }
       lines.push('        REFERENCES ' + elem.fkRefTable + ' (' + elem.fkRefColumns + ')');
       if (elem.fkActions) {
         for (const action of elem.fkActions.split(/\n/)) {
@@ -2116,10 +2167,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
           if (trimmed) lines.push('        ' + trimmed);
         }
       }
-      // Add comma to last line
-      if (!isLast) {
-        lines[lines.length - 1] += comma;
-      }
+      if (comma) lines[lines.length - 1] += comma;
     }
   }
 
@@ -2131,7 +2179,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
 
 function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   const objectType = node.objectType || 'TABLE';
   const header = `ALTER ${objectType} ${node.objectName}`;
@@ -2198,7 +2246,7 @@ function formatAlterAction(action: AST.AlterAction): string {
 
 function formatDropTable(node: AST.DropTableStatement, ctx: FormatContext): string {
   const lines: string[] = [];
-  for (const c of node.leadingComments) lines.push(c.text);
+  emitComments(node.leadingComments, lines);
 
   const objectType = node.objectType || 'TABLE';
   let line = `DROP ${objectType}`;
@@ -2215,7 +2263,7 @@ function formatDropTable(node: AST.DropTableStatement, ctx: FormatContext): stri
 
 function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
   const parts: string[] = [];
-  for (const c of node.leadingComments) parts.push(c.text);
+  emitComments(node.leadingComments, parts);
   const hasTail = !!(node.orderBy || node.limit || node.offset || node.fetch || node.lockingClause);
 
   for (let i = 0; i < node.members.length; i++) {
@@ -2622,6 +2670,9 @@ function formatFunctionCall(expr: AST.FunctionCallExpr, depth: number = 0): stri
   let body = distinct + args;
   if (expr.orderBy && expr.orderBy.length > 0) {
     body += ' ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', ');
+  }
+  if (expr.separator) {
+    body += (body ? ' ' : '') + 'SEPARATOR ' + formatExpr(expr.separator, depth);
   }
 
   let out = name + '(' + body + ')';

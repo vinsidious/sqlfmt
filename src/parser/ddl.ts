@@ -16,7 +16,7 @@ export interface DdlParser {
   consumeIfNotExists(): boolean;
   consumeIfExists(): boolean;
   parseRawStatement(reason: AST.RawReason): AST.RawExpression | null;
-  parseTableElements(): AST.TableElement[];
+  parseTableElements(): { elements: AST.TableElement[]; trailingComma: boolean };
   parseExpression(): AST.Expression;
   parseStatement(): AST.Node | null;
   collectTokensUntilTopLevelKeyword(stopKeywords: Set<string>): Token[];
@@ -74,6 +74,21 @@ function parseCreateTableStatement(
   const fullName = ifNotExists ? 'IF NOT EXISTS ' + tableName : tableName;
 
   // CREATE TABLE ... AS SELECT ...
+  if (ctx.peekUpper() === 'AS') {
+    ctx.advance(); // AS
+    const query = ctx.parseStatement();
+    if (!query || (query.type !== 'select' && query.type !== 'union' && query.type !== 'cte')) {
+      throw ctx.parseError('SELECT, UNION, or WITH query in CREATE TABLE AS', ctx.peek());
+    }
+    return {
+      type: 'create_table',
+      tableName: fullName,
+      elements: [],
+      asQuery: query,
+      leadingComments: comments,
+    };
+  }
+
   if (!ctx.check('(')) {
     ctx.setPos(statementStart);
     const raw = ctx.parseRawStatement('unsupported');
@@ -90,7 +105,7 @@ function parseCreateTableStatement(
     if (comments.length === 0) return raw;
     return { type: 'raw', text: `${comments.map(c => c.text).join('\n')}\n${raw.text}`.trim(), reason: 'unsupported' };
   }
-  const elements = ctx.parseTableElements();
+  const { elements, trailingComma } = ctx.parseTableElements();
   ctx.expect(')');
 
   // PostgreSQL storage parameters and related trailing clauses are currently
@@ -103,7 +118,13 @@ function parseCreateTableStatement(
     return { type: 'raw', text: `${comments.map(c => c.text).join('\n')}\n${raw.text}`.trim(), reason: 'unsupported' };
   }
 
-  return { type: 'create_table', tableName: fullName, elements, leadingComments: comments };
+  return {
+    type: 'create_table',
+    tableName: fullName,
+    elements,
+    trailingComma: trailingComma || undefined,
+    leadingComments: comments,
+  };
 }
 
 function hasCommentsInCreateTableElements(ctx: DdlParser): boolean {
@@ -180,12 +201,40 @@ function parseCreateIndexStatement(
 }
 
 function parseIndexColumn(ctx: DdlParser): AST.Expression {
+  const startPos = ctx.getPos();
   const expr = ctx.parseExpression();
   if (ctx.peekUpper() === 'ASC' || ctx.peekUpper() === 'DESC') {
     const dir = ctx.advance().upper as 'ASC' | 'DESC';
+    if (!ctx.check(',') && !ctx.check(')')) {
+      ctx.setPos(startPos);
+      const tokens = consumeTokensUntilIndexColumnBoundary(ctx);
+      return { type: 'raw', text: ctx.tokensToSql(tokens), reason: 'verbatim' } as AST.RawExpression;
+    }
     return { type: 'ordered_expr', expr, direction: dir } as AST.OrderedExpr;
   }
+
+  // PostgreSQL operator classes / index column modifiers (e.g. gin_trgm_ops)
+  // are preserved verbatim when present.
+  if (!ctx.check(',') && !ctx.check(')')) {
+    ctx.setPos(startPos);
+    const tokens = consumeTokensUntilIndexColumnBoundary(ctx);
+    return { type: 'raw', text: ctx.tokensToSql(tokens), reason: 'verbatim' } as AST.RawExpression;
+  }
+
   return expr;
+}
+
+function consumeTokensUntilIndexColumnBoundary(ctx: DdlParser): Token[] {
+  const tokens: Token[] = [];
+  let depth = 0;
+  while (!ctx.isAtEnd()) {
+    if (depth === 0 && (ctx.check(',') || ctx.check(')'))) break;
+    const token = ctx.advance();
+    tokens.push(token);
+    if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+    if (token.value === ')' || token.value === ']' || token.value === '}') depth = Math.max(0, depth - 1);
+  }
+  return tokens;
 }
 
 function parseCreateViewStatement(
@@ -338,7 +387,8 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
 
 function parseAlterAction(ctx: DdlParser): AST.AlterAction {
   return (
-    tryParseAlterAddColumnAction(ctx)
+    tryParseAlterAddNonColumnAction(ctx)
+    ?? tryParseAlterAddColumnAction(ctx)
     ?? tryParseAlterDropColumnAction(ctx)
     ?? tryParseAlterDropConstraintAction(ctx)
     ?? tryParseAlterAlterColumnAction(ctx)
@@ -349,14 +399,57 @@ function parseAlterAction(ctx: DdlParser): AST.AlterAction {
   );
 }
 
-function tryParseAlterAddColumnAction(ctx: DdlParser): AST.AlterAction | null {
+function tryParseAlterAddNonColumnAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
   if (ctx.peekUpper() !== 'ADD') return null;
   ctx.advance(); // ADD
-  if (ctx.peekUpper() === 'COLUMN') ctx.advance();
+  if (ctx.peekUpper() === 'COLUMN') {
+    ctx.setPos(start);
+    return null;
+  }
+  if (
+    ctx.peekUpper() !== 'CONSTRAINT'
+    && !(ctx.peekUpper() === 'PRIMARY' && ctx.peekUpperAt(1) === 'KEY')
+    && !(ctx.peekUpper() === 'FOREIGN' && ctx.peekUpperAt(1) === 'KEY')
+    && ctx.peekUpper() !== 'UNIQUE'
+    && ctx.peekUpper() !== 'CHECK'
+  ) {
+    ctx.setPos(start);
+    return null;
+  }
+
+  const tokens = ctx.consumeTokensUntilActionBoundary();
+  const text = `ADD ${ctx.tokensToSql(tokens)}`.trim();
+  return { type: 'raw', text };
+}
+
+function tryParseAlterAddColumnAction(ctx: DdlParser): AST.AlterAction | null {
+  const start = ctx.getPos();
+  if (ctx.peekUpper() !== 'ADD') return null;
+  ctx.advance(); // ADD
+  const explicitColumn = ctx.peekUpper() === 'COLUMN';
+  if (explicitColumn) ctx.advance();
 
   const ifNotExists = ctx.consumeIfNotExists();
 
-  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') return null;
+  if (
+    !explicitColumn
+    && (
+      ctx.peekUpper() === 'CONSTRAINT'
+      || (ctx.peekUpper() === 'PRIMARY' && ctx.peekUpperAt(1) === 'KEY')
+      || (ctx.peekUpper() === 'FOREIGN' && ctx.peekUpperAt(1) === 'KEY')
+      || ctx.peekUpper() === 'UNIQUE'
+      || ctx.peekUpper() === 'CHECK'
+    )
+  ) {
+    ctx.setPos(start);
+    return null;
+  }
+
+  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword') {
+    ctx.setPos(start);
+    return null;
+  }
   const columnName = ctx.advance().value;
   const definitionTokens = ctx.consumeTokensUntilActionBoundary();
   const definition = ctx.tokensToSql(definitionTokens);
