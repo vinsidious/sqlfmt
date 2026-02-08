@@ -219,11 +219,16 @@ function deriveRiverWidth(node: AST.Node): number {
     case 'union': {
       let width = DEFAULT_RIVER;
       for (const member of node.members) {
-        width = Math.max(width, deriveSelectRiverWidth(member.statement));
+        width = Math.max(width, deriveRiverWidth(member.statement as AST.Node));
       }
       for (const op of node.operators) {
         width = Math.max(width, op.split(' ')[0].length);
       }
+      if (node.orderBy) width = Math.max(width, 'ORDER'.length);
+      if (node.limit) width = Math.max(width, 'LIMIT'.length);
+      if (node.offset) width = Math.max(width, 'OFFSET'.length);
+      if (node.fetch) width = Math.max(width, 'FETCH'.length);
+      if (node.lockingClause) width = Math.max(width, 'FOR'.length);
       return width;
     }
     case 'cte': {
@@ -1053,6 +1058,9 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
       result += ' REPEATABLE(' + formatExpr(from.tablesample.repeatable) + ')';
     }
   }
+  if (from.ordinality) {
+    result += ' WITH ORDINALITY';
+  }
   if (from.alias) {
     result += ' AS ' + formatAlias(from.alias);
     if (from.aliasColumns && from.aliasColumns.length > 0) {
@@ -1141,6 +1149,7 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number, runtime: F
   const lateralOffset = join.lateral && join.table.type !== 'function_call' ? 'LATERAL '.length : 0;
   let result = formatExprAtColumn(join.table, tableStartCol + lateralOffset, runtime);
   if (join.lateral) result = 'LATERAL ' + result;
+  if (join.ordinality) result += ' WITH ORDINALITY';
   if (join.alias) {
     result += ' AS ' + formatAlias(join.alias);
     if (join.aliasColumns && join.aliasColumns.length > 0) {
@@ -1450,15 +1459,32 @@ function formatWindowFunctionAtColumn(
   runtime: FormatterRuntime
 ): string {
   const func = formatFunctionCall(expr.func);
-  if (expr.windowName) {
+  const hasWindowSpecParts = !!(expr.partitionBy || expr.orderBy || expr.frame || expr.exclude);
+  if (expr.windowName && !hasWindowSpecParts) {
     return func + ' OVER ' + expr.windowName;
   }
   const overStart = func + ' OVER (';
   const overContentCol = col + overStart.length;
 
+  if (expr.windowName && !expr.partitionBy && !expr.orderBy && expr.frame) {
+    const frame = formatFrameClause(
+      expr.frame,
+      overContentCol + expr.windowName.length + 1,
+      expr.exclude,
+    );
+    return func + ' OVER (' + expr.windowName + ' ' + frame + ')';
+  }
+
   // Collect parts with their BY keyword length for alignment
   type OverPart = { text: string; byKeywordLen: number };
   const overParts: OverPart[] = [];
+
+  if (expr.windowName) {
+    overParts.push({
+      text: expr.windowName,
+      byKeywordLen: 0,
+    });
+  }
 
   if (expr.partitionBy) {
     overParts.push({
@@ -1551,6 +1577,9 @@ function formatFrameClause(frame: AST.FrameSpec, startCol: number, exclude?: str
 
 function formatWindowSpec(spec: AST.WindowSpec): string {
   const parts: string[] = [];
+  if (spec.baseWindowName) {
+    parts.push(spec.baseWindowName);
+  }
   if (spec.partitionBy && spec.partitionBy.length > 0) {
     parts.push('PARTITION BY ' + spec.partitionBy.map(formatExpr).join(', '));
   }
@@ -2176,45 +2205,47 @@ function formatDropTable(node: AST.DropTableStatement, ctx: FormatContext): stri
 function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
   const parts: string[] = [];
   for (const c of node.leadingComments) parts.push(c.text);
+  const hasTail = !!(node.orderBy || node.limit || node.offset || node.fetch || node.lockingClause);
 
   for (let i = 0; i < node.members.length; i++) {
     const member = node.members[i];
     const isLast = i === node.members.length - 1;
 
     if (member.parenthesized) {
-      // Format inner with indentOffset=0, then shift subsequent lines by 1 for the paren
-      const innerCtx: FormatContext = {
-        indentOffset: 0,
-        riverWidth: deriveSelectRiverWidth(member.statement),
-        isSubquery: true,
-        outerColumnOffset: 1,
-        depth: ctx.depth + 1,
-        runtime: ctx.runtime,
-      };
-      const inner = formatSelect(member.statement, innerCtx);
+      // Format inner with no trailing semicolon, then shift subsequent lines by 1 for the paren
+      const inner = formatQueryExpressionForSubquery(
+        member.statement,
+        ctx.runtime,
+        1,
+        ctx.depth + 1,
+      );
       const innerLines = inner.split('\n');
       let str = '(' + innerLines[0];
       for (let j = 1; j < innerLines.length; j++) {
         str += '\n' + ' ' + innerLines[j];
       }
       str += ')';
-      if (isLast && !ctx.isSubquery) {
+      if (isLast && !ctx.isSubquery && !hasTail) {
         parts.push(str + ';');
       } else {
         parts.push(str);
       }
     } else {
       // Not parenthesized
-      const selectCtx: FormatContext = {
-        ...ctx,
-        riverWidth: deriveSelectRiverWidth(member.statement),
-        isSubquery: ctx.isSubquery ? true : !isLast, // Only last gets semicolon, unless already in subquery context
-      };
-      parts.push(formatSelect(member.statement, selectCtx));
+      if (member.statement.type === 'select') {
+        const selectCtx: FormatContext = {
+          ...ctx,
+          riverWidth: deriveSelectRiverWidth(member.statement),
+          isSubquery: ctx.isSubquery ? true : (!isLast || hasTail),
+        };
+        parts.push(formatSelect(member.statement, selectCtx));
+      } else {
+        // Defensive fallback; parse currently emits non-parenthesized SELECT members.
+        parts.push(formatQueryExpressionForSubquery(member.statement, ctx.runtime, undefined, ctx.depth + 1));
+      }
     }
 
     if (i < node.operators.length) {
-      parts.push('');
       const op = node.operators[i];
       if (member.parenthesized) {
         // Inside parenthesized union, operator indented to river
@@ -2226,8 +2257,31 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
         const aligned = rightAlign(firstWord, ctx);
         parts.push(rest ? aligned + ' ' + rest : aligned);
       }
-      parts.push('');
     }
+  }
+
+  if (node.orderBy) {
+    const kw = rightAlign('ORDER', ctx);
+    parts.push(...formatSelectOrderByLines(node.orderBy.items, kw, contentPad(ctx)));
+  }
+  if (node.limit) {
+    parts.push(rightAlign('LIMIT', ctx) + ' ' + formatExpr(node.limit.count));
+  }
+  if (node.offset) {
+    const rows = node.offset.rowsKeyword ? ' ROWS' : '';
+    parts.push(rightAlign('OFFSET', ctx) + ' ' + formatExpr(node.offset.count) + rows);
+  }
+  if (node.fetch) {
+    const ties = node.fetch.withTies ? ' WITH TIES' : ' ONLY';
+    parts.push(rightAlign('FETCH', ctx) + ' FIRST ' + formatExpr(node.fetch.count) + ' ROWS' + ties);
+  }
+  if (node.lockingClause) {
+    parts.push(rightAlign('FOR', ctx) + ' ' + node.lockingClause);
+  }
+
+  if (!ctx.isSubquery && hasTail && parts.length > 0) {
+    const lastIdx = parts.length - 1;
+    parts[lastIdx] = parts[lastIdx].replace(/;$/, '') + ';';
   }
 
   return parts.join('\n');
@@ -2326,11 +2380,7 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   if (node.mainQuery.leadingComments && node.mainQuery.leadingComments.length > 0) {
     emitComments(node.mainQuery.leadingComments, lines);
   }
-  if (node.mainQuery.type === 'select') {
-    lines.push(formatSelect({ ...node.mainQuery, leadingComments: [] }, mainCtx));
-  } else {
-    lines.push(formatUnion({ ...node.mainQuery, leadingComments: [] }, mainCtx));
-  }
+  lines.push(formatNode({ ...node.mainQuery, leadingComments: [] }, mainCtx));
 
   return lines.join('\n');
 }
@@ -2411,6 +2461,7 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
     if (expr.type === 'literal') return expr.literalType === 'boolean' ? expr.value.toUpperCase() : expr.value;
     if (expr.type === 'null') return 'NULL';
     if (expr.type === 'star') return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
+    if (expr.type === 'tuple') return '(' + expr.items.map(item => formatExpr(item, depth)).join(', ') + ')';
     if (expr.type === 'raw') return expr.text;
     // For anything else at max depth, return a best-effort inline string
     return '/* depth exceeded */';
@@ -2470,6 +2521,8 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
       return 'EXISTS ' + formatSubquerySimple(expr.subquery);
     case 'paren':
       return '(' + formatExpr(expr.expr, d) + ')';
+    case 'tuple':
+      return '(' + expr.items.map(item => formatExpr(item, d)).join(', ') + ')';
     case 'cast':
       return 'CAST(' + formatExpr(expr.expr, d) + ' AS ' + expr.targetType + ')';
     case 'window_function':
@@ -2591,9 +2644,14 @@ function formatCaseSimple(expr: AST.CaseExpr, depth: number = 0): string {
 
 function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number = 0): string {
   const func = formatFunctionCall(expr.func, depth);
-  if (expr.windowName) return func + ' OVER ' + expr.windowName;
+  const hasWindowSpecParts = !!(expr.partitionBy || expr.orderBy || expr.frame || expr.exclude);
+  if (expr.windowName && !hasWindowSpecParts) return func + ' OVER ' + expr.windowName;
   let over = '';
-  if (expr.partitionBy) over += 'PARTITION BY ' + expr.partitionBy.map(e => formatExpr(e, depth)).join(', ');
+  if (expr.windowName) over += expr.windowName;
+  if (expr.partitionBy) {
+    if (over) over += ' ';
+    over += 'PARTITION BY ' + expr.partitionBy.map(e => formatExpr(e, depth)).join(', ');
+  }
   if (expr.orderBy) {
     if (over) over += ' ';
     over += 'ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', ');
@@ -2613,6 +2671,7 @@ function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number 
 
 function formatOrderByItem(item: AST.OrderByItem): string {
   let s = formatExpr(item.expr);
+  if (item.usingOperator) s += ' USING ' + item.usingOperator;
   if (item.direction) s += ' ' + item.direction;
   if (item.nulls) s += ' NULLS ' + item.nulls;
   return s;

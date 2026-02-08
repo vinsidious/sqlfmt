@@ -24,6 +24,11 @@ const BASE_CLAUSE_KEYWORDS = new Set([
   'DROP', 'WITH', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR',
   'RETURNING', 'FETCH', 'WINDOW', 'LATERAL', 'FOR', 'USING', 'ESCAPE',
 ]);
+const FUNCTION_KEYWORD_OVERRIDES = new Set([
+  // Can appear as join keywords and as scalar functions.
+  'LEFT',
+  'RIGHT',
+]);
 
 // Lookup table for multi-word SQL type names.
 // Key = last consumed word, value = set of valid next words.
@@ -81,6 +86,14 @@ export interface ParseOptions {
    * When omitted, holywell uses its default PostgreSQL-first behavior.
    */
   dialect?: SQLDialect;
+
+  /**
+   * Maximum token count allowed during tokenization.
+   *
+   * Defaults to the global tokenizer safety limit. Increase this for very
+   * large SQL dumps when running in trusted environments.
+   */
+  maxTokenCount?: number;
 }
 
 export interface ParseRecoveryContext {
@@ -285,7 +298,7 @@ export class Parser {
       };
       try {
         const stmt = this.parseStatement();
-        if (stmt && !this.isAtEnd() && !this.check(';')) {
+        if (stmt && stmt.type !== 'raw' && !this.isAtEnd() && !this.check(';')) {
           throw new ParseError(';', this.peek());
         }
         if (stmt) stmts.push(stmt);
@@ -295,11 +308,20 @@ export class Parser {
         if (err instanceof MaxDepthError) throw err;
         // Recovery: rewind and consume as raw text until next semicolon
         this.pos = stmtStart;
-        const raw = this.parseRawStatement('parse_error');
-        this.onRecover?.(err, raw, recoveryContext);
+        const recovered = this.parseRawStatement('parse_error');
+        const dialectUnsupported = recovered ? this.looksLikeSqlServerStatement(recovered.text) : false;
+        const raw = dialectUnsupported
+          ? ({ ...recovered, reason: 'unsupported' } as AST.RawExpression)
+          : recovered;
+        if (!dialectUnsupported) {
+          this.onRecover?.(err, raw, recoveryContext);
+        }
         if (raw) {
           stmts.push(raw);
         } else {
+          if (!dialectUnsupported) {
+            this.onRecover?.(err, null, recoveryContext);
+          }
           if (this.onDropStatement) {
             this.onDropStatement(err, recoveryContext);
           } else {
@@ -312,6 +334,15 @@ export class Parser {
       this.skipSemicolons();
     }
     return stmts;
+  }
+
+  private looksLikeSqlServerStatement(text: string): boolean {
+    if (/\{\s*fn\b/i.test(text)) return true;
+    if (/(^|\n)\s*GO\s*(\n|$)/i.test(text)) return true;
+    if (/@[A-Za-z_][A-Za-z0-9_]*/.test(text)) return true;
+    const hasBracketIdentifier = /\[[A-Za-z_][^\]\r\n]*\]/.test(text);
+    const hasSqlKeyword = /\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|USE|EXEC|MERGE)\b/i.test(text);
+    return hasBracketIdentifier && hasSqlKeyword;
   }
 
   private skipSemicolons(): void {
@@ -347,6 +378,25 @@ export class Parser {
     if (kw === 'GRANT' || kw === 'REVOKE') return this.parseGrant(comments);
     if (kw === 'TRUNCATE') return this.parseTruncate(comments);
     if (kw === 'VALUES') return this.parseStandaloneValues(comments);
+    if (kw === 'COPY') return this.parseCopyStatement(comments);
+    if (kw === 'DELIMITER') return this.parseDelimiterScript(comments);
+
+    if (
+      kw === 'SET'
+      || kw === 'RESET'
+      || kw === 'ANALYZE'
+      || kw === 'VACUUM'
+      || kw === 'DECLARE'
+      || kw === 'PREPARE'
+      || kw === 'EXECUTE'
+      || kw === 'DEALLOCATE'
+      || kw === 'USE'
+      || kw === 'DO'
+      || kw === 'IF'
+      || kw === 'END'
+    ) {
+      return this.parseVerbatimStatement(comments);
+    }
 
     // Transaction control — consume tokens without the semicolon (parseStatements handles it)
     if (kw === 'BEGIN' || kw === 'COMMIT' || kw === 'ROLLBACK' || kw === 'SAVEPOINT' || kw === 'RELEASE'
@@ -378,6 +428,96 @@ export class Parser {
       text: `${this.commentsToRaw(comments).text}\n${raw.text}`.trim(),
       reason: 'unsupported',
     };
+  }
+
+  private combineCommentsWithRaw(
+    comments: AST.CommentNode[],
+    raw: AST.RawExpression | null,
+    fallbackReason: AST.RawReason,
+  ): AST.RawExpression | null {
+    if (!raw) {
+      if (comments.length === 0) return null;
+      return this.commentsToRaw(comments);
+    }
+    if (comments.length === 0) return raw;
+    return {
+      type: 'raw',
+      text: `${this.commentsToRaw(comments).text}\n${raw.text}`.trim(),
+      reason: raw.reason ?? fallbackReason,
+    };
+  }
+
+  private buildRawFromSourceSlice(
+    comments: AST.CommentNode[],
+    startPos: number,
+    endPos: number,
+    reason: AST.RawReason,
+  ): AST.RawExpression | null {
+    if (this.source === undefined) {
+      return this.combineCommentsWithRaw(comments, this.parseRawStatement(reason), reason);
+    }
+    const text = this.source.slice(startPos, endPos).trim();
+    const raw = text ? ({ type: 'raw', text, reason } as AST.RawExpression) : null;
+    return this.combineCommentsWithRaw(comments, raw, reason);
+  }
+
+  private parseVerbatimStatement(
+    comments: AST.CommentNode[],
+    reason: AST.RawReason = 'unsupported',
+  ): AST.RawExpression | null {
+    const raw = this.parseRawStatement(reason);
+    return this.combineCommentsWithRaw(comments, raw, reason);
+  }
+
+  private parseCopyStatement(comments: AST.CommentNode[]): AST.RawExpression | null {
+    const startToken = this.peek();
+    const startPos = startToken.position;
+
+    let sawFrom = false;
+    let fromStdin = false;
+    let endPos = startPos;
+
+    while (!this.isAtEnd()) {
+      const token = this.advance();
+      endPos = token.position + token.value.length;
+
+      if (token.upper === 'FROM') {
+        sawFrom = true;
+      } else if (sawFrom) {
+        fromStdin = token.upper === 'STDIN';
+        sawFrom = false;
+      } else {
+        sawFrom = false;
+      }
+
+      if (token.value === ';') break;
+    }
+
+    if (fromStdin) {
+      while (!this.isAtEnd()) {
+        const token = this.peek();
+        this.advance();
+        endPos = token.position + token.value.length;
+        if (token.type === 'line_comment' && token.value.trim() === '\\.') {
+          break;
+        }
+      }
+    }
+
+    return this.buildRawFromSourceSlice(comments, startPos, endPos, 'unsupported');
+  }
+
+  private parseDelimiterScript(comments: AST.CommentNode[]): AST.RawExpression | null {
+    const startToken = this.peek();
+    const startPos = startToken.position;
+    let endPos = startPos;
+
+    while (!this.isAtEnd()) {
+      const token = this.advance();
+      endPos = token.position + token.value.length;
+    }
+
+    return this.buildRawFromSourceSlice(comments, startPos, endPos, 'unsupported');
   }
 
   private commentsToRaw(comments: AST.CommentNode[]): AST.RawExpression {
@@ -435,36 +575,88 @@ export class Parser {
   }
 
   private parseUnionOrSelect(comments: AST.CommentNode[]): AST.Node {
-    const first = this.parseSelectOrParenSelect();
+    const first = this.parseQueryMember();
 
     if (this.checkUnionKeyword()) {
-      const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
-        { statement: first, parenthesized: first.parenthesized || false }
+      const members: { statement: AST.QueryExpression; parenthesized: boolean }[] = [
+        first,
       ];
       const operators: string[] = [];
 
       while (this.checkUnionKeyword()) {
         const op = this.consumeUnionKeyword();
         operators.push(op);
-        const next = this.parseSelectOrParenSelect();
-        members.push({ statement: next, parenthesized: next.parenthesized || false });
+        members.push(this.parseQueryMember());
+      }
+
+      let orderBy: AST.OrderByClause | undefined;
+      let limit: AST.LimitClause | undefined;
+      let offset: AST.OffsetClause | undefined;
+      let fetch: { count: AST.Expression; withTies?: boolean } | undefined;
+      let lockingClause: string | undefined;
+
+      if (this.peekUpper() === 'ORDER' && this.peekUpperAt(1) === 'BY') {
+        this.advance(); this.advance();
+        orderBy = { items: this.parseOrderByItems() };
+      }
+
+      if (this.peekUpper() === 'LIMIT') {
+        this.advance();
+        limit = { count: this.parsePrimary() };
+      }
+
+      if (this.peekUpper() === 'OFFSET') {
+        this.advance();
+        const offsetCount = this.parsePrimary();
+        let rowsKeyword = false;
+        if (this.peekUpper() === 'ROWS') {
+          this.advance();
+          rowsKeyword = true;
+        }
+        offset = { count: offsetCount, rowsKeyword };
+      }
+
+      if (this.peekUpper() === 'FETCH') {
+        fetch = this.parseFetchClause();
+      }
+
+      if (this.peekUpper() === 'FOR') {
+        lockingClause = this.parseForClause();
       }
 
       return {
         type: 'union',
         members,
         operators,
+        orderBy,
+        limit,
+        offset,
+        fetch,
+        lockingClause,
         leadingComments: comments,
       } as AST.UnionStatement;
     }
 
-    return { ...first, leadingComments: comments };
+    if (first.statement.type === 'union') {
+      return {
+        ...first.statement,
+        leadingComments: comments,
+      };
+    }
+    if (first.statement.type !== 'select') {
+      throw new ParseError('query expression', this.peek());
+    }
+    return {
+      ...first.statement,
+      parenthesized: first.parenthesized || undefined,
+      leadingComments: comments,
+    };
   }
 
   private parseQueryExpression(comments: AST.CommentNode[] = []): AST.QueryExpression {
     return this.withDepth(() => {
       if (this.peekUpper() === 'WITH') {
-        return this.parseCTE(comments);
+        return this.parseCTE(comments, { queryOnly: true });
       }
       if (this.peekUpper() === 'SELECT' || this.check('(')) {
         const query = this.parseUnionOrSelect(comments);
@@ -506,15 +698,14 @@ export class Parser {
     return kw;
   }
 
-  private parseSelectOrParenSelect(): AST.SelectStatement {
+  private parseQueryMember(): { statement: AST.QueryExpression; parenthesized: boolean } {
     if (this.check('(')) {
       this.advance(); // consume (
-      const select = this.parseSelect();
-      (select as { parenthesized: boolean }).parenthesized = true;
+      const query = this.parseQueryExpression();
       this.expect(')');
-      return select;
+      return { statement: query, parenthesized: true };
     }
-    return this.parseSelect();
+    return { statement: this.parseSelect(), parenthesized: false };
   }
 
   private parseSelect(): AST.SelectStatement {
@@ -575,7 +766,9 @@ export class Parser {
       if (extraFromItems.length > 0) additionalFromItems = extraFromItems;
 
       // Parse JOINs
-      while (this.isJoinKeyword()) {
+      while (true) {
+        this.consumeCommentsIfFollowedByJoinKeyword();
+        if (!this.isJoinKeyword()) break;
         joins.push(this.parseJoin());
       }
 
@@ -600,6 +793,7 @@ export class Parser {
 
     if (this.peekUpper() === 'WHERE') {
       this.advance();
+      this.consumeComments();
       const condition = this.parseExpression();
       let whereComment: AST.CommentNode | undefined;
       if (this.peekType() === 'line_comment') {
@@ -616,6 +810,7 @@ export class Parser {
 
     if (this.peekUpper() === 'HAVING') {
       this.advance();
+      this.consumeComments();
       having = { condition: this.parseExpression() };
     }
 
@@ -701,9 +896,16 @@ export class Parser {
       tablesample = { method, args, repeatable };
     }
 
+    let ordinality = false;
+    if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'ORDINALITY') {
+      this.advance();
+      this.advance();
+      ordinality = true;
+    }
+
     const { alias, aliasColumns } = this.parseOptionalAlias({ allowColumnList: true, stopKeywords: ['TABLESAMPLE'] });
 
-    return { table, alias, aliasColumns, lateral, tablesample };
+    return { table, alias, aliasColumns, lateral, ordinality, tablesample };
   }
 
   // Shared alias parsing for FROM items, JOINs, SELECT columns, and RETURNING.
@@ -739,7 +941,20 @@ export class Parser {
     this.advance();
     const cols: string[] = [];
     while (!this.check(')') && !this.isAtEnd()) {
-      cols.push(this.advance().value);
+      const columnTokens: Token[] = [];
+      let depth = 0;
+
+      while (!this.isAtEnd()) {
+        if (depth === 0 && (this.check(',') || this.check(')'))) break;
+        const token = this.advance();
+        columnTokens.push(token);
+        if (this.isOpenGroupToken(token)) depth++;
+        else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
+      }
+
+      const columnDef = this.tokensToSqlPreserveCase(columnTokens);
+      if (columnDef) cols.push(columnDef);
+
       if (this.check(',')) this.advance();
     }
     this.expect(')');
@@ -806,6 +1021,12 @@ export class Parser {
     }
 
     const table = this.parseTableExpr();
+    let ordinality = false;
+    if (this.peekUpper() === 'WITH' && this.peekUpperAt(1) === 'ORDINALITY') {
+      this.advance();
+      this.advance();
+      ordinality = true;
+    }
     // ON and USING are already clause keywords, so no extra stop keywords needed
     const { alias, aliasColumns } = this.parseOptionalAlias({ allowColumnList: true });
 
@@ -815,6 +1036,7 @@ export class Parser {
 
     if (this.peekUpper() === 'ON') {
       this.advance();
+      this.consumeComments();
       on = this.parseExpression();
     } else if (this.peekUpper() === 'USING') {
       this.advance();
@@ -836,7 +1058,7 @@ export class Parser {
       };
     }
 
-    return { joinType: joinType.trim(), table, alias, aliasColumns, lateral, on, usingClause, trailingComment };
+    return { joinType: joinType.trim(), table, alias, aliasColumns, lateral, ordinality, on, usingClause, trailingComment };
   }
 
   private parseGroupByClause(): AST.GroupByClause {
@@ -926,10 +1148,24 @@ export class Parser {
   }
 
   private parseWindowSpec(): AST.WindowSpec {
+    let baseWindowName: string | undefined;
     let partitionBy: AST.Expression[] | undefined;
     let orderBy: AST.OrderByItem[] | undefined;
     let frame: AST.FrameSpec | undefined;
     let exclude: string | undefined;
+
+    const first = this.peekUpper();
+    if (
+      first
+      && first !== ')'
+      && first !== 'PARTITION'
+      && first !== 'ORDER'
+      && first !== 'ROWS'
+      && first !== 'RANGE'
+      && first !== 'GROUPS'
+    ) {
+      baseWindowName = this.advance().value;
+    }
 
     if (this.peekUpper() === 'PARTITION' && this.peekUpperAt(1) === 'BY') {
       this.advance(); this.advance();
@@ -967,7 +1203,7 @@ export class Parser {
       }
     }
 
-    return { partitionBy, orderBy, frame, exclude };
+    return { baseWindowName, partitionBy, orderBy, frame, exclude };
   }
 
   private parseFrameBound(): AST.FrameBound {
@@ -1060,6 +1296,7 @@ export class Parser {
 
   private parseOrderByItems(): AST.OrderByItem[] {
     const items: AST.OrderByItem[] = [];
+    this.consumeComments();
     items.push(this.parseOrderByItem());
     while (this.check(',')) {
       this.advance();
@@ -1068,6 +1305,7 @@ export class Parser {
         const last = items[items.length - 1];
         items[items.length - 1] = { ...last, trailingComment: { type: 'comment', style: 'line', text: t.value } };
       }
+      this.consumeComments();
       items.push(this.parseOrderByItem());
     }
     return items;
@@ -1075,6 +1313,11 @@ export class Parser {
 
   private parseOrderByItem(): AST.OrderByItem {
     const expr = this.parseExpression();
+    let usingOperator: string | undefined;
+    if (this.peekUpper() === 'USING') {
+      this.advance();
+      usingOperator = this.advance().value;
+    }
     let direction: 'ASC' | 'DESC' | undefined;
     if (this.peekUpper() === 'ASC') { this.advance(); direction = 'ASC'; }
     else if (this.peekUpper() === 'DESC') { this.advance(); direction = 'DESC'; }
@@ -1099,7 +1342,7 @@ export class Parser {
         text: this.advance().value,
       };
     }
-    return { expr, direction, nulls, trailingComment };
+    return { expr, usingOperator, direction, nulls, trailingComment };
   }
 
   // Expression parser using precedence climbing
@@ -1109,8 +1352,11 @@ export class Parser {
 
   private parseOr(): AST.Expression {
     let left = this.parseAnd();
-    while (this.peekUpper() === 'OR') {
+    while (true) {
+      this.consumeCommentsIfFollowedByKeyword('OR');
+      if (this.peekUpper() !== 'OR') break;
       this.advance();
+      this.consumeComments();
       const right = this.parseAnd();
       left = { type: 'binary', left, operator: 'OR', right };
     }
@@ -1121,8 +1367,11 @@ export class Parser {
     let left = this.parseNot();
     // BETWEEN consumes its own AND token at comparison precedence, so plain AND
     // here always means boolean conjunction.
-    while (this.peekUpper() === 'AND') {
+    while (true) {
+      this.consumeCommentsIfFollowedByKeyword('AND');
+      if (this.peekUpper() !== 'AND') break;
       this.advance();
+      this.consumeComments();
       const right = this.parseNot();
       left = { type: 'binary', left, operator: 'AND', right };
     }
@@ -1177,6 +1426,7 @@ export class Parser {
     let left = this.parseMulDiv();
     while (this.peek().type === 'operator' && (this.peek().value === '+' || this.peek().value === '-')) {
       const op = this.advance().value;
+      this.consumeComments();
       const right = this.parseMulDiv();
       left = { type: 'binary', left, operator: op, right };
     }
@@ -1187,6 +1437,7 @@ export class Parser {
     let left = this.parseJsonOps();
     while (this.peek().type === 'operator' && (this.peek().value === '*' || this.peek().value === '/' || this.peek().value === '%' || this.peek().value === '||')) {
       const op = this.advance().value;
+      this.consumeComments();
       const right = this.parseJsonOps();
       left = { type: 'binary', left, operator: op, right };
     }
@@ -1205,6 +1456,7 @@ export class Parser {
       // JSON operators
       if (v === '->' || v === '->>' || v === '#>' || v === '#>>') {
         this.advance();
+        this.consumeComments();
         const right = this.parseUnaryExpr();
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -1213,6 +1465,7 @@ export class Parser {
       // Array / JSONB containment
       if (v === '@>' || v === '<@' || v === '&&') {
         this.advance();
+        this.consumeComments();
         const right = this.parseUnaryExpr();
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -1221,6 +1474,7 @@ export class Parser {
       // JSONB existence/path operators
       if (v === '?' || v === '?|' || v === '?&' || v === '@?' || v === '@@') {
         this.advance();
+        this.consumeComments();
         const right = this.parseUnaryExpr();
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -1229,6 +1483,7 @@ export class Parser {
       // Bitwise operators
       if (v === '&' || v === '|' || v === '#' || v === '<<' || v === '>>') {
         this.advance();
+        this.consumeComments();
         const right = this.parseUnaryExpr();
         left = { type: 'binary', left, operator: v, right };
         continue;
@@ -1363,6 +1618,7 @@ export class Parser {
       parseOverlayExpr: () => this.parseOverlayExpr(),
       parseTrimExpr: () => this.parseTrimExpr(),
       parseIdentifierOrFunction: () => this.parseIdentifierOrFunction(),
+      consumeComments: () => this.consumeComments(),
     });
   }
 
@@ -1383,7 +1639,9 @@ export class Parser {
     }
 
     // Function call
-    if (this.check('(') && !this.clauseKeywords.has(name.upper)) {
+    const canParseAsFunction =
+      !this.clauseKeywords.has(name.upper) || FUNCTION_KEYWORD_OVERRIDES.has(name.upper);
+    if (this.check('(') && canParseAsFunction) {
       this.advance(); // consume (
 
       let distinct = false;
@@ -1475,6 +1733,7 @@ export class Parser {
     return {
       type: 'window_function',
       func,
+      windowName: spec.baseWindowName,
       partitionBy: spec.partitionBy,
       orderBy: spec.orderBy,
       frame: spec.frame,
@@ -1485,24 +1744,32 @@ export class Parser {
   private parseCaseExpr(): AST.CaseExpr {
     this.expect('CASE');
 
+    this.consumeComments();
     let operand: AST.Expression | undefined;
     if (this.peekUpper() !== 'WHEN') {
       operand = this.parseExpression();
+      this.consumeComments();
     }
 
     const whenClauses: { condition: AST.Expression; result: AST.Expression }[] = [];
-    while (this.peekUpper() === 'WHEN') {
+    while (true) {
+      this.consumeComments();
+      if (this.peekUpper() !== 'WHEN') break;
       this.advance();
       const condition = this.parseExpression();
       this.expect('THEN');
+      this.consumeComments();
       const result = this.parseExpression();
+      this.consumeComments();
       whenClauses.push({ condition, result });
     }
 
     let elseResult: AST.Expression | undefined;
     if (this.peekUpper() === 'ELSE') {
       this.advance();
+      this.consumeComments();
       elseResult = this.parseExpression();
+      this.consumeComments();
     }
 
     this.expect('END');
@@ -2484,8 +2751,11 @@ export class Parser {
     return parseDropStatement(this.createDdlContext(), comments);
   }
 
-  // CTE: WITH [RECURSIVE] name AS (...), name AS (...) SELECT ...
-  private parseCTE(comments: AST.CommentNode[]): AST.CTEStatement {
+  // CTE: WITH [RECURSIVE] name AS (...), name AS (...) <main statement>
+  private parseCTE(
+    comments: AST.CommentNode[],
+    options: { queryOnly?: boolean } = {}
+  ): AST.CTEStatement {
     this.expect('WITH');
 
     let recursive = false;
@@ -2511,26 +2781,45 @@ export class Parser {
       cycle = this.parseCTECycleClause();
     }
 
-    // Parse the main query
-    let mainQuery: AST.SelectStatement | AST.UnionStatement;
+    // Parse the main statement after WITH
+    let mainQuery: AST.CTEStatement['mainQuery'];
     const mainComments = this.consumeComments();
 
     const result = this.tryParseQueryExpressionAtCurrent(mainComments);
     if (result && (result.type === 'select' || result.type === 'union')) {
       mainQuery = result;
     } else {
+      if (!options.queryOnly) {
+        const kw = this.peekUpper();
+        if (kw === 'INSERT') {
+          mainQuery = this.parseInsert(mainComments);
+          return { type: 'cte', recursive, ctes, search, cycle, mainQuery, leadingComments: comments };
+        }
+        if (kw === 'UPDATE') {
+          mainQuery = this.parseUpdate(mainComments);
+          return { type: 'cte', recursive, ctes, search, cycle, mainQuery, leadingComments: comments };
+        }
+        if (kw === 'DELETE') {
+          mainQuery = this.parseDelete(mainComments);
+          return { type: 'cte', recursive, ctes, search, cycle, mainQuery, leadingComments: comments };
+        }
+        if (kw === 'MERGE') {
+          mainQuery = this.parseMerge(mainComments);
+          return { type: 'cte', recursive, ctes, search, cycle, mainQuery, leadingComments: comments };
+        }
+      }
+
       const first = this.parseSelect();
       const firstWithComments = { ...first, leadingComments: mainComments };
 
       if (this.checkUnionKeyword()) {
-        const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
+        const members: { statement: AST.QueryExpression; parenthesized: boolean }[] = [
           { statement: firstWithComments, parenthesized: false }
         ];
         const operators: string[] = [];
         while (this.checkUnionKeyword()) {
           operators.push(this.consumeUnionKeyword());
-          const next = this.parseSelectOrParenSelect();
-          members.push({ statement: next, parenthesized: next.parenthesized || false });
+          members.push(this.parseQueryMember());
         }
         mainQuery = { type: 'union', members, operators, leadingComments: mainComments };
       } else {
@@ -2599,6 +2888,57 @@ export class Parser {
     return { columns, set, to, default: defaultExpr, using };
   }
 
+  private consumeCommentsIfFollowedByKeyword(keyword: string): void {
+    let lookahead = this.pos;
+    while (lookahead < this.tokens.length) {
+      const token = this.tokens[lookahead];
+      if (token.type === 'line_comment' || token.type === 'block_comment') {
+        lookahead++;
+        continue;
+      }
+      break;
+    }
+
+    if (lookahead >= this.tokens.length) return;
+    if (this.tokens[lookahead].upper !== keyword) return;
+
+    while (this.peekType() === 'line_comment' || this.peekType() === 'block_comment') {
+      this.advance();
+    }
+  }
+
+  private consumeCommentsIfFollowedByJoinKeyword(): void {
+    let lookahead = this.pos;
+    while (lookahead < this.tokens.length) {
+      const token = this.tokens[lookahead];
+      if (token.type === 'line_comment' || token.type === 'block_comment') {
+        lookahead++;
+        continue;
+      }
+      break;
+    }
+
+    if (!this.isJoinKeywordAt(lookahead)) return;
+    while (this.peekType() === 'line_comment' || this.peekType() === 'block_comment') {
+      this.advance();
+    }
+  }
+
+  private isJoinKeywordAt(index: number): boolean {
+    const kw = this.tokens[index]?.upper ?? '';
+    if (kw === 'JOIN') return true;
+    if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS' || kw === 'NATURAL') {
+      const next1 = this.tokens[index + 1]?.upper ?? '';
+      if (next1 === 'JOIN') return true;
+      if (next1 === 'OUTER' || next1 === 'INNER') {
+        const next2 = this.tokens[index + 2]?.upper ?? '';
+        return next2 === 'JOIN';
+      }
+      return false;
+    }
+    return false;
+  }
+
   private parseCTEDefinition(): AST.CTEDefinition {
     const leadingComments = this.consumeComments();
     const name = this.advance().value;
@@ -2631,23 +2971,29 @@ export class Parser {
     this.expect('(');
 
     let query: AST.SelectStatement | AST.UnionStatement | AST.ValuesClause;
-    if (this.peekUpper() === 'VALUES' || (this.peekType() === 'line_comment' && this.looksLikeValuesAhead())) {
-      query = this.parseValuesClause();
+    const queryComments = this.consumeComments();
+    if (this.peekUpper() === 'VALUES') {
+      const values = this.parseValuesClause();
+      query = queryComments.length > 0
+        ? { ...values, leadingComments: queryComments }
+        : values;
     } else {
       const first = this.parseSelect();
+      const firstWithComments = queryComments.length > 0
+        ? { ...first, leadingComments: queryComments }
+        : first;
       if (this.checkUnionKeyword()) {
-        const members: { statement: AST.SelectStatement; parenthesized: boolean }[] = [
-          { statement: first, parenthesized: false }
+        const members: { statement: AST.QueryExpression; parenthesized: boolean }[] = [
+          { statement: firstWithComments, parenthesized: false }
         ];
         const operators: string[] = [];
         while (this.checkUnionKeyword()) {
           operators.push(this.consumeUnionKeyword());
-          const next = this.parseSelectOrParenSelect();
-          members.push({ statement: next, parenthesized: next.parenthesized || false });
+          members.push(this.parseQueryMember());
         }
-        query = { type: 'union', members, operators, leadingComments: [] };
+        query = { type: 'union', members, operators, leadingComments: queryComments };
       } else {
-        query = first;
+        query = firstWithComments;
       }
     }
 
@@ -2671,17 +3017,6 @@ export class Parser {
         continue;
       }
       if (t.value === ')') return false;
-    }
-    return false;
-  }
-
-  private looksLikeValuesAhead(): boolean {
-    for (let i = this.pos; i < this.tokens.length; i++) {
-      const t = this.tokens[i];
-      if (t.type === 'line_comment' || t.type === 'block_comment') continue;
-      if (t.upper === 'VALUES') return true;
-      if (t.upper === 'SELECT') return false;
-      return false;
     }
     return false;
   }
@@ -2828,6 +3163,30 @@ export class Parser {
     return token.type === 'keyword' ? token.upper : token.value;
   }
 
+  private tokensToSqlPreserveCase(tokens: Token[]): string {
+    if (tokens.length === 0) return '';
+    const parts = tokens.map(t => t.value);
+    let out = '';
+    for (let i = 0; i < parts.length; i++) {
+      const curr = parts[i];
+      const prev = i > 0 ? parts[i - 1] : '';
+      if (i === 0) {
+        out += curr;
+        continue;
+      }
+
+      const noSpaceBefore = curr === ',' || curr === ')' || curr === ']' || curr === ';' || curr === '.' || curr === '(' || curr === ':';
+      const noSpaceAfterPrev = prev === '(' || prev === '[' || prev === '.' || prev === '::' || prev === ':';
+      const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::';
+      if (noSpaceBefore || noSpaceAfterPrev || noSpaceAroundPair) {
+        out += curr;
+      } else {
+        out += ' ' + curr;
+      }
+    }
+    return out.trim();
+  }
+
   private tokensToSql(tokens: Token[]): string {
     if (tokens.length === 0) return '';
     const parts = tokens.map(t => this.tokenToSqlValue(t));
@@ -2840,8 +3199,8 @@ export class Parser {
         continue;
       }
 
-      const noSpaceBefore = curr === ',' || curr === ')' || curr === ']' || curr === ';' || curr === '.' || curr === '(';
-      const noSpaceAfterPrev = prev === '(' || prev === '[' || prev === '.' || prev === '::';
+      const noSpaceBefore = curr === ',' || curr === ')' || curr === ']' || curr === ';' || curr === '.' || curr === '(' || curr === ':';
+      const noSpaceAfterPrev = prev === '(' || prev === '[' || prev === '.' || prev === '::' || prev === ':';
       const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::';
       if (noSpaceBefore || noSpaceAfterPrev || noSpaceAroundPair) {
         out += curr;
@@ -2984,6 +3343,15 @@ export class Parser {
  */
 export function parse(input: string, options: ParseOptions = {}): AST.Node[] {
   if (!input.trim()) return [];
-  const parser = new Parser(tokenize(input, { dialect: options.dialect }), options, input);
+  const recover = options.recover ?? true;
+  const parser = new Parser(
+    tokenize(input, {
+      dialect: options.dialect,
+      allowMetaCommands: recover,
+      maxTokenCount: options.maxTokenCount,
+    }),
+    options,
+    input,
+  );
   return parser.parseStatements();
 }

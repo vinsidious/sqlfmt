@@ -35,6 +35,23 @@ export interface Token {
 
 export interface TokenizeOptions {
   dialect?: SQLDialect;
+  /**
+   * Allow psql/MySQL script-control backslash lines in tokenization.
+   *
+   * When enabled, backslash-prefixed line commands (for example `\d users`
+   * and `\.`) are tokenized as `line_comment` so parser recovery can preserve
+   * them instead of failing at the tokenizer boundary.
+   *
+   * @default false
+   */
+  allowMetaCommands?: boolean;
+
+  /**
+   * Maximum number of tokens emitted before failing fast.
+   *
+   * @default MAX_TOKEN_COUNT
+   */
+  maxTokenCount?: number;
 }
 
 /**
@@ -126,6 +143,17 @@ function isIdentifierContinuation(ch: string): boolean {
   const code = ch.charCodeAt(0);
   if (isAsciiLetterCode(code) || isAsciiDigitCode(code) || code === 95) return true;
   return IDENT_CONT_RE.test(ch);
+}
+
+function isLineStartOrIndented(input: string, pos: number): boolean {
+  let i = pos - 1;
+  while (i >= 0) {
+    const ch = input[i];
+    if (ch === '\n' || ch === '\r') return true;
+    if (ch !== ' ' && ch !== '\t') return false;
+    i--;
+  }
+  return true;
 }
 
 function readDollarDelimiter(input: string, start: number): string | null {
@@ -238,6 +266,8 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
   let pos = 0;
   const len = input.length;
   const lineOffsets = buildLineOffsets(input);
+  const allowMetaCommands = options.allowMetaCommands ?? false;
+  const maxTokenCount = options.maxTokenCount ?? MAX_TOKEN_COUNT;
   const additionalKeywords = new Set(
     (options.dialect?.additionalKeywords ?? []).map(k => k.toUpperCase())
   );
@@ -249,10 +279,10 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
   /** Build a Token object and push it onto the output array. */
   function emit(type: TokenType, value: string, upper: string, position: number): void {
-    if (tokens.length >= MAX_TOKEN_COUNT) {
+    if (tokens.length >= maxTokenCount) {
       const { line, column } = lc(position);
       throw new TokenizeError(
-        `Token count exceeds maximum of ${MAX_TOKEN_COUNT}`,
+        `Token count exceeds maximum of ${maxTokenCount}`,
         position,
         line,
         column,
@@ -297,6 +327,27 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       }
       emit('block_comment', input.slice(start, pos), '', start);
       continue;
+    }
+
+    // psql/meta commands in recovery mode:
+    //   \d users
+    //   \.
+    // plus escaped semicolons used in some scripts: \;
+    if (ch === '\\' && allowMetaCommands) {
+      if (input[pos + 1] === ';') {
+        pos += 2;
+        emit('punctuation', ';', ';', start);
+        continue;
+      }
+
+      if (isLineStartOrIndented(input, start)) {
+        pos++;
+        while (pos < len && input[pos] !== '\n' && input[pos] !== '\r') pos++;
+        let end = pos;
+        while (end > start && (input[end - 1] === ' ' || input[end - 1] === '\t')) end--;
+        emit('line_comment', input.slice(start, end), '', start);
+        continue;
+      }
     }
 
     // Dollar-quoted strings ($$...$$ or $tag$...$tag$) and positional parameters ($1, $2)
@@ -348,8 +399,8 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       continue;
     }
 
-    // Prefixed strings: E'...', B'...', X'...'
-    if ('EeBbXx'.includes(ch) && input[pos + 1] === "'") {
+    // Prefixed strings: E'...', B'...', X'...', N'...'
+    if ('EeBbXxNn'.includes(ch) && input[pos + 1] === "'") {
       const allowBackslashEscapes = ch === 'E' || ch === 'e';
       pos += 2;
       pos = readQuotedString(input, pos, allowBackslashEscapes, lineOffsets);
@@ -690,7 +741,7 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     }
 
     // Punctuation (including [ ], and : for array slices)
-    if ('(),;.[]:'.includes(ch)) {
+    if ('(),;.[]:{}'.includes(ch)) {
       pos++;
       emit('punctuation', ch, ch, start);
       continue;

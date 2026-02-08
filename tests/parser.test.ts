@@ -242,6 +242,88 @@ WHERE t.id = u.id;
     expect(out).toContain('SELECT 1');
     expect(out).toContain('SELECT *');
   });
+
+  it('parses CTE body when comments appear before SELECT', () => {
+    const recovered: string[] = [];
+    const nodes = parse(`
+WITH x AS (
+  -- CTE body comment
+  SELECT 1 AS id
+)
+INSERT INTO t (id)
+SELECT id FROM x;
+`, {
+      recover: true,
+      onRecover: (error) => recovered.push(error.message),
+    });
+
+    expect(recovered).toHaveLength(0);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].type).toBe('cte');
+  });
+
+  it('parses RIGHT/LEFT as function calls in expressions', () => {
+    const stmt = parseFirst(`
+UPDATE tch_match_tracking t
+SET is_matched = TRUE
+FROM pos_events p
+WHERE RIGHT(t.invoice, 6) = RIGHT(p.transaction_id, 6)
+  AND LEFT(t.invoice, 2) = LEFT(p.transaction_id, 2);
+`);
+
+    expect(stmt.type).toBe('update');
+    expect(stmt.where?.condition?.type).toBe('binary');
+  });
+
+  it('parses boolean predicates when comments appear before AND/OR terms', () => {
+    const stmt = parseFirst(`
+SELECT *
+FROM tch
+WHERE invoice IS NOT NULL
+-- include only unmatched rows
+AND NOT EXISTS (SELECT 1 FROM matched m WHERE m.invoice = tch.invoice);
+`);
+    expect(stmt.type).toBe('select');
+    expect(stmt.where?.condition?.type).toBe('binary');
+  });
+
+  it('parses CASE expressions with inline comments after THEN results', () => {
+    const stmt = parseFirst(`
+SELECT CASE
+  WHEN score >= 90 THEN 4 -- exact match
+  WHEN score >= 70 THEN 3
+  ELSE 0
+END AS rank
+FROM grades;
+`);
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('case');
+  });
+
+  it('parses searched CASE when comments appear between CASE and first WHEN', () => {
+    const stmt = parseFirst(`
+SELECT CASE
+  -- quality bucket
+  WHEN score >= 90 THEN 'A'
+  ELSE 'B'
+END AS grade
+FROM grades;
+`);
+    expect(stmt.type).toBe('select');
+    expect(stmt.columns[0].expr.type).toBe('case');
+  });
+
+  it('parses JOIN when comments appear between FROM item and JOIN keyword', () => {
+    const stmt = parseFirst(`
+SELECT *
+FROM pos_events pe
+-- Join to tender line
+JOIN pos_transaction_lines ptl ON pe.id = ptl.event_id;
+`);
+    expect(stmt.type).toBe('select');
+    expect(stmt.joins).toHaveLength(1);
+    expect(stmt.joins[0].joinType).toBe('JOIN');
+  });
 });
 
 describe('parser/code-quality safety checks', () => {
@@ -318,6 +400,85 @@ describe('parser recovery callback', () => {
     parser.parseStatements();
     expect(dropped.length).toBe(1);
     expect(dropped[0]).toContain('Expected');
+  });
+
+  it('does not emit recovery errors for unsupported DO blocks followed by another statement', () => {
+    const recovered: string[] = [];
+    const nodes = parse(`
+DO $$
+BEGIN
+  RAISE NOTICE 'hello';
+END;
+$$;
+DROP TYPE IF EXISTS public.cloneparms CASCADE;
+`, {
+      recover: true,
+      onRecover: (error) => recovered.push(error.message),
+    });
+
+    expect(recovered).toHaveLength(0);
+    expect(nodes).toHaveLength(2);
+    expect(nodes[0].type).toBe('raw');
+    if (nodes[0].type !== 'raw') return;
+    expect(nodes[0].reason).toBe('unsupported');
+    expect(nodes[1].type).toBe('drop_table');
+  });
+
+  it('does not emit recovery errors for unsupported CREATE FUNCTION followed by comments and another statement', () => {
+    const recovered: string[] = [];
+    const nodes = parse(`
+CREATE OR REPLACE FUNCTION public.f()
+RETURNS int
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN 1;
+END;
+$$;
+-- between statements
+DROP FUNCTION IF EXISTS public.f();
+`, {
+      recover: true,
+      onRecover: (error) => recovered.push(error.message),
+    });
+
+    expect(recovered).toHaveLength(0);
+    expect(nodes).toHaveLength(2);
+    expect(nodes[0].type).toBe('raw');
+    if (nodes[0].type !== 'raw') return;
+    expect(nodes[0].reason).toBe('unsupported');
+    expect(nodes[1].type).toBe('drop_table');
+  });
+
+  it('treats SQL Server bracket-identifier statements as unsupported without recovery warnings', () => {
+    const recovered: string[] = [];
+    const nodes = parse(`
+CREATE VIEW [dbo].[vw_demo] AS
+SELECT 1 AS id;
+`, {
+      recover: true,
+      onRecover: (error) => recovered.push(error.message),
+    });
+
+    expect(recovered).toHaveLength(0);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].type).toBe('raw');
+    if (nodes[0].type !== 'raw') return;
+    expect(nodes[0].reason).toBe('unsupported');
+  });
+
+  it('treats T-SQL variable assignment statements as unsupported without recovery warnings', () => {
+    const recovered: string[] = [];
+    const nodes = parse('SELECT @batch_num = Batch_Num FROM Trans_Num WITH (ROWLOCK, XLOCK);', {
+      recover: true,
+      onRecover: (error) => recovered.push(error.message),
+    });
+
+    expect(recovered).toHaveLength(0);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].type).toBe('raw');
+    if (nodes[0].type !== 'raw') return;
+    expect(nodes[0].reason).toBe('unsupported');
   });
 });
 

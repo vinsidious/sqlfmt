@@ -31,6 +31,14 @@ describe('tokenizer basics', () => {
     expect(types).toContain('block_comment');
     expect(types[types.length - 1]).toBe('eof');
   });
+
+  it('tokenizes curly braces as punctuation', () => {
+    const tokens = tokenize('SELECT { fn HOUR(ts) } FROM t;').filter(t => t.type !== 'whitespace');
+    expect(tokens.map(t => t.value)).toContain('{');
+    expect(tokens.map(t => t.value)).toContain('}');
+    const braceTokens = tokens.filter(t => t.value === '{' || t.value === '}');
+    expect(braceTokens.every(t => t.type === 'punctuation')).toBe(true);
+  });
 });
 
 describe('tokenizer literals and parameters', () => {

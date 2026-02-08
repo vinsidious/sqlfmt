@@ -94,6 +94,45 @@ WHERE s.user_id = u.id;
     expect(stmt.overriding).toBe('SYSTEM VALUE');
   });
 
+  it('supports CTEs with INSERT as the main statement', () => {
+    const sql = `
+WITH data AS (
+  SELECT *
+  FROM jsonb_to_recordset('[{"outcome":"INELIGIBLE","input_fingerprint":"4908765f3f686102e4c814e6c138a9d029a939705b41b619c9a7628d0611b70f"}]'::jsonb) AS x(
+    outcome text,
+    input_fingerprint text
+  )
+)
+INSERT INTO tender_outcomes (
+  outcome,
+  input_fingerprint
+)
+SELECT
+  outcome::"TenderOutcomeType",
+  decode(input_fingerprint, 'hex')
+FROM data
+ON CONFLICT (outcome) DO UPDATE SET
+  input_fingerprint = EXCLUDED.input_fingerprint
+WHERE tender_outcomes.input_fingerprint IS DISTINCT FROM EXCLUDED.input_fingerprint;
+`;
+
+    const ast = parse(sql, { recover: false });
+    expect(ast).toHaveLength(1);
+    const stmt = ast[0];
+    expect(stmt.type).toBe('cte');
+    if (stmt.type !== 'cte') return;
+    expect(stmt.mainQuery.type).toBe('insert');
+  });
+
+  it('preserves typed column definitions in FROM-function aliases', () => {
+    const out = formatSQL(
+      "SELECT * FROM jsonb_to_recordset('[{\"a\":1}]'::jsonb) AS x(a int, b text);"
+    );
+
+    expect(out).toContain('AS x(a int, b text)');
+    expect(out).not.toContain('AS x(a, int');
+  });
+
   it('supports qualified column names in MERGE SET clause', () => {
     const sql = `MERGE INTO target t USING source s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.name = s.name;`;
     const ast = parse(sql, { recover: false });

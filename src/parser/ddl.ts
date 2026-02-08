@@ -48,7 +48,7 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
   }
 
   const kw = ctx.peekUpper();
-  if (kw === 'TABLE') return parseCreateTableStatement(ctx, comments);
+  if (kw === 'TABLE') return parseCreateTableStatement(ctx, comments, statementStart);
   if (kw === 'INDEX') return parseCreateIndexStatement(ctx, comments, unique);
   if (kw === 'VIEW') return parseCreateViewStatement(ctx, comments, orReplace, materialized);
   if (kw === 'POLICY') return parseCreatePolicyStatement(ctx, comments);
@@ -59,7 +59,11 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
   return raw;
 }
 
-function parseCreateTableStatement(ctx: DdlParser, comments: AST.CommentNode[]): AST.CreateTableStatement {
+function parseCreateTableStatement(
+  ctx: DdlParser,
+  comments: AST.CommentNode[],
+  statementStart: number,
+): AST.Node {
   ctx.expect('TABLE');
   const ifNotExists = ctx.consumeIfNotExists();
   let tableName = ctx.advance().value;
@@ -69,9 +73,28 @@ function parseCreateTableStatement(ctx: DdlParser, comments: AST.CommentNode[]):
   }
   const fullName = ifNotExists ? 'IF NOT EXISTS ' + tableName : tableName;
 
+  // CREATE TABLE ... AS SELECT ...
+  if (!ctx.check('(')) {
+    ctx.setPos(statementStart);
+    const raw = ctx.parseRawStatement('unsupported');
+    if (!raw) throw ctx.parseError('CREATE TABLE statement', ctx.peek());
+    if (comments.length === 0) return raw;
+    return { type: 'raw', text: `${comments.map(c => c.text).join('\n')}\n${raw.text}`.trim(), reason: 'unsupported' };
+  }
+
   ctx.expect('(');
   const elements = ctx.parseTableElements();
   ctx.expect(')');
+
+  // PostgreSQL storage parameters and related trailing clauses are currently
+  // preserved verbatim to avoid strict-mode failures.
+  if (!ctx.isAtEnd() && !ctx.check(';')) {
+    ctx.setPos(statementStart);
+    const raw = ctx.parseRawStatement('unsupported');
+    if (!raw) throw ctx.parseError('CREATE TABLE statement', ctx.peek());
+    if (comments.length === 0) return raw;
+    return { type: 'raw', text: `${comments.map(c => c.text).join('\n')}\n${raw.text}`.trim(), reason: 'unsupported' };
+  }
 
   return { type: 'create_table', tableName: fullName, elements, leadingComments: comments };
 }

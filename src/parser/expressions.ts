@@ -212,6 +212,7 @@ export interface PrimaryExpressionParser {
   parseOverlayExpr(): AST.Expression;
   parseTrimExpr(): AST.Expression;
   parseIdentifierOrFunction(): AST.Expression;
+  consumeComments?: () => AST.CommentNode[];
 }
 
 export function parsePrimaryExpression(ctx: PrimaryExpressionParser): AST.Expression {
@@ -322,9 +323,20 @@ function tryParseParenOrSubqueryPrimary(ctx: PrimaryExpressionParser, token: Tok
   const subquery = ctx.tryParseSubqueryAtCurrent();
   if (subquery) return subquery;
   ctx.advance();
-  const expr = ctx.parseExpression();
+  ctx.consumeComments?.();
+  const firstExpr = ctx.parseExpression();
+  if (ctx.check(',')) {
+    const items: AST.Expression[] = [firstExpr];
+    while (ctx.check(',')) {
+      ctx.advance();
+      ctx.consumeComments?.();
+      items.push(ctx.parseExpression());
+    }
+    ctx.expect(')');
+    return { type: 'tuple', items };
+  }
   ctx.expect(')');
-  return { type: 'paren', expr };
+  return { type: 'paren', expr: firstExpr };
 }
 
 function tryParseLiteralPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {

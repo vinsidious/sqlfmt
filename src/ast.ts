@@ -23,6 +23,15 @@ export type Statement =
 /** Query-producing statements that are valid in subquery positions. */
 export type QueryExpression = SelectStatement | UnionStatement | CTEStatement;
 
+/** Statements that can legally appear as the primary statement after a WITH clause. */
+export type CTEMainStatement =
+  | SelectStatement
+  | UnionStatement
+  | InsertStatement
+  | UpdateStatement
+  | DeleteStatement
+  | MergeStatement;
+
 /** Any top-level node emitted by `parse()`. */
 export type Node =
   | Statement
@@ -51,6 +60,7 @@ export type Expression =
   | SimilarToExpr
   | ExistsExpr
   | ParenExpr
+  | TupleExpr
   | CastExpr
   | PgCastExpr
   | WindowFunctionExpr
@@ -223,8 +233,13 @@ export interface DropTableStatement {
 
 export interface UnionStatement {
   readonly type: 'union';
-  readonly members: readonly { readonly statement: SelectStatement; readonly parenthesized: boolean }[];
+  readonly members: readonly { readonly statement: QueryExpression; readonly parenthesized: boolean }[];
   readonly operators: readonly string[]; // 'UNION', 'UNION ALL', 'INTERSECT', 'EXCEPT'
+  readonly orderBy?: OrderByClause;
+  readonly limit?: LimitClause;
+  readonly offset?: OffsetClause;
+  readonly fetch?: { readonly count: Expression; readonly withTies?: boolean };
+  readonly lockingClause?: string;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -234,7 +249,7 @@ export interface CTEStatement {
   readonly ctes: readonly CTEDefinition[];
   readonly search?: CTESearchClause;
   readonly cycle?: CTECycleClause;
-  readonly mainQuery: SelectStatement | UnionStatement;
+  readonly mainQuery: CTEMainStatement;
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -513,6 +528,11 @@ export interface ParenExpr {
   readonly expr: Expression;
 }
 
+export interface TupleExpr {
+  readonly type: 'tuple';
+  readonly items: readonly Expression[];
+}
+
 export interface CastExpr {
   readonly type: 'cast';
   readonly expr: Expression;
@@ -526,6 +546,7 @@ export interface PgCastExpr {
 }
 
 export interface WindowSpec {
+  readonly baseWindowName?: string;
   readonly partitionBy?: readonly Expression[];
   readonly orderBy?: readonly OrderByItem[];
   readonly frame?: FrameSpec;
@@ -658,6 +679,7 @@ export interface FromClause {
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
   readonly lateral?: boolean;
+  readonly ordinality?: boolean;
   readonly tablesample?: { readonly method: string; readonly args: readonly Expression[]; readonly repeatable?: Expression };
   readonly trailingComments?: readonly CommentNode[];
 }
@@ -668,6 +690,7 @@ export interface JoinClause {
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
   readonly lateral?: boolean;
+  readonly ordinality?: boolean;
   readonly on?: Expression;
   readonly usingClause?: readonly string[];
   readonly trailingComment?: CommentNode;
@@ -693,6 +716,7 @@ export interface OrderByClause {
 
 export interface OrderByItem {
   readonly expr: Expression;
+  readonly usingOperator?: string;
   readonly direction?: 'ASC' | 'DESC';
   readonly nulls?: 'FIRST' | 'LAST';
   readonly trailingComment?: CommentNode;
