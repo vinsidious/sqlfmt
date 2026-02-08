@@ -1290,6 +1290,12 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
     return 'EXISTS\n' + contentPad(ctx) + subq;
   }
 
+  // NOT EXISTS: format like EXISTS but with NOT prefix
+  if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'exists') {
+    const subq = formatSubqueryAtColumn(expr.operand.subquery, contentCol(ctx), ctx.runtime);
+    return 'NOT EXISTS\n' + contentPad(ctx) + subq;
+  }
+
   // Comparison where right side is a subquery
   if (expr.type === 'binary' && ['=', '<>', '!=', '<', '>', '<=', '>='].includes(expr.operator)) {
     if (expr.right.type === 'subquery') {
@@ -2057,14 +2063,15 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
 
   const objectType = node.objectType || 'TABLE';
   const header = `ALTER ${objectType} ${node.objectName}`;
-  lines.push(header);
 
   const actions = node.actions && node.actions.length > 0
     ? node.actions.map(formatAlterAction)
     : [];
   if (actions.length === 0) {
-    throw new Error('Invalid alter_table AST: missing actions');
+    lines.push(header + ';');
+    return lines.join('\n');
   }
+  lines.push(header);
   for (let i = 0; i < actions.length; i++) {
     const comma = i < actions.length - 1 ? ',' : ';';
     lines.push(' '.repeat(8) + actions[i] + comma);
@@ -2330,6 +2337,10 @@ function formatValuesClause(node: AST.ValuesClause, ctx: FormatContext): string 
 
   lines.push(valuesIndent + 'VALUES');
 
+  // Count non-empty rows for comma placement
+  const totalDataRows = node.rows.filter(r => r.values.length > 0).length;
+  let dataRowIndex = 0;
+
   for (const row of node.rows) {
     // Emit leading comments for this row
     if (row.leadingComments) {
@@ -2341,9 +2352,11 @@ function formatValuesClause(node: AST.ValuesClause, ctx: FormatContext): string 
     // Skip empty rows (comment-only rows)
     if (row.values.length === 0) continue;
 
+    dataRowIndex++;
     const vals = '(' + row.values.map(formatExpr).join(', ') + ')';
+    const comma = dataRowIndex < totalDataRows ? ',' : '';
     const trailing = row.trailingComment ? '  ' + row.trailingComment.text : '';
-    lines.push(rowIndent + vals + trailing);
+    lines.push(rowIndent + vals + comma + trailing);
   }
 
   return lines.join('\n');
@@ -2388,6 +2401,10 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
     case 'binary':
       return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
     case 'unary':
+      // Special case: NOT EXISTS should format like EXISTS with NOT prefix
+      if (expr.operator === 'NOT' && expr.operand.type === 'exists') {
+        return 'NOT EXISTS ' + formatSubquerySimple(expr.operand.subquery);
+      }
       // No space for unary minus (e.g., -1), space for NOT
       if (expr.operator === '-' || expr.operator === '~') return expr.operator + formatExpr(expr.operand, d);
       return expr.operator + ' ' + formatExpr(expr.operand, d);

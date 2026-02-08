@@ -348,7 +348,25 @@ export class Parser {
     if (kw === 'TRUNCATE') return this.parseTruncate(comments);
     if (kw === 'VALUES') return this.parseStandaloneValues(comments);
 
-    // Unknown statement — consume until semicolon
+    // Transaction control — consume tokens without the semicolon (parseStatements handles it)
+    if (kw === 'BEGIN' || kw === 'COMMIT' || kw === 'ROLLBACK' || kw === 'SAVEPOINT' || kw === 'RELEASE'
+        || (kw === 'START' && this.peekUpperAt(1) === 'TRANSACTION')) {
+      const parts: string[] = [];
+      while (!this.isAtEnd() && !this.check(';')) {
+        const tok = this.advance();
+        // Uppercase keywords, preserve identifier casing
+        parts.push(tok.type === 'keyword' ? tok.upper : tok.value);
+      }
+      const text = parts.join(' ') + ';';
+      const raw: AST.RawExpression = { type: 'raw', text, reason: 'transaction_control' };
+      if (comments.length === 0) return raw;
+      return { type: 'raw', text: `${this.commentsToRaw(comments).text}\n${text}`.trim(), reason: 'transaction_control' };
+    }
+
+    // Unknown statement — in strict mode, fail instead of falling back to raw
+    if (!this.recover) {
+      throw new ParseError('SQL statement (SELECT, INSERT, UPDATE, DELETE, CREATE, ...)', this.peek());
+    }
     const raw = this.parseRawStatement('unsupported');
     if (!raw) {
       if (comments.length === 0) return null;
@@ -2144,6 +2162,51 @@ export class Parser {
           fkRefTable: refTable,
           fkRefColumns: refCols.join(', '),
           fkActions: actions || undefined,
+        };
+      }
+
+      if (this.peekUpper() === 'UNIQUE') {
+        this.advance(); // UNIQUE
+        let cols = '';
+        if (this.check('(')) {
+          this.advance(); // (
+          const colNames: string[] = [];
+          while (!this.check(')')) {
+            colNames.push(this.advance().value);
+            if (this.check(',')) this.advance();
+          }
+          this.expect(')');
+          cols = ' (' + colNames.join(', ') + ')';
+        }
+        return {
+          elementType: 'constraint',
+          raw: `CONSTRAINT ${constraintName} UNIQUE${cols}`,
+          constraintName,
+          constraintBody: `UNIQUE${cols}`,
+          constraintType: 'raw',
+        };
+      }
+
+      if (this.peekUpper() === 'PRIMARY' && this.peekUpperAt(1) === 'KEY') {
+        this.advance(); // PRIMARY
+        this.advance(); // KEY
+        let cols = '';
+        if (this.check('(')) {
+          this.advance(); // (
+          const colNames: string[] = [];
+          while (!this.check(')')) {
+            colNames.push(this.advance().value);
+            if (this.check(',')) this.advance();
+          }
+          this.expect(')');
+          cols = ' (' + colNames.join(', ') + ')';
+        }
+        return {
+          elementType: 'constraint',
+          raw: `CONSTRAINT ${constraintName} PRIMARY KEY${cols}`,
+          constraintName,
+          constraintBody: `PRIMARY KEY${cols}`,
+          constraintType: 'raw',
         };
       }
 

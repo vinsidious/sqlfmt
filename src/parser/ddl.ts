@@ -61,7 +61,11 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
 function parseCreateTableStatement(ctx: DdlParser, comments: AST.CommentNode[]): AST.CreateTableStatement {
   ctx.expect('TABLE');
   const ifNotExists = ctx.consumeIfNotExists();
-  const tableName = ctx.advance().value;
+  let tableName = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance(); // consume dot
+    tableName += '.' + ctx.advance().value;
+  }
   const fullName = ifNotExists ? 'IF NOT EXISTS ' + tableName : tableName;
 
   ctx.expect('(');

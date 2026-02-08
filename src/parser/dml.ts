@@ -23,7 +23,11 @@ export function parseInsertStatement(
 ): AST.InsertStatement {
   ctx.expect('INSERT');
   ctx.expect('INTO');
-  const table = ctx.advance().value;
+  let table = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance(); // consume dot
+    table += '.' + ctx.advance().value;
+  }
 
   let columns: string[] = [];
   if (ctx.check('(')) {
@@ -141,7 +145,11 @@ export function parseUpdateStatement(
   comments: AST.CommentNode[]
 ): AST.UpdateStatement {
   ctx.expect('UPDATE');
-  const table = ctx.advance().value;
+  let table = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance(); // consume dot
+    table += '.' + ctx.advance().value;
+  }
   const alias = parseOptionalTableAlias(ctx, new Set(['SET']));
 
   ctx.expect('SET');
@@ -192,7 +200,11 @@ export function parseDeleteStatement(
 ): AST.DeleteStatement {
   ctx.expect('DELETE');
   ctx.expect('FROM');
-  const table = ctx.advance().value;
+  let table = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance(); // consume dot
+    table += '.' + ctx.advance().value;
+  }
   const alias = parseOptionalTableAlias(ctx, new Set(['USING', 'WHERE', 'RETURNING']));
 
   let using: AST.FromClause[] | undefined;

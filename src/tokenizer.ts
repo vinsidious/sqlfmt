@@ -399,6 +399,29 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       continue;
     }
 
+    // Backtick-quoted identifier (MySQL style)
+    if (ch === '`') {
+      pos++;
+      while (pos < len) {
+        if (input[pos] === '`') {
+          if (input[pos + 1] === '`') {
+            pos += 2; // escaped backtick
+            continue;
+          }
+          break;
+        }
+        pos++;
+      }
+      if (pos >= len) {
+        const { line: eLine, column: eCol } = lc(start);
+        throw new TokenizeError('Unterminated backtick-quoted identifier', start, eLine, eCol);
+      }
+      pos++; // skip closing backtick
+      const val = input.slice(start, pos);
+      emit('identifier', val, val, start);
+      continue;
+    }
+
     // Number
     if (isDigit(ch) || (ch === '.' && isDigit(input[pos + 1]))) {
       const consumeDigitsWithUnderscores = (digitCheck: (c: string | undefined) => boolean): void => {

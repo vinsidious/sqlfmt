@@ -630,7 +630,8 @@ export type RawReason =
   | 'parse_error'
   | 'unsupported'
   | 'comment_only'
-  | 'verbatim';
+  | 'verbatim'
+  | 'transaction_control';
 
 // Column expression with optional alias and comment
 export interface ColumnExpr {

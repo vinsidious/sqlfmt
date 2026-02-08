@@ -353,13 +353,13 @@ describe('FOUND: Unexpected character error format', () => {
   });
 
   it('formats printable chars with quotes', () => {
-    const sql = 'SELECT 1`FROM t;'; // backtick not valid SQL
+    const sql = 'SELECT 1`FROM t;'; // backtick starts an unterminated identifier
     try {
       tokenize(sql);
       throw new Error('should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(TokenizeError);
-      expect((err as TokenizeError).message).toContain('`');
+      expect((err as TokenizeError).message).toContain('backtick');
     }
   });
 });
