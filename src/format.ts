@@ -122,7 +122,7 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
     maxLineLength: options.maxLineLength,
   })
     .split('\n')
-    .map(line => line.replace(/[ \t]+$/g, ''))
+    .map(line => line.trimEnd())
     .join('\n');
 
   return formatted.trimEnd() + '\n';
