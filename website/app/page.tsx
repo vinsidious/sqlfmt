@@ -24,7 +24,15 @@ export default function HomePage() {
 
           {/* Subtitle */}
           <p className="animate-fade-in-up animate-delay-1 mt-3 text-base text-zinc-500">
-            Beautifully readable SQL.
+            Beautiful, readable SQL that conforms to{' '}
+            <a
+              href="https://www.sqlstyle.guide"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-brand hover:decoration-brand/40 transition-colors duration-200"
+            >
+              sqlstyle.guide
+            </a>
           </p>
 
           {/* CTAs */}
