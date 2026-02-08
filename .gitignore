@@ -4,3 +4,4 @@ dist/
 .DS_Store
 website/.next/
 website/node_modules/
+docs/tmp/
