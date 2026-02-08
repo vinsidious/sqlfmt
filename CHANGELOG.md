@@ -6,11 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-02-08
+
+### Added
+
+- Transaction Control Language support (BEGIN, COMMIT, ROLLBACK, SAVEPOINT).
+- Dotted/qualified table identifiers (e.g., `schema.table`) in DDL and DML.
+- MySQL-style backtick-quoted identifiers in the tokenizer.
+- Inline PRIMARY KEY and UNIQUE constraint support in CREATE TABLE.
+- Bare EXPLAIN option parsing (e.g., `EXPLAIN (ANALYZE, BUFFERS)`).
+- Qualified column names in UPDATE and MERGE SET clauses (e.g., `alias.column`).
+- Website favicons, web manifest, and PWA metadata.
+
 ### Changed
 
-- Refreshed website design and layout for improved visual hierarchy.
-- Enhanced playground with sample queries and improved layout.
-- Added website favicons and web manifest.
+- Overhauled website design with new "Emerald" dark theme, modern typography, and animations.
+- Redesigned playground with sample query rotation, performance metrics, and improved responsive layout.
+- Switched website monospace font to IBM Plex Mono.
+- Lowered minimum Node.js requirement to v18.
+- Improved formatting for NOT EXISTS clauses and multi-row VALUES statements.
+- Expanded keyword dictionary with common PostgreSQL types and transaction keywords.
+- Optimized trailing whitespace removal using native `trimEnd` over regex.
+
+### Fixed
+
+- Unterminated dollar-quoted strings now recover gracefully instead of throwing.
+- Position checkpointing in IS comparison parsing to prevent incorrect token consumption when used as an alias.
 
 ## [1.2.1] - 2026-02-07
 
@@ -108,7 +129,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `.holywellignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/vinsidious/holywell/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/vinsidious/holywell/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/vinsidious/holywell/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/vinsidious/holywell/compare/v1.1.0...v1.1.1
