@@ -65,7 +65,7 @@ describe('cli flags and UX', () => {
   });
 
   it('returns parse exit code 2 with a clean message', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-cli-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'broken.sql');
     writeFileSync(file, "SELECT 'broken", 'utf8');
     const res = runCli([file]);
@@ -74,7 +74,7 @@ describe('cli flags and UX', () => {
   });
 
   it('supports --check with normalized edge whitespace', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-cli-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'normalized.sql');
     writeFileSync(file, '\n\nSELECT 1;\n', 'utf8');
     const res = runCli(['--check', file]);
@@ -82,7 +82,7 @@ describe('cli flags and UX', () => {
   });
 
   it('supports --diff output when --check fails', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-cli-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'diff.sql');
     writeFileSync(file, 'select 1;', 'utf8');
     const res = runCli(['--check', '--diff', file]);
@@ -93,7 +93,7 @@ describe('cli flags and UX', () => {
   });
 
   it('supports --write for in-place formatting', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-cli-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -105,7 +105,7 @@ describe('cli flags and UX', () => {
   });
 
   it('supports --dry-run preview without writing changes', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-cli-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'preview.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -116,7 +116,7 @@ describe('cli flags and UX', () => {
   });
 
   it('handles multiple file arguments', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-cli-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const fileA = join(dir, 'a.sql');
     const fileB = join(dir, 'b.sql');
     writeFileSync(fileA, 'select 1;', 'utf8');
@@ -134,7 +134,7 @@ describe('cli flags and UX', () => {
 
 describe('glob pattern expansion', () => {
   it('expands *.sql glob patterns', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-glob-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-glob-'));
     writeFileSync(join(dir, 'a.sql'), 'select 1;', 'utf8');
     writeFileSync(join(dir, 'b.sql'), 'select 2;', 'utf8');
     writeFileSync(join(dir, 'c.txt'), 'not sql', 'utf8');
@@ -149,7 +149,7 @@ describe('glob pattern expansion', () => {
   });
 
   it('expands **/*.sql recursive glob patterns', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-glob-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-glob-'));
     const sub = join(dir, 'sub');
     mkdirSync(sub);
     writeFileSync(join(dir, 'top.sql'), 'select 1;', 'utf8');
@@ -161,7 +161,7 @@ describe('glob pattern expansion', () => {
   });
 
   it('errors on non-matching glob pattern with clear message', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-glob-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-glob-'));
     const res = runCli([join(dir, '*.sql')]);
     expect(res.code).toBe(1);
     expect(res.err).toContain('No files matched pattern');
@@ -170,7 +170,7 @@ describe('glob pattern expansion', () => {
 
 describe('--list-different flag', () => {
   it('prints only filenames that need formatting', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ld-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ld-'));
     const clean = join(dir, 'clean.sql');
     const dirty = join(dir, 'dirty.sql');
     writeFileSync(clean, 'SELECT 1;\n', 'utf8');
@@ -182,7 +182,7 @@ describe('--list-different flag', () => {
   });
 
   it('exits 0 when all files are already formatted', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ld-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ld-'));
     const file = join(dir, 'ok.sql');
     writeFileSync(file, 'SELECT 1;\n', 'utf8');
 
@@ -192,7 +192,7 @@ describe('--list-different flag', () => {
   });
 
   it('supports -l shorthand', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ld-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ld-'));
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -210,7 +210,7 @@ describe('--list-different flag', () => {
 
 describe('--no-color flag', () => {
   it('accepts --no-color without error', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-nc-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-nc-'));
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'SELECT 1;\n', 'utf8');
 
@@ -219,7 +219,7 @@ describe('--no-color flag', () => {
   });
 
   it('does not emit ANSI codes with --no-color', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-nc-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-nc-'));
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -233,7 +233,7 @@ describe('--no-color flag', () => {
 
 describe('--color flag', () => {
   it('accepts --color=always and forces ANSI output', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-color-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-color-'));
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -243,7 +243,7 @@ describe('--color flag', () => {
   });
 
   it('accepts --color never form and disables ANSI output', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-color-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-color-'));
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -261,7 +261,7 @@ describe('--color flag', () => {
 
 describe('--verbose flag', () => {
   it('supports -v shorthand for verbose', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-verbose-'));
     const file = join(dir, 'a.sql');
     writeFileSync(file, 'SELECT 1;\n', 'utf8');
 
@@ -271,7 +271,7 @@ describe('--verbose flag', () => {
   });
 
   it('prints file progress to stderr', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-verbose-'));
     const fileA = join(dir, 'a.sql');
     const fileB = join(dir, 'b.sql');
     writeFileSync(fileA, 'select 1;', 'utf8');
@@ -289,7 +289,7 @@ describe('--verbose flag', () => {
   });
 
   it('prints singular form for 1 file', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-verbose-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-verbose-'));
     const file = join(dir, 'a.sql');
     writeFileSync(file, 'SELECT 1;\n', 'utf8');
 
@@ -302,7 +302,7 @@ describe('--verbose flag', () => {
 
 describe('--quiet flag', () => {
   it('suppresses normal output', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-quiet-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-quiet-'));
     const file = join(dir, 'q.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -313,7 +313,7 @@ describe('--quiet flag', () => {
   });
 
   it('still uses proper exit codes', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-quiet-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-quiet-'));
     const file = join(dir, 'ok.sql');
     writeFileSync(file, 'SELECT 1;\n', 'utf8');
 
@@ -331,7 +331,7 @@ describe('--quiet flag', () => {
 
 describe('--ignore flag', () => {
   it('excludes files matching ignore pattern', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignore-'));
     const migrations = join(dir, 'migrations');
     mkdirSync(migrations);
     writeFileSync(join(dir, 'query.sql'), 'select 1;', 'utf8');
@@ -350,7 +350,7 @@ describe('--ignore flag', () => {
   });
 
   it('supports multiple --ignore patterns', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignore-'));
     const vendor = join(dir, 'vendor');
     const migrations = join(dir, 'migrations');
     mkdirSync(vendor);
@@ -372,7 +372,7 @@ describe('--ignore flag', () => {
   });
 
   it('supports ? wildcard in ignore patterns', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignore-'));
     const keep = join(dir, 'keep.sql');
     const skipSingle = join(dir, 'skip1.sql');
     const skipDouble = join(dir, 'skip10.sql');
@@ -404,12 +404,12 @@ describe('--ignore flag', () => {
   });
 });
 
-describe('.sqlfmtignore support', () => {
-  it('loads ignore patterns from .sqlfmtignore in cwd', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignorefile-'));
+describe('.holywellignore support', () => {
+  it('loads ignore patterns from .holywellignore in cwd', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignorefile-'));
     const migrations = join(dir, 'migrations');
     mkdirSync(migrations);
-    writeFileSync(join(dir, '.sqlfmtignore'), 'migrations/**\n', 'utf8');
+    writeFileSync(join(dir, '.holywellignore'), 'migrations/**\n', 'utf8');
     writeFileSync(join(dir, 'query.sql'), 'select 1;', 'utf8');
     writeFileSync(join(migrations, 'v1.sql'), 'select 2;', 'utf8');
 
@@ -419,13 +419,13 @@ describe('.sqlfmtignore support', () => {
     expect(readFileSync(join(migrations, 'v1.sql'), 'utf8')).toBe('select 2;');
   });
 
-  it('combines .sqlfmtignore and --ignore patterns', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignorefile-'));
+  it('combines .holywellignore and --ignore patterns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignorefile-'));
     const migrations = join(dir, 'migrations');
     const vendor = join(dir, 'vendor');
     mkdirSync(migrations);
     mkdirSync(vendor);
-    writeFileSync(join(dir, '.sqlfmtignore'), 'migrations/**\n', 'utf8');
+    writeFileSync(join(dir, '.holywellignore'), 'migrations/**\n', 'utf8');
     writeFileSync(join(dir, 'query.sql'), 'select 1;', 'utf8');
     writeFileSync(join(migrations, 'v1.sql'), 'select 2;', 'utf8');
     writeFileSync(join(vendor, 'v2.sql'), 'select 3;', 'utf8');
@@ -473,17 +473,38 @@ describe('--help flag', () => {
     expect(res.out).toContain('--ignore');
     expect(res.out).toContain('--stdin-filepath');
     expect(res.out).toContain('--color');
-    expect(res.out).toContain('.sqlfmtignore');
-    expect(res.out).toContain('.sqlfmtrc.json');
+    expect(res.out).toContain('--completion');
+    expect(res.out).toContain('.holywellignore');
+    expect(res.out).toContain('.holywellrc.json');
   });
 });
 
-describe('.sqlfmtrc.json config support', () => {
+describe('--completion flag', () => {
+  it('prints bash completion script', () => {
+    const res = runCli(['--completion', 'bash']);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('complete -F _holywell_completions holywell');
+  });
+
+  it('prints zsh completion script', () => {
+    const res = runCli(['--completion', 'zsh']);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('#compdef holywell');
+  });
+
+  it('rejects invalid completion shell', () => {
+    const res = runCli(['--completion', 'pwsh']);
+    expect(res.code).toBe(3);
+    expect(res.err).toContain('--completion requires one of: bash, zsh, fish');
+  });
+});
+
+describe('.holywellrc.json config support', () => {
   const longSql = 'SELECT customer_identifier, product_identifier, order_identifier, shipment_identifier FROM very_long_table_name;';
 
-  it('loads maxLineLength from .sqlfmtrc.json in cwd', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-config-'));
-    writeFileSync(join(dir, '.sqlfmtrc.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
+  it('loads maxLineLength from .holywellrc.json in cwd', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-config-'));
+    writeFileSync(join(dir, '.holywellrc.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
     writeFileSync(join(dir, 'q.sql'), longSql, 'utf8');
 
     const res = runCli(['q.sql'], dir);
@@ -492,7 +513,7 @@ describe('.sqlfmtrc.json config support', () => {
   });
 
   it('supports explicit --config path', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-config-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-config-'));
     writeFileSync(join(dir, 'custom-config.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
     writeFileSync(join(dir, 'q.sql'), longSql, 'utf8');
 
@@ -502,8 +523,8 @@ describe('.sqlfmtrc.json config support', () => {
   });
 
   it('lets CLI flags override config values', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-config-'));
-    writeFileSync(join(dir, '.sqlfmtrc.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-config-'));
+    writeFileSync(join(dir, '.holywellrc.json'), JSON.stringify({ maxLineLength: 140 }) + '\n', 'utf8');
     writeFileSync(join(dir, 'q.sql'), longSql, 'utf8');
 
     const res = runCli(['--max-line-length', '60', 'q.sql'], dir);
@@ -515,11 +536,11 @@ describe('.sqlfmtrc.json config support', () => {
 
 describe('symlink path validation', () => {
   it('rejects symlinks pointing outside CWD', () => {
-    const outsideDir = mkdtempSync(join(tmpdir(), 'sqlfmt-symlink-outside-'));
+    const outsideDir = mkdtempSync(join(tmpdir(), 'holywell-symlink-outside-'));
     const target = join(outsideDir, 'secret.sql');
     writeFileSync(target, 'select 1;', 'utf8');
 
-    const workDir = mkdtempSync(join(tmpdir(), 'sqlfmt-symlink-cwd-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'holywell-symlink-cwd-'));
     const link = join(workDir, 'link.sql');
     symlinkSync(target, link);
 
@@ -547,16 +568,16 @@ describe('ignore pattern validation', () => {
   });
 
   it('accepts normal ignore patterns', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-val-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignore-val-'));
     writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
 
     const res = runCli(['--check', '--ignore', 'migrations/**', 'query.sql'], dir);
     expect(res.code).toBe(0);
   });
 
-  it('rejects .sqlfmtignore pattern with ../ traversal', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignfile-val-'));
-    writeFileSync(join(dir, '.sqlfmtignore'), '../../../etc/passwd\n', 'utf8');
+  it('rejects .holywellignore pattern with ../ traversal', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignfile-val-'));
+    writeFileSync(join(dir, '.holywellignore'), '../../../etc/passwd\n', 'utf8');
     writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
 
     const res = runCli(['--check', 'query.sql'], dir);
@@ -565,10 +586,10 @@ describe('ignore pattern validation', () => {
     expect(res.err).toContain('directory traversal');
   });
 
-  it('rejects .sqlfmtignore pattern with excessive ** segments', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignfile-val-'));
+  it('rejects .holywellignore pattern with excessive ** segments', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignfile-val-'));
     const pattern = Array.from({ length: 12 }, () => '**').join('/');
-    writeFileSync(join(dir, '.sqlfmtignore'), pattern + '\n', 'utf8');
+    writeFileSync(join(dir, '.holywellignore'), pattern + '\n', 'utf8');
     writeFileSync(join(dir, 'query.sql'), 'SELECT 1;\n', 'utf8');
 
     const res = runCli(['--check', 'query.sql'], dir);
@@ -579,7 +600,7 @@ describe('ignore pattern validation', () => {
 
 describe('recovery warnings on stderr', () => {
   it('emits recovery warnings even with --quiet', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-recover-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-recover-'));
     // This SQL has a statement the parser will struggle with, forcing recovery
     const sql = 'SELECT 1; GOBBLEDYGOOK NOT VALID SQL HERE; SELECT 2;';
     writeFileSync(join(dir, 'recover.sql'), sql, 'utf8');

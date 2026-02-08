@@ -8,6 +8,8 @@ export interface DmlParser {
   peekUpper(): string;
   peekUpperAt(offset: number): string;
   isAtEnd(): boolean;
+  isJoinKeyword(): boolean;
+  parseJoin(): AST.JoinClause;
   parseExpression(): AST.Expression;
   parseExpressionList(): AST.Expression[];
   parseReturningList(): AST.Expression[];
@@ -28,11 +30,27 @@ export function parseInsertStatement(
     columns = parseParenthesizedIdentifierList(ctx);
   }
 
+  let overriding: AST.InsertStatement['overriding'];
+  if (ctx.peekUpper() === 'OVERRIDING') {
+    ctx.advance();
+    if (ctx.peekUpper() === 'SYSTEM' && ctx.peekUpperAt(1) === 'VALUE') {
+      ctx.advance();
+      ctx.advance();
+      overriding = 'SYSTEM VALUE';
+    } else if (ctx.peekUpper() === 'USER' && ctx.peekUpperAt(1) === 'VALUE') {
+      ctx.advance();
+      ctx.advance();
+      overriding = 'USER VALUE';
+    } else {
+      ctx.expect('SYSTEM');
+    }
+  }
+
   let defaultValues = false;
   let values: AST.ValuesList[] | undefined;
   let selectQuery: AST.QueryExpression | undefined;
 
-  if (ctx.peekUpper() === 'DEFAULT' && ctx.peekUpperAt(1) === 'VALUES') {
+  if (matchesKeywords(ctx, 'DEFAULT', 'VALUES')) {
     ctx.advance();
     ctx.advance();
     defaultValues = true;
@@ -59,16 +77,13 @@ export function parseInsertStatement(
     onConflict = parseInsertOnConflictClause(ctx);
   }
 
-  let returning: AST.Expression[] | undefined;
-  if (ctx.peekUpper() === 'RETURNING') {
-    ctx.advance();
-    returning = ctx.parseReturningList();
-  }
+  const returning = parseOptionalReturning(ctx);
 
   return {
     type: 'insert',
     table,
     columns,
+    overriding,
     defaultValues,
     values,
     selectQuery,
@@ -127,6 +142,7 @@ export function parseUpdateStatement(
 ): AST.UpdateStatement {
   ctx.expect('UPDATE');
   const table = ctx.advance().value;
+  const alias = parseOptionalTableAlias(ctx, new Set(['SET']));
 
   ctx.expect('SET');
   const setItems: AST.SetItem[] = [];
@@ -136,10 +152,20 @@ export function parseUpdateStatement(
     setItems.push(parseSetItem(ctx));
   }
 
-  let from: AST.FromClause | undefined;
+  let from: AST.FromClause[] | undefined;
+  let fromJoins: AST.JoinClause[] | undefined;
   if (ctx.peekUpper() === 'FROM') {
     ctx.advance();
-    from = ctx.parseFromItem();
+    from = [ctx.parseFromItem()];
+    while (ctx.check(',')) {
+      ctx.advance();
+      from.push(ctx.parseFromItem());
+    }
+    const joins: AST.JoinClause[] = [];
+    while (ctx.isJoinKeyword()) {
+      joins.push(ctx.parseJoin());
+    }
+    if (joins.length > 0) fromJoins = joins;
   }
 
   let where: AST.WhereClause | undefined;
@@ -148,13 +174,9 @@ export function parseUpdateStatement(
     where = { condition: ctx.parseExpression() };
   }
 
-  let returning: AST.Expression[] | undefined;
-  if (ctx.peekUpper() === 'RETURNING') {
-    ctx.advance();
-    returning = ctx.parseReturningList();
-  }
+  const returning = parseOptionalReturning(ctx);
 
-  return { type: 'update', table, setItems, from, where, returning, leadingComments: comments };
+  return { type: 'update', table, alias, setItems, from, fromJoins, where, returning, leadingComments: comments };
 }
 
 export function parseSetItem(ctx: DmlParser): AST.SetItem {
@@ -171,8 +193,10 @@ export function parseDeleteStatement(
   ctx.expect('DELETE');
   ctx.expect('FROM');
   const table = ctx.advance().value;
+  const alias = parseOptionalTableAlias(ctx, new Set(['USING', 'WHERE', 'RETURNING']));
 
   let using: AST.FromClause[] | undefined;
+  let usingJoins: AST.JoinClause[] | undefined;
   if (ctx.peekUpper() === 'USING') {
     ctx.advance();
     using = [ctx.parseFromItem()];
@@ -180,6 +204,11 @@ export function parseDeleteStatement(
       ctx.advance();
       using.push(ctx.parseFromItem());
     }
+    const joins: AST.JoinClause[] = [];
+    while (ctx.isJoinKeyword()) {
+      joins.push(ctx.parseJoin());
+    }
+    if (joins.length > 0) usingJoins = joins;
   }
 
   let where: AST.WhereClause | undefined;
@@ -188,13 +217,9 @@ export function parseDeleteStatement(
     where = { condition: ctx.parseExpression() };
   }
 
-  let returning: AST.Expression[] | undefined;
-  if (ctx.peekUpper() === 'RETURNING') {
-    ctx.advance();
-    returning = ctx.parseReturningList();
-  }
+  const returning = parseOptionalReturning(ctx);
 
-  return { type: 'delete', from: table, using, where, returning, leadingComments: comments };
+  return { type: 'delete', from: table, alias, using, usingJoins, where, returning, leadingComments: comments };
 }
 
 function parseParenthesizedIdentifierList(ctx: DmlParser): string[] {
@@ -208,4 +233,32 @@ function parseParenthesizedIdentifierList(ctx: DmlParser): string[] {
   }
   ctx.expect(')');
   return items;
+}
+
+function parseOptionalReturning(ctx: DmlParser): AST.Expression[] | undefined {
+  if (ctx.peekUpper() !== 'RETURNING') return undefined;
+  ctx.advance();
+  return ctx.parseReturningList();
+}
+
+function matchesKeywords(ctx: DmlParser, ...keywords: string[]): boolean {
+  for (let i = 0; i < keywords.length; i++) {
+    if (ctx.peekUpperAt(i) !== keywords[i]) return false;
+  }
+  return true;
+}
+
+function parseOptionalTableAlias(ctx: DmlParser, stopKeywords: Set<string>): string | undefined {
+  if (ctx.peekUpper() === 'AS') {
+    ctx.advance();
+    return ctx.advance().value;
+  }
+  const upper = ctx.peekUpper();
+  if (stopKeywords.has(upper)) return undefined;
+  if (ctx.check(',') || ctx.check(')') || ctx.check(';')) return undefined;
+  // Accept identifiers and non-clause keywords as aliases.
+  const token = ctx.advance();
+  if (token.type === 'identifier') return token.value;
+  if (token.type === 'keyword' && !stopKeywords.has(token.upper)) return token.value;
+  return undefined;
 }

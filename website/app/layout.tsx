@@ -20,18 +20,18 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'sqlfmt — SQL Formatter',
+  title: 'holywell — SQL Formatter',
   description:
     'Zero-config SQL formatter with river alignment. Format SQL in your browser.',
   openGraph: {
-    title: 'sqlfmt — SQL Formatter',
+    title: 'holywell — SQL Formatter',
     description:
       'Zero-config SQL formatter with river alignment. Format SQL in your browser.',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'sqlfmt — SQL Formatter',
+    title: 'holywell — SQL Formatter',
     description:
       'Zero-config SQL formatter with river alignment. Format SQL in your browser.',
   },

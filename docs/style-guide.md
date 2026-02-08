@@ -1,10 +1,10 @@
 # Style Guide Rule Mapping
 
-How sqlfmt maps to the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
+How holywell maps to the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/).
 
 ## Enforced Rules
 
-These rules are automatically applied by sqlfmt on every format.
+These rules are automatically applied by holywell on every format.
 
 | Rule | Description |
 |------|-------------|
@@ -32,22 +32,22 @@ These rules are addressed but may not cover all edge cases.
 
 ## Not Enforced
 
-These guidelines from sqlstyle.guide are not enforced by sqlfmt because they involve semantic or naming decisions that a formatter cannot reliably make.
+These guidelines from sqlstyle.guide are not enforced by holywell because they involve semantic or naming decisions that a formatter cannot reliably make.
 
 | Rule | Description | Reason |
 |------|-------------|--------|
 | Avoid `SELECT *` | Use explicit column lists | Semantic decision; the formatter preserves `SELECT *` as-is |
 | Table/column naming conventions | Avoid abbreviations, use snake_case, avoid reserved words as names | Naming is a design decision, not a formatting concern |
-| Correlation name rules | Use first letters of table name, avoid `AS` for column aliases | Naming convention; sqlfmt preserves user-chosen aliases |
+| Correlation name rules | Use first letters of table name, avoid `AS` for column aliases | Naming convention; holywell preserves user-chosen aliases |
 | Uniform suffixes | Use `_id`, `_status`, `_date`, etc. | Schema design convention |
-| Query structure guidelines | Avoid vendor-specific syntax, use ANSI joins | sqlfmt formats whatever syntax is used, including vendor extensions |
+| Query structure guidelines | Avoid vendor-specific syntax, use ANSI joins | holywell formats whatever syntax is used, including vendor extensions |
 
 ## Intentional Deviations
 
-sqlfmt makes a small number of deliberate choices that differ from or extend sqlstyle.guide:
+holywell makes a small number of deliberate choices that differ from or extend sqlstyle.guide:
 
-| Deviation | sqlfmt behavior | Rationale |
+| Deviation | holywell behavior | Rationale |
 |-----------|----------------|-----------|
 | River width is per-statement | Each statement derives its own river width from its longest aligned keyword rather than using a fixed column | Produces tighter output for simple queries while accommodating wide keywords like `RETURNING` in DML |
-| Keyword uppercasing scope | sqlfmt uppercases all recognized SQL keywords, including function-like keywords (`COALESCE`, `NULLIF`, `EXTRACT`, etc.) | Consistent treatment of all reserved words |
+| Keyword uppercasing scope | holywell uppercases all recognized SQL keywords, including function-like keywords (`COALESCE`, `NULLIF`, `EXTRACT`, etc.) | Consistent treatment of all reserved words |
 | Boolean literals | `TRUE`, `FALSE`, and `NULL` are uppercased | Treated as keywords for consistency, matching the guide's general uppercase-keywords rule |

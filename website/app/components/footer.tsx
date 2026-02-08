@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-const INSTALL_CMD = 'npm i @vcoppola/sqlfmt';
+const INSTALL_CMD = 'npm i holywell';
 
 export function Footer() {
   const [copied, setCopied] = useState(false);
@@ -34,7 +34,7 @@ export function Footer() {
 
         <div className="flex items-center gap-5 text-[11px] text-zinc-600">
           <a
-            href="https://github.com/vinsidious/sqlfmt"
+            href="https://github.com/vinsidious/holywell"
             target="_blank"
             rel="noopener noreferrer"
             className="transition-colors hover:text-zinc-400"
@@ -42,7 +42,7 @@ export function Footer() {
             GitHub
           </a>
           <a
-            href="https://www.npmjs.com/package/@vcoppola/sqlfmt"
+            href="https://www.npmjs.com/package/holywell"
             target="_blank"
             rel="noopener noreferrer"
             className="transition-colors hover:text-zinc-400"

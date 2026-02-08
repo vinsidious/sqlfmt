@@ -8,6 +8,7 @@ describe('public API surface', () => {
     expect(typeof (api as any).Parser).toBe('function');
     expect(typeof (api as any).parse).toBe('function');
     expect(typeof (api as any).ParseError).toBe('function');
+    expect(typeof (api as any).visitAst).toBe('function');
   });
 
   it('accepts options on formatSQL for depth limits', () => {
@@ -37,5 +38,13 @@ describe('public API surface', () => {
   it('exports version as a non-empty string', () => {
     expect(typeof api.version).toBe('string');
     expect(api.version.length).toBeGreaterThan(0);
+  });
+
+  it('supports dialect keyword extensions in tokenize()', () => {
+    const tokens = api.tokenize('SELECT qualify FROM t;', {
+      dialect: { additionalKeywords: ['qualify'] },
+    });
+    const qualify = tokens.find(t => t.upper === 'QUALIFY');
+    expect(qualify?.type).toBe('keyword');
   });
 });

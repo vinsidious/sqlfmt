@@ -8,17 +8,17 @@ export default defineConfig([
     entry: ['src/index.ts'],
     format: ['cjs', 'esm'],
     dts: true,
-    sourcemap: true,
+    sourcemap: false,
     clean: true,
     outDir: 'dist',
     define: {
-      '__SQLFMT_VERSION__': JSON.stringify(version),
+      '__HOLYWELL_VERSION__': JSON.stringify(version),
     },
   },
   {
     entry: ['src/cli.ts'],
     format: ['cjs'],
-    sourcemap: true,
+    sourcemap: false,
     outDir: 'dist',
     banner: {
       js: '#!/usr/bin/env node',

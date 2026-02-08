@@ -1003,6 +1003,29 @@ describe('Category 27: UPDATE with FROM and JOIN', () => {
           FROM reviews AS r
          WHERE r.product_id = products.product_id);`
   );
+
+  assertFormat('27.3 — UPDATE ... FROM with JOIN source',
+    `update orders as o set status = 'shipped' from shipments as s inner join carriers as c on c.id = s.carrier_id where s.order_id = o.id;`,
+`UPDATE orders AS o
+   SET status = 'shipped'
+  FROM shipments AS s
+       INNER JOIN carriers AS c
+       ON c.id = s.carrier_id
+ WHERE s.order_id = o.id;`
+  );
+});
+
+describe('Category 27b: DELETE with USING and JOIN', () => {
+  assertFormat('27b.1 — DELETE ... USING with JOIN source',
+    `delete from users as u using sessions as s inner join devices as d on d.id = s.device_id where s.user_id = u.id and d.blocked = true;`,
+`DELETE
+  FROM users AS u
+ USING sessions AS s
+       INNER JOIN devices AS d
+       ON d.id = s.device_id
+ WHERE s.user_id = u.id
+   AND d.blocked = TRUE;`
+  );
 });
 
 describe('Category 28: NATURAL JOIN and JOIN ... USING', () => {

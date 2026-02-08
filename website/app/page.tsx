@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { Playground } from './components/playground';
 
 export const metadata: Metadata = {
-  title: 'sqlfmt — Format SQL in Your Browser',
+  title: 'holywell — Format SQL in Your Browser',
   description:
     'Zero-config SQL formatter with river alignment. Format SQL instantly in your browser with full PostgreSQL support.',
 };
@@ -33,7 +33,7 @@ export default function HomePage() {
       <section className="mx-auto max-w-6xl px-4 sm:px-6 text-center mb-16 sm:mb-20">
         <div className="inline-flex items-baseline gap-1">
           <h1 className="text-5xl sm:text-7xl font-bold text-zinc-50 font-mono tracking-tighter">
-            sqlfmt
+            holywell
           </h1>
           <span className="text-indigo-400 font-mono text-5xl sm:text-7xl font-bold">
             .
@@ -44,7 +44,7 @@ export default function HomePage() {
         </p>
         <div className="mt-6 inline-flex items-center gap-2.5 rounded-lg border border-zinc-800/60 bg-zinc-900/50 px-4 py-2">
           <code className="font-mono text-sm text-zinc-400">
-            npm i @vcoppola/sqlfmt
+            npm i holywell
           </code>
         </div>
       </section>

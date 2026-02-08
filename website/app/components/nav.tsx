@@ -16,7 +16,7 @@ export function Nav() {
       <div className="mx-auto flex h-12 max-w-7xl items-center justify-between px-4 sm:px-6">
         <Link href="/" className="flex items-baseline gap-px">
           <span className="font-mono text-sm font-semibold text-zinc-300 tracking-tight">
-            sqlfmt
+            holywell
           </span>
           <span className="text-indigo-400 font-mono text-sm font-semibold">
             .
@@ -43,7 +43,7 @@ export function Nav() {
             );
           })}
           <a
-            href="https://github.com/vinsidious/sqlfmt"
+            href="https://github.com/vinsidious/holywell"
             target="_blank"
             rel="noopener noreferrer"
             className="text-zinc-600 transition-colors hover:text-zinc-400"

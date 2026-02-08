@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 import { MarkdownContent } from '../../components/markdown-content';
 
 export const metadata: Metadata = {
-  title: 'Style Guide — sqlfmt',
+  title: 'Style Guide — holywell',
 };
 
 export default function StyleGuidePage() {

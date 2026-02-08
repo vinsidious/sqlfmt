@@ -1,4 +1,6 @@
 import { isKeyword } from './keywords';
+import { MAX_IDENTIFIER_LENGTH, MAX_TOKEN_COUNT } from './constants';
+import type { SQLDialect } from './dialect';
 
 export type TokenType =
   | 'keyword'
@@ -31,6 +33,10 @@ export interface Token {
   column: number;
 }
 
+export interface TokenizeOptions {
+  dialect?: SQLDialect;
+}
+
 /**
  * Thrown when the tokenizer encounters invalid input such as an unterminated
  * string literal, quoted identifier, or block comment.
@@ -39,7 +45,7 @@ export interface Token {
  *
  * @example
  * ```typescript
- * import { tokenize, TokenizeError } from '@vcoppola/sqlfmt';
+ * import { tokenize, TokenizeError } from 'holywell';
  *
  * try {
  *   tokenize("SELECT 'unterminated");
@@ -71,12 +77,6 @@ export class TokenizeError extends Error {
 const IDENT_START_RE = /[\p{L}_]/u;
 // \p{L} = Unicode letter, \p{N} = Unicode number (digits in any script)
 const IDENT_CONT_RE = /[\p{L}\p{N}_]/u;
-
-/** Maximum number of tokens before the tokenizer aborts to prevent DoS. */
-const MAX_TOKEN_COUNT = 1_000_000;
-
-/** Maximum length for an unquoted identifier. */
-const MAX_IDENTIFIER_LENGTH = 10_000;
 
 function isAsciiDigitCode(code: number): boolean {
   return code >= 48 && code <= 57;
@@ -152,17 +152,22 @@ function readQuotedString(
   while (pos < input.length) {
     const ch = input[pos];
     if (allowBackslashEscapes && ch === '\\') {
-      pos += 2;
-      continue;
-    }
-    if (ch === "'" && pos + 1 < input.length && input[pos + 1] === "'") {
-      pos += 2;
+      // E-strings treat backslash as an escape introducer.
+      if (pos + 1 < input.length) {
+        pos += 2;
+      } else {
+        pos++;
+      }
       continue;
     }
     if (ch === "'") {
+      if (pos + 1 < input.length && input[pos + 1] === "'") {
+        pos += 2;
+        continue;
+      }
       return pos + 1;
     }
-    pos++;
+    pos += 1;
   }
   const errPos = pos;
   if (lineOffsets) {
@@ -217,7 +222,7 @@ function posToLineCol(lineOffsets: number[], pos: number): { line: number; colum
  *   exceeds the safety limit.
  *
  * @example
- * import { tokenize } from '@vcoppola/sqlfmt';
+ * import { tokenize } from 'holywell';
  *
  * const tokens = tokenize('SELECT 1;');
  * // [
@@ -228,11 +233,14 @@ function posToLineCol(lineOffsets: number[], pos: number): { line: number; colum
  * //   { type: 'eof',         value: '',       upper: '',       position: 9, line: 1, column: 10 },
  * // ]
  */
-export function tokenize(input: string): Token[] {
+export function tokenize(input: string, options: TokenizeOptions = {}): Token[] {
   const tokens: Token[] = [];
   let pos = 0;
   const len = input.length;
   const lineOffsets = buildLineOffsets(input);
+  const additionalKeywords = new Set(
+    (options.dialect?.additionalKeywords ?? []).map(k => k.toUpperCase())
+  );
 
   function lc(p: number) {
     const { line, column } = posToLineCol(lineOffsets, p);
@@ -302,12 +310,18 @@ export function tokenize(input: string): Token[] {
       const delim = readDollarDelimiter(input, pos);
       if (delim) {
         pos += delim.length;
-        // Per PostgreSQL spec, dollar-quoted strings cannot nest with the same
-        // delimiter tag. Using indexOf to find the closing delimiter is correct.
-        // Different tags (e.g., $outer$ vs $inner$) allow pseudo-nesting because
-        // the inner delimiters are just literal text within the outer string.
-        const close = input.indexOf(delim, pos);
-        if (close === -1) {
+        let close = -1;
+        // Scan for the next matching delimiter.
+        // This keeps delimiter matching explicit and avoids accidental partial
+        // matches when tags are adjacent to other dollar-prefixed tokens.
+        for (let i = pos; i <= len - delim.length; i++) {
+          if (input[i] !== '$') continue;
+          if (input.startsWith(delim, i)) {
+            close = i;
+            break;
+          }
+        }
+        if (close < 0) {
           const { line: eLine, column: eCol } = lc(start);
           throw new TokenizeError(
             `Unterminated dollar-quoted string (expected closing ${delim})`,
@@ -674,7 +688,7 @@ export function tokenize(input: string): Token[] {
       }
       const val = input.slice(start, pos);
       const upper = val.toUpperCase();
-      if (isKeyword(val)) {
+      if (isKeyword(val) || additionalKeywords.has(upper)) {
         emit('keyword', val, upper, start);
       } else {
         emit('identifier', val, upper, start);

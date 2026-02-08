@@ -22,11 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
-- VS Code extension for sqlfmt formatting with max input size limit and icon.
+- VS Code extension for holywell formatting with max input size limit and icon.
 - Documentation website and interactive playground.
 - EXPLAIN statement support.
 - Configurable line-length formatting with `lineWidth` option.
-- Project-level configuration file support (`.sqlfmtrc`).
+- Project-level configuration file support (`.holywellrc`).
 - Dry-run mode (`--dry-run`) for CLI.
 - `--strict` flag to disable recovery mode for CI usage.
 - `--version`/`-v` CLI flag.
@@ -90,7 +90,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Changed
 
 - Migrated build process to tsup.
-- Updated package name to `@vcoppola/sqlfmt` for npm publishing.
+- Updated package name to `holywell` for npm publishing.
 - Updated installation and import instructions.
 
 ## [1.0.0] - 2026-02-06
@@ -105,13 +105,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Support for SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE INDEX, CREATE VIEW, CTEs, window functions, CASE expressions, subqueries, and JOINs.
 - PostgreSQL-specific syntax: casts (`::`), arrays, JSON/path operators, regex operators, dollar-quoting.
 - Comment-aware formatting for line and block comments.
-- `.sqlfmtignore` file support.
+- `.holywellignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/sqlfmt/compare/v1.2.1...HEAD
-[1.2.1]: https://github.com/vinsidious/sqlfmt/compare/v1.2.0...v1.2.1
-[1.2.0]: https://github.com/vinsidious/sqlfmt/compare/v1.1.1...v1.2.0
-[1.1.1]: https://github.com/vinsidious/sqlfmt/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/vinsidious/sqlfmt/compare/v1.0.1...v1.1.0
-[1.0.1]: https://github.com/vinsidious/sqlfmt/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/vinsidious/sqlfmt/releases/tag/v1.0.0
+[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/vinsidious/holywell/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/vinsidious/holywell/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/vinsidious/holywell/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/vinsidious/holywell/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/vinsidious/holywell/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/vinsidious/holywell/releases/tag/v1.0.0

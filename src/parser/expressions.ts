@@ -120,11 +120,17 @@ function tryParseInComparison(ctx: ComparisonParser, left: AST.Expression): AST.
   const query = ctx.tryParseQueryExpressionAtCurrent();
   if (query) {
     ctx.expect(')');
-    return { type: 'in', expr: left, values: { type: 'subquery', query }, negated, subquery: true as const };
+    return {
+      type: 'in',
+      kind: 'subquery',
+      expr: left,
+      subquery: { type: 'subquery', query },
+      negated,
+    };
   }
   const values = ctx.parseExpressionList();
   ctx.expect(')');
-  return { type: 'in', expr: left, values, negated, subquery: false as const };
+  return { type: 'in', kind: 'list', expr: left, values, negated };
 }
 
 function tryParseLikeFamilyComparison(

@@ -159,7 +159,7 @@ describe('input size validation', () => {
 
 describe('CLI path validation for --write', () => {
   it('skips absolute paths outside cwd', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-pathval-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-pathval-'));
     const file = join(dir, 'test.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -170,7 +170,7 @@ describe('CLI path validation for --write', () => {
   });
 
   it('does not leave temp files when write is skipped by path validation', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-atomic-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-atomic-'));
     const file = join(dir, 'atomic.sql');
     writeFileSync(file, 'select 1;', 'utf8');
 
@@ -186,7 +186,7 @@ describe('CLI path validation for --write', () => {
 
 describe('glob filtering', () => {
   it('excludes .git directory from glob expansion', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-globfilter-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-globfilter-'));
     const gitDir = join(dir, '.git');
     const { mkdirSync } = require('fs');
     mkdirSync(gitDir, { recursive: true });
@@ -202,7 +202,7 @@ describe('glob filtering', () => {
   });
 
   it('excludes node_modules from glob expansion', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-globfilter-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-globfilter-'));
     const nmDir = join(dir, 'node_modules', 'pkg');
     const { mkdirSync } = require('fs');
     mkdirSync(nmDir, { recursive: true });
@@ -215,7 +215,7 @@ describe('glob filtering', () => {
   });
 
   it('excludes dotfiles from glob expansion', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-globfilter-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-globfilter-'));
     const dotDir = join(dir, '.hidden');
     const { mkdirSync } = require('fs');
     mkdirSync(dotDir, { recursive: true });
@@ -230,7 +230,7 @@ describe('glob filtering', () => {
 
 describe('ignore pattern safety', () => {
   it('handles complex wildcard patterns without regex backtracking', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-ignore-safe-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-ignore-safe-'));
     const file = join(dir, 'query.sql');
     writeFileSync(file, 'select 1;', 'utf8');
     const pattern = 'unlikely-prefix-' + '*'.repeat(300) + '?.sql';
@@ -342,7 +342,7 @@ describe('sensitive token sanitization in CLI errors', () => {
     // INSERT ... VALUES (value JUNK) triggers "Expected ), got ..." error
     // The error token is 'identifier' here, but this tests the overall error path
     const sql = `INSERT INTO t VALUES ('my_secret_api_key' JUNK);`;
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-sanitize-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-sanitize-'));
     const file = join(dir, 'sensitive.sql');
     writeFileSync(file, sql, 'utf8');
 
@@ -357,7 +357,7 @@ describe('sensitive token sanitization in CLI errors', () => {
   it('formats SQL with sensitive literals without leaking in normal output', () => {
     // Verify that normal formatting does not mangle the content
     const sql = `SELECT * FROM users WHERE api_key = 'sk-1234567890abcdef';`;
-    const dir = mkdtempSync(join(tmpdir(), 'sqlfmt-sanitize-'));
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-sanitize-'));
     const file = join(dir, 'normal.sql');
     writeFileSync(file, sql, 'utf8');
 

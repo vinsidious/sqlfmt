@@ -1,15 +1,15 @@
-- id: sqlfmt
-  name: sqlfmt
-  description: Format SQL files with sqlfmt
-  entry: npx @vcoppola/sqlfmt --write
+- id: holywell
+  name: holywell
+  description: Format SQL files with holywell
+  entry: npx holywell --write
   language: node
   types: [sql]
   pass_filenames: true
 
-- id: sqlfmt-check
-  name: sqlfmt (check only)
+- id: holywell-check
+  name: holywell (check only)
   description: Check SQL formatting without modifying files
-  entry: npx @vcoppola/sqlfmt --check
+  entry: npx holywell --check
   language: node
   types: [sql]
   pass_filenames: true

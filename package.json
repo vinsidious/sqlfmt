@@ -1,7 +1,7 @@
 {
-  "name": "@vcoppola/sqlfmt",
+  "name": "holywell",
   "version": "1.2.1",
-  "description": "Zero-config SQL formatter with river alignment (sqlstyle.guide). Zero dependencies.",
+  "description": "Zero-config SQL formatter implementing Simon Holywell's SQL Style Guide (sqlstyle.guide). Zero dependencies.",
   "sideEffects": false,
   "type": "module",
   "main": "dist/index.cjs",
@@ -17,10 +17,14 @@
     }
   },
   "bin": {
-    "sqlfmt": "dist/cli.cjs"
+    "holywell": "dist/cli.cjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CODE_OF_CONDUCT.md",
+    ".holywellrc.json.example"
   ],
   "scripts": {
     "build": "tsup",
@@ -31,7 +35,12 @@
   },
   "keywords": [
     "sql",
+    "sql-formatter",
     "formatter",
+    "postgresql",
+    "postgres",
+    "database",
+    "cli",
     "linter",
     "style",
     "sqlstyle",
@@ -40,14 +49,14 @@
   "author": "Vince Coppola <vincecoppola@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vinsidious/sqlfmt.git"
+    "url": "git+https://github.com/vinsidious/holywell.git"
   },
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/vinsidious/sqlfmt",
+  "homepage": "https://github.com/vinsidious/holywell",
   "bugs": {
-    "url": "https://github.com/vinsidious/sqlfmt/issues"
+    "url": "https://github.com/vinsidious/holywell/issues"
   },
   "license": "MIT",
   "engines": {

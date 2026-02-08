@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 import { MarkdownContent } from '../../components/markdown-content';
 
 export const metadata: Metadata = {
-  title: 'Migration Guide — sqlfmt',
+  title: 'Migration Guide — holywell',
 };
 
 export default function MigrationPage() {

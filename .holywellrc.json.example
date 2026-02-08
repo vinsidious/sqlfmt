@@ -1,0 +1,7 @@
+{
+  "maxLineLength": 80,
+  "maxDepth": 200,
+  "maxInputSize": 10485760,
+  "strict": false,
+  "recover": true
+}

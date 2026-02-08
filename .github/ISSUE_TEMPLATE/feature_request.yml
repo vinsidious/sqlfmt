@@ -1,0 +1,31 @@
+name: Feature Request
+description: Suggest an improvement to holywell
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What workflow is currently hard or impossible?
+      placeholder: I need a way to support dialect-specific keywords.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe your preferred behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional
+  - type: textarea
+    id: examples
+    attributes:
+      label: SQL examples
+      render: sql
+      description: Optional input/output examples that clarify the request.

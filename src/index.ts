@@ -1,11 +1,14 @@
 export { formatSQL } from './format';
 export type { FormatOptions } from './format';
+export type { SQLDialect } from './dialect';
 export { tokenize, TokenizeError } from './tokenizer';
-export type { Token, TokenType } from './tokenizer';
+export type { Token, TokenType, TokenizeOptions } from './tokenizer';
 export { Parser, parse, ParseError, MaxDepthError } from './parser';
 export type { ParseOptions, ParseRecoveryContext } from './parser';
-export { formatStatements } from './formatter';
+export { formatStatements, FormatterError } from './formatter';
 export type { FormatterOptions } from './formatter';
+export { visitAst } from './visitor';
+export type { AstVisitor, VisitContext } from './visitor';
 export type {
   Statement,
   Node,
@@ -40,8 +43,8 @@ export type {
 } from './ast';
 
 // Injected at build time by tsup's `define` option from package.json.
-declare const __SQLFMT_VERSION__: string | undefined;
+declare const __HOLYWELL_VERSION__: string | undefined;
 export const version: string =
-  typeof __SQLFMT_VERSION__ !== 'undefined'
-    ? __SQLFMT_VERSION__
+  typeof __HOLYWELL_VERSION__ !== 'undefined'
+    ? __HOLYWELL_VERSION__
     : '0.0.0-dev';

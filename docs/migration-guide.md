@@ -1,12 +1,12 @@
 # Migration Guide
 
-Use this guide to roll out `sqlfmt` across an existing codebase with minimal churn.
+Use this guide to roll out `holywell` across an existing codebase with minimal churn.
 
 ## 1) Understand the style model
 
-`sqlfmt` is intentionally opinionated:
+`holywell` is intentionally opinionated:
 
-- Optional `.sqlfmtrc.json` for operational settings (`maxLineLength`, `maxDepth`, `maxInputSize`, `strict`, `recover`)
+- Optional `.holywellrc.json` for operational settings (`maxLineLength`, `maxDepth`, `maxInputSize`, `strict`, `recover`)
 - No style toggles (indent/casing/alignment modes)
 - Deterministic output
 
@@ -14,7 +14,7 @@ Plan for one-time diffs when first applying formatting.
 
 ## 2) Known behavior changes
 
-Before you run `sqlfmt` on existing SQL, understand what will change:
+Before you run `holywell` on existing SQL, understand what will change:
 
 ### Keywords become uppercase
 
@@ -40,7 +40,7 @@ Most databases (PostgreSQL, MySQL, SQL Server) treat unquoted identifiers as cas
 However, if your database or collation is configured to treat unquoted identifiers as case-sensitive (uncommon, but possible in some configurations), lowercasing could change which table or column is referenced. In this case:
 
 1. Use quoted identifiers (`"MyTable"`) for any names that depend on specific casing
-2. Or run `sqlfmt --check` first to preview changes before applying `--write`
+2. Or run `holywell --check` first to preview changes before applying `--write`
 
 ### What does NOT change
 
@@ -55,16 +55,16 @@ However, if your database or collation is configured to treat unquoted identifie
 Run in CI without writing changes:
 
 ```bash
-npx @vcoppola/sqlfmt --check "**/*.sql"
+npx holywell --check "**/*.sql"
 ```
 
 If your repo has generated/vendor SQL, exclude it first:
 
 ```bash
-npx @vcoppola/sqlfmt --check --ignore "vendor/**" --ignore "generated/**" "**/*.sql"
+npx holywell --check --ignore "vendor/**" --ignore "generated/**" "**/*.sql"
 ```
 
-Or define ignores once in `.sqlfmtignore`:
+Or define ignores once in `.holywellignore`:
 
 ```text
 vendor/**
@@ -76,9 +76,9 @@ generated/**
 Create a dedicated formatting commit:
 
 ```bash
-npx @vcoppola/sqlfmt --write "**/*.sql"
+npx holywell --write "**/*.sql"
 git add -A
-git commit -m "style: apply sqlfmt"
+git commit -m "style: apply holywell"
 ```
 
 Keeping formatting separate from feature changes makes review and rollback easier.
@@ -88,13 +88,13 @@ Keeping formatting separate from feature changes makes review and rollback easie
 After baseline formatting, enforce check mode in CI:
 
 ```bash
-npx @vcoppola/sqlfmt --check "**/*.sql"
+npx holywell --check "**/*.sql"
 ```
 
 Useful companion flag for PR logs:
 
 ```bash
-npx @vcoppola/sqlfmt --check --list-different "**/*.sql"
+npx holywell --check --list-different "**/*.sql"
 ```
 
 ## 6) Add pre-commit guard
@@ -102,13 +102,13 @@ npx @vcoppola/sqlfmt --check --list-different "**/*.sql"
 Run only on staged SQL files:
 
 ```bash
-npx @vcoppola/sqlfmt --check $(git diff --cached --name-only -- '*.sql')
+npx holywell --check $(git diff --cached --name-only -- '*.sql')
 ```
 
 Or auto-fix staged files before commit:
 
 ```bash
-npx @vcoppola/sqlfmt --write $(git diff --cached --name-only -- '*.sql')
+npx holywell --write $(git diff --cached --name-only -- '*.sql')
 git add $(git diff --cached --name-only -- '*.sql')
 ```
 

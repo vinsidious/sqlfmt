@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 import { MarkdownContent } from '../../components/markdown-content';
 
 export const metadata: Metadata = {
-  title: 'Architecture — sqlfmt',
+  title: 'Architecture — holywell',
 };
 
 export default function ArchitecturePage() {

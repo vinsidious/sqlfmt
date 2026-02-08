@@ -30,6 +30,7 @@ interface CLIOptions {
   ignore: string[];
   stdinFilepath: string | null;
   configPath: string | null;
+  completionShell: 'bash' | 'zsh' | 'fish' | null;
   maxLineLength?: number;
   files: string[];
 }
@@ -102,11 +103,11 @@ function dim(s: string): string {
 }
 
 // Injected at build time by tsup's `define` option from package.json.
-declare const __SQLFMT_VERSION__: string | undefined;
+declare const __HOLYWELL_VERSION__: string | undefined;
 
 function readVersion(): string {
-  if (typeof __SQLFMT_VERSION__ !== 'undefined') {
-    return __SQLFMT_VERSION__;
+  if (typeof __HOLYWELL_VERSION__ !== 'undefined') {
+    return __HOLYWELL_VERSION__;
   }
   // Fallback for development (running via bun/ts-node without build)
   try {
@@ -120,15 +121,15 @@ function readVersion(): string {
 }
 
 function printHelp(): void {
-  console.log(`sqlfmt - An opinionated SQL formatter
+  console.log(`holywell - An opinionated SQL formatter
 
-  sqlfmt formats SQL using river alignment, following the
+  holywell formats SQL using river alignment, following the
   SQL style guide at https://www.sqlstyle.guide/. Keywords
   are right-aligned to form a "river" of whitespace, making
   queries easier to scan.
   Deterministic by design: defaults are opinionated, with optional project config.
 
-Usage: sqlfmt [options] [file ...]
+Usage: holywell [options] [file ...]
 
   File arguments support glob patterns (e.g. **/*.sql).
 
@@ -149,8 +150,8 @@ Formatting:
 
 File selection:
   --ignore <pattern>    Exclude files matching glob pattern (repeatable)
-                        Also reads patterns from .sqlfmtignore if present
-  --config <path>       Use an explicit config file (default: .sqlfmtrc.json)
+                        Also reads patterns from .holywellignore if present
+  --config <path>       Use an explicit config file (default: .holywellrc.json)
   --stdin-filepath <p>  Path shown in error messages when reading stdin
 
 Output:
@@ -158,22 +159,23 @@ Output:
   --quiet               Suppress all output except errors
   --no-color            Alias for --color=never
   --color <mode>        Colorize output: auto|always|never (default: auto)
+  --completion <shell>  Print shell completion script (bash|zsh|fish)
 
 Examples:
-  sqlfmt query.sql
-  sqlfmt --check --diff "db/**/*.sql"
-  sqlfmt -w one.sql two.sql
-  sqlfmt --write --ignore "migrations/**" "**/*.sql"
-  sqlfmt --strict --check "**/*.sql"
-  cat query.sql | sqlfmt
-  cat query.sql | sqlfmt --stdin-filepath query.sql
-  echo "SELECT 1;" | sqlfmt
+  holywell query.sql
+  holywell --check --diff "db/**/*.sql"
+  holywell -w one.sql two.sql
+  holywell --write --ignore "migrations/**" "**/*.sql"
+  holywell --strict --check "**/*.sql"
+  cat query.sql | holywell
+  cat query.sql | holywell --stdin-filepath query.sql
+  echo "SELECT 1;" | holywell
 
   # Pipe from another command
-  pg_dump mydb --schema-only | sqlfmt
+  pg_dump mydb --schema-only | holywell
 
   # Pre-commit one-liner (exits 1 if any file needs formatting)
-  sqlfmt --check $(git diff --cached --name-only -- '*.sql')
+  holywell --check $(git diff --cached --name-only -- '*.sql')
 
 Exit codes:
   0  Success (or all files already formatted with --check)
@@ -181,7 +183,7 @@ Exit codes:
   2  Parse or tokenize error
   3  Usage or I/O error
 
-Docs: https://github.com/vinsidious/sqlfmt`);
+Docs: https://github.com/vinsidious/holywell`);
 }
 
 function parseColorModeArg(value: string): ColorMode {
@@ -207,6 +209,7 @@ function parseArgs(args: string[]): CLIOptions {
     ignore: [],
     stdinFilepath: null,
     configPath: null,
+    completionShell: null,
     maxLineLength: undefined,
     files: [],
   };
@@ -318,6 +321,15 @@ function parseArgs(args: string[]): CLIOptions {
       i++;
       continue;
     }
+    if (arg === '--completion') {
+      const next = args[i + 1];
+      if (next !== 'bash' && next !== 'zsh' && next !== 'fish') {
+        throw new CLIUsageError('--completion requires one of: bash, zsh, fish');
+      }
+      opts.completionShell = next;
+      i++;
+      continue;
+    }
 
     if (arg.startsWith('-')) {
       throw new CLIUsageError(`Unknown option: ${arg}. Run --help for usage.`);
@@ -360,6 +372,40 @@ function parseArgs(args: string[]): CLIOptions {
   }
 
   return opts;
+}
+
+function renderCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
+  const options = [
+    '--help', '--version', '--check', '--diff', '--dry-run', '--preview',
+    '--write', '--list-different', '--max-line-length', '--strict', '--ignore',
+    '--config', '--stdin-filepath', '--verbose', '--quiet', '--no-color',
+    '--color', '--completion',
+    '-h', '-V', '-w', '-l', '-v',
+  ];
+  const joined = options.join(' ');
+
+  if (shell === 'bash') {
+    return `# bash completion for holywell
+_holywell_completions() {
+  local cur="\${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=( $(compgen -W "${joined}" -- "$cur") )
+}
+complete -F _holywell_completions holywell`;
+  }
+
+  if (shell === 'zsh') {
+    const quoted = options.map(opt => `'${opt}'`).join(' ');
+    return `#compdef holywell
+_holywell_completions() {
+  local -a opts
+  opts=(${quoted})
+  _describe 'holywell option' opts
+}
+compdef _holywell_completions holywell`;
+  }
+
+  return `# fish completion for holywell
+${options.map(opt => `complete -c holywell -f -a '${opt}'`).join('\n')}`;
 }
 
 const GLOB_CHARS = /[*?{\[]/;
@@ -424,8 +470,8 @@ type IgnoreGlobToken =
 
 const MAX_IGNORE_PATTERN_LENGTH = 1024;
 const MAX_DOUBLE_STAR_SEGMENTS = 10;
-const IGNORE_FILE_NAME = '.sqlfmtignore';
-const CONFIG_FILE_NAME = '.sqlfmtrc.json';
+const IGNORE_FILE_NAME = '.holywellignore';
+const CONFIG_FILE_NAME = '.holywellrc.json';
 
 function validateIgnorePattern(pattern: string, source: string): void {
   if (pattern.includes('../')) {
@@ -680,7 +726,7 @@ function validateWritePath(file: string): string | null {
 // This prevents partial writes from corrupting the original file.
 function atomicWriteFileSync(file: string, content: string): void {
   const suffix = randomBytes(8).toString('hex');
-  const tmpFile = `${file}.sqlfmt.${suffix}.tmp`;
+  const tmpFile = `${file}.holywell.${suffix}.tmp`;
   try {
     writeFileSync(tmpFile, content, 'utf-8');
     renameSync(tmpFile, file);
@@ -894,6 +940,11 @@ function main(): void {
       process.exit(EXIT_SUCCESS);
     }
 
+    if (opts.completionShell) {
+      console.log(renderCompletionScript(opts.completionShell));
+      process.exit(EXIT_SUCCESS);
+    }
+
     initColor(opts);
     const cwd = process.cwd();
     const config = loadConfig(cwd, opts.configPath);
@@ -912,7 +963,7 @@ function main(): void {
       console.error(`Loaded ${fileIgnorePatterns.length} pattern(s) from ${IGNORE_FILE_NAME}`);
     }
 
-    // Apply .sqlfmtignore and --ignore patterns
+    // Apply .holywellignore and --ignore patterns
     if (allIgnorePatterns.length > 0 && expandedFiles.length > 0) {
       expandedFiles = expandedFiles.filter(f => !matchesAnyIgnorePattern(f, allIgnorePatterns));
     }

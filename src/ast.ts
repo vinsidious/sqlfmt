@@ -1,5 +1,6 @@
-// AST node types for the SQL formatter
+// AST node types for the SQL formatter.
 
+/** Top-level SQL statements that the parser can produce as structured nodes. */
 export type Statement =
   | SelectStatement
   | InsertStatement
@@ -18,14 +19,17 @@ export type Statement =
   | TruncateStatement
   | StandaloneValuesStatement;
 
+/** Query-producing statements that are valid in subquery positions. */
 export type QueryExpression = SelectStatement | UnionStatement | CTEStatement;
 
+/** Any top-level node emitted by `parse()`. */
 export type Node =
   | Statement
   | ValuesClause
   | RawExpression
   | CommentNode;
 
+/** Any expression node used in SELECT/DML/DDL contexts. */
 export type Expression =
   | IdentifierExpr
   | LiteralExpr
@@ -67,6 +71,7 @@ export interface SelectStatement {
   readonly type: 'select';
   readonly distinct: boolean;
   readonly distinctOn?: readonly Expression[];
+  readonly into?: string;
   readonly columns: readonly ColumnExpr[];
   readonly from?: FromClause;
   readonly additionalFromItems?: readonly FromClause[];
@@ -88,6 +93,7 @@ export interface InsertStatement {
   readonly type: 'insert';
   readonly table: string;
   readonly columns: readonly string[];
+  readonly overriding?: 'SYSTEM VALUE' | 'USER VALUE';
   readonly defaultValues?: boolean;
   readonly values?: readonly ValuesList[];
   readonly selectQuery?: QueryExpression;
@@ -105,8 +111,10 @@ export interface InsertStatement {
 export interface UpdateStatement {
   readonly type: 'update';
   readonly table: string;
+  readonly alias?: string;
   readonly setItems: readonly SetItem[];
-  readonly from?: FromClause;
+  readonly from?: readonly FromClause[];
+  readonly fromJoins?: readonly JoinClause[];
   readonly where?: WhereClause;
   readonly returning?: readonly Expression[];
   readonly leadingComments: readonly CommentNode[];
@@ -115,7 +123,9 @@ export interface UpdateStatement {
 export interface DeleteStatement {
   readonly type: 'delete';
   readonly from: string;
+  readonly alias?: string;
   readonly using?: readonly FromClause[];
+  readonly usingJoins?: readonly JoinClause[];
   readonly where?: WhereClause;
   readonly returning?: readonly Expression[];
   readonly leadingComments: readonly CommentNode[];
@@ -139,6 +149,8 @@ export interface AlterTableStatement {
 export type AlterAction =
   | AlterAddColumnAction
   | AlterDropColumnAction
+  | AlterDropConstraintAction
+  | AlterAlterColumnAction
   | AlterRenameToAction
   | AlterRenameColumnAction
   | AlterSetSchemaAction
@@ -157,6 +169,19 @@ export interface AlterDropColumnAction {
   readonly ifExists?: boolean;
   readonly columnName: string;
   readonly behavior?: 'CASCADE' | 'RESTRICT';
+}
+
+export interface AlterDropConstraintAction {
+  readonly type: 'drop_constraint';
+  readonly ifExists?: boolean;
+  readonly constraintName: string;
+  readonly behavior?: 'CASCADE' | 'RESTRICT';
+}
+
+export interface AlterAlterColumnAction {
+  readonly type: 'alter_column';
+  readonly columnName: string;
+  readonly operation: string;
 }
 
 export interface AlterRenameToAction {
@@ -188,8 +213,10 @@ export interface AlterRawAction {
 export interface DropTableStatement {
   readonly type: 'drop_table';
   readonly objectType: string;
+  readonly concurrently?: boolean;
   readonly ifExists: boolean;
   readonly objectName: string;
+  readonly behavior?: 'CASCADE' | 'RESTRICT';
   readonly leadingComments: readonly CommentNode[];
 }
 
@@ -420,18 +447,18 @@ export type InExpr = InExprList | InExprSubquery;
 
 export interface InExprList {
   readonly type: 'in';
+  readonly kind: 'list';
   readonly expr: Expression;
   readonly values: readonly Expression[];
   readonly negated: boolean;
-  readonly subquery: false;
 }
 
 export interface InExprSubquery {
   readonly type: 'in';
+  readonly kind: 'subquery';
   readonly expr: Expression;
-  readonly values: SubqueryExpr;
+  readonly subquery: SubqueryExpr;
   readonly negated: boolean;
-  readonly subquery: true;
 }
 
 export interface IsExpr {
@@ -618,6 +645,7 @@ export interface FromClause {
   readonly aliasColumns?: readonly string[];
   readonly lateral?: boolean;
   readonly tablesample?: { readonly method: string; readonly args: readonly Expression[]; readonly repeatable?: Expression };
+  readonly trailingComments?: readonly CommentNode[];
 }
 
 export interface JoinClause {

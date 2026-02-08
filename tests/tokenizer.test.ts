@@ -71,6 +71,11 @@ describe('tokenizer literals and parameters', () => {
     expect(str).toEqual(["E'\\n\\t'", "e'\\\\x'"]);
   });
 
+  it('tokenizes E-strings with doubled quotes', () => {
+    const str = tokenize("SELECT E'abc'' def';").filter(t => t.type === 'string').map(t => t.value);
+    expect(str).toEqual(["E'abc'' def'"]);
+  });
+
   it('tokenizes B and X prefixed strings', () => {
     const str = tokenize("SELECT B'1010', b'0101', X'FF', x'aa';").filter(t => t.type === 'string').map(t => t.value);
     expect(str).toEqual(["B'1010'", "b'0101'", "X'FF'", "x'aa'"]);

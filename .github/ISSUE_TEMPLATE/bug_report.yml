@@ -1,0 +1,43 @@
+name: Bug Report
+description: Report a formatting/parsing/tokenizing bug
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly.
+      placeholder: The formatter splits DROP ... CASCADE into two statements.
+    validations:
+      required: true
+  - type: textarea
+    id: input_sql
+    attributes:
+      label: Input SQL
+      render: sql
+      placeholder: |
+        SELECT * FROM users;
+    validations:
+      required: true
+  - type: textarea
+    id: output_sql
+    attributes:
+      label: Actual output
+      render: sql
+    validations:
+      required: true
+  - type: textarea
+    id: expected_sql
+    attributes:
+      label: Expected output
+      render: sql
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: holywell version
+      placeholder: 1.2.1
+    validations:
+      required: true

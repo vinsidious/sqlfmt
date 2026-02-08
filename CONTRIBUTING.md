@@ -38,7 +38,7 @@ bun run check && bun test && bun run build
 
 ## How the pipeline works
 
-sqlfmt processes SQL through three stages:
+holywell processes SQL through three stages:
 
 1. **Tokenizer** (`src/tokenizer.ts`) -- Splits raw SQL text into a flat array of tokens: keywords, identifiers, literals, operators, comments, and whitespace.
 2. **Parser** (`src/parser/`) -- Consumes the token array and produces an AST (abstract syntax tree). Each SQL statement becomes a tree of typed nodes (`SelectStatement`, `JoinClause`, `CaseExpression`, etc.).

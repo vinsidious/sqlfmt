@@ -55,6 +55,33 @@ describe('parser syntax coverage', () => {
     expect(stmt.using).toHaveLength(2);
   });
 
+  it('parses UPDATE ... FROM with JOIN sources', () => {
+    const stmt = parseFirst(`
+UPDATE t
+SET x = 1
+FROM u
+INNER JOIN v ON v.id = u.id
+WHERE t.id = u.id;
+`);
+    expect(stmt.type).toBe('update');
+    expect(stmt.from).toHaveLength(1);
+    expect(stmt.fromJoins).toHaveLength(1);
+    expect(stmt.fromJoins?.[0]?.joinType).toBe('INNER JOIN');
+  });
+
+  it('parses DELETE ... USING with JOIN sources', () => {
+    const stmt = parseFirst(`
+DELETE FROM t
+USING u
+INNER JOIN v ON v.id = u.id
+WHERE t.id = u.id;
+`);
+    expect(stmt.type).toBe('delete');
+    expect(stmt.using).toHaveLength(1);
+    expect(stmt.usingJoins).toHaveLength(1);
+    expect(stmt.usingJoins?.[0]?.joinType).toBe('INNER JOIN');
+  });
+
   it('parses INSERT ... DEFAULT VALUES', () => {
     const stmt = parseFirst('INSERT INTO t DEFAULT VALUES;');
     expect(stmt.type).toBe('insert');
@@ -233,8 +260,9 @@ describe('parser/code-quality safety checks', () => {
     expect(() => parser.expect('BAR')).toThrow();
   });
 
-  it('formatter throws on unknown node type', () => {
-    expect(() => formatStatements([{ type: 'mystery' } as any])).toThrow();
+  it('formatter falls back safely on unknown node type', () => {
+    const out = formatStatements([{ type: 'mystery' } as any]);
+    expect(out).toContain('formatter fallback');
   });
 
   it('enforces maximum nesting depth', () => {
@@ -415,17 +443,17 @@ describe('parser INTERVAL precision syntax', () => {
 });
 
 describe('parser InExpr discriminated union', () => {
-  it('produces subquery: true for IN (SELECT ...)', () => {
+  it('produces kind=subquery for IN (SELECT ...)', () => {
     const stmt = parseFirst('SELECT * FROM t WHERE id IN (SELECT id FROM s);');
     expect(stmt.where.condition.type).toBe('in');
-    expect(stmt.where.condition.subquery).toBe(true);
-    expect(stmt.where.condition.values.type).toBe('subquery');
+    expect(stmt.where.condition.kind).toBe('subquery');
+    expect(stmt.where.condition.subquery.type).toBe('subquery');
   });
 
-  it('produces subquery: false for IN (1, 2, 3)', () => {
+  it('produces kind=list for IN (1, 2, 3)', () => {
     const stmt = parseFirst('SELECT * FROM t WHERE id IN (1, 2, 3);');
     expect(stmt.where.condition.type).toBe('in');
-    expect(stmt.where.condition.subquery).toBe(false);
+    expect(stmt.where.condition.kind).toBe('list');
     expect(Array.isArray(stmt.where.condition.values)).toBe(true);
   });
 });

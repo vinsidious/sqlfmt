@@ -1,8 +1,8 @@
 import { parse, ParseError, type ParseRecoveryContext } from './parser';
 import type * as AST from './ast';
 import { formatStatements } from './formatter';
-
-const DEFAULT_MAX_INPUT_SIZE = 10_485_760; // 10MB
+import { DEFAULT_MAX_INPUT_SIZE } from './constants';
+import type { SQLDialect } from './dialect';
 
 /**
  * Options for {@link formatSQL}.
@@ -65,6 +65,11 @@ export interface FormatOptions {
    * surface potential statement drops explicitly.
    */
   onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
+
+  /**
+   * Optional SQL dialect extensions used during tokenization/parsing.
+   */
+  dialect?: SQLDialect;
 }
 
 /**
@@ -83,7 +88,7 @@ export interface FormatOptions {
  *
  * @example
  * ```typescript
- * import { formatSQL } from '@vcoppola/sqlfmt';
+ * import { formatSQL } from 'holywell';
  *
  * formatSQL('select id, name from users where active = true;');
  * // =>
@@ -108,6 +113,7 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
     maxDepth: options.maxDepth,
     onRecover: options.onRecover,
     onDropStatement: options.onDropStatement,
+    dialect: options.dialect,
   });
 
   if (statements.length === 0) return '';
