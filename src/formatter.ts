@@ -294,6 +294,8 @@ function deriveSelectRiverWidth(node: AST.SelectStatement): number {
   if (node.from) width = Math.max(width, 'FROM'.length);
   if (node.joins.some(j => j.joinType === 'JOIN')) width = Math.max(width, 'JOIN'.length);
   if (node.where) width = Math.max(width, 'WHERE'.length);
+  if (node.startWith) width = Math.max(width, 'START'.length);
+  if (node.connectBy) width = Math.max(width, 'CONNECT'.length);
   if (node.groupBy) width = Math.max(width, 'GROUP'.length);
   if (node.having) width = Math.max(width, 'HAVING'.length);
   if (node.windowClause && node.windowClause.length > 0) width = Math.max(width, 'WINDOW'.length);
@@ -532,6 +534,17 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
     const cond = formatCondition(node.where.condition, ctx);
     const trailing = node.where.trailingComment ? '  ' + node.where.trailingComment.text : '';
     lines.push(whereKw + ' ' + cond + trailing);
+  }
+
+  if (node.startWith) {
+    const kw = rightAlign('START', ctx);
+    lines.push(kw + ' WITH ' + formatCondition(node.startWith, ctx));
+  }
+
+  if (node.connectBy) {
+    const kw = rightAlign('CONNECT', ctx);
+    const noCycle = node.connectBy.noCycle ? 'NOCYCLE ' : '';
+    lines.push(kw + ' BY ' + noCycle + formatCondition(node.connectBy.condition, ctx));
   }
 
   // GROUP BY
@@ -1619,33 +1632,43 @@ function formatWindowFunctionAtColumn(
     });
   }
 
+  // Compute BY-keyword alignment before generating frame text
+  const byParts = overParts.filter(p => p.byKeywordLen > 0);
+  const maxByLen = byParts.length > 0 ? Math.max(...byParts.map(p => p.byKeywordLen)) : 0;
+
+  // Frame clause: align BETWEEN with BY keywords
+  let frameExtraPad = 0;
   if (expr.frame) {
+    // BY starts at column: overContentCol + maxByLen - 2
+    // BETWEEN starts at column: overContentCol + frameExtraPad + frame.unit.length + 1
+    // Align them: frameExtraPad = maxByLen - 2 - frame.unit.length - 1
+    frameExtraPad = maxByLen > 0 ? Math.max(0, maxByLen - 2 - expr.frame.unit.length - 1) : 0;
+    const frameStartCol = overContentCol + frameExtraPad;
     overParts.push({
-      text: formatFrameClause(expr.frame, overContentCol, expr.exclude),
-      byKeywordLen: 0, // not a BY keyword
+      text: formatFrameClause(expr.frame, frameStartCol, expr.exclude),
+      byKeywordLen: -1, // frame part
     });
   }
 
   if (overParts.length <= 1 && !expr.frame) {
     const inline = func + ' OVER (' + overParts.map(p => p.text).join('') + ')';
-    // Keep inline if it fits within terminal width
     if (col + stringDisplayWidth(inline) <= runtime.maxLineLength) {
       return inline;
     }
-    // Otherwise fall through to multi-line formatting
   }
-
-  // Multi-line OVER: right-align BY keywords to the longest
-  const byParts = overParts.filter(p => p.byKeywordLen > 0);
-  const maxByLen = byParts.length > 0 ? Math.max(...byParts.map(p => p.byKeywordLen)) : 0;
 
   const pad = ' '.repeat(overContentCol);
   let result = func + ' OVER (';
   for (let i = 0; i < overParts.length; i++) {
     const part = overParts[i];
-    const extraPad = (part.byKeywordLen > 0 && maxByLen > 0)
-      ? ' '.repeat(maxByLen - part.byKeywordLen)
-      : '';
+    let extraPad: string;
+    if (part.byKeywordLen > 0 && maxByLen > 0) {
+      extraPad = ' '.repeat(maxByLen - part.byKeywordLen);
+    } else if (part.byKeywordLen === -1) {
+      extraPad = ' '.repeat(frameExtraPad);
+    } else {
+      extraPad = '';
+    }
 
     if (i === 0) {
       result += part.text;
@@ -1685,12 +1708,11 @@ function formatFrameClause(frame: AST.FrameSpec, startCol: number, exclude?: str
 
   const low = formatFrameBound(frame.start);
   const high = formatFrameBound(frame.end);
-  const offsetAdjust = /^(INTERVAL|\d+)/.test(low) ? 1 : 0;
   const head = `${frame.unit} BETWEEN ${low}`;
-  const betweenIdx = head.indexOf('BETWEEN');
-  const andPad = ' '.repeat(startCol + offsetAdjust + betweenIdx + 'BETWEEN '.length - 'AND '.length);
-  let out = (offsetAdjust ? ' ' : '') + head + '\n' + andPad + 'AND ' + high;
-  if (exclude) out += '\n' + ' '.repeat(startCol + offsetAdjust) + 'EXCLUDE ' + exclude;
+  // Right-align AND with frame unit keyword (ROWS/RANGE/GROUPS)
+  const andPad = ' '.repeat(startCol + frame.unit.length - 3);
+  let out = head + '\n' + andPad + 'AND ' + high;
+  if (exclude) out += '\n' + ' '.repeat(startCol) + 'EXCLUDE ' + exclude;
   return out;
 }
 
@@ -1713,6 +1735,11 @@ function formatWindowSpec(spec: AST.WindowSpec): string {
 
 // ─── INSERT ──────────────────────────────────────────────────────────
 
+function isInsertColumnComment(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith('--') || trimmed.startsWith('/*') || trimmed.startsWith('#');
+}
+
 function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const dmlCtx: FormatContext = {
     ...ctx,
@@ -1721,7 +1748,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  const insertHead = rightAlign('INSERT', dmlCtx) + ' INTO ' + node.table;
+  const insertHead = rightAlign('INSERT', dmlCtx) + (node.ignore ? ' IGNORE' : '') + ' INTO ' + node.table;
+  const hasCommentColumns = node.columns.some(isInsertColumnComment);
   const inlineColumns = node.columns.length > 0
     ? ' (' + node.columns.join(', ') + ')'
     : '';
@@ -1730,7 +1758,21 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     && node.columns.length >= 8
     && stringDisplayWidth(insertHead + inlineColumns) > dmlCtx.runtime.maxLineLength;
 
-  if (shouldWrapColumns) {
+  if (hasCommentColumns) {
+    const colPad = contentPad(dmlCtx);
+    lines.push(insertHead + ' (');
+    for (let i = 0; i < node.columns.length; i++) {
+      const text = node.columns[i];
+      const hasComma = /,\s*$/.test(text);
+      const comma = i < node.columns.length - 1 && !hasComma ? ',' : '';
+      lines.push(colPad + text + comma);
+    }
+    let closeLine = colPad + ')';
+    if (node.overriding) {
+      closeLine += ' OVERRIDING ' + node.overriding;
+    }
+    lines.push(closeLine);
+  } else if (shouldWrapColumns) {
     const colPad = contentPad(dmlCtx);
     lines.push(insertHead + ' (');
     for (let i = 0; i < node.columns.length; i++) {
@@ -1750,14 +1792,23 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     lines.push(header);
   }
 
+  if (node.valueClauseLeadingComments && node.valueClauseLeadingComments.length > 0) {
+    emitComments(node.valueClauseLeadingComments, lines);
+  }
+
   if (node.values) {
-    const tuples = node.values.map(vl =>
-      '(' + vl.values.map(formatExpr).join(', ') + ')'
-    );
-    for (let i = 0; i < tuples.length; i++) {
-      const comma = i < tuples.length - 1 ? ',' : '';
+    for (let i = 0; i < node.values.length; i++) {
+      const tupleNode = node.values[i];
+      if (tupleNode.leadingComments && tupleNode.leadingComments.length > 0) {
+        emitComments(tupleNode.leadingComments, lines);
+      }
+      const tuple = '(' + tupleNode.values.map(formatExpr).join(', ') + ')';
+      const comma = i < node.values.length - 1 ? ',' : '';
       const prefix = i === 0 ? rightAlign('VALUES', dmlCtx) + ' ' : contentPad(dmlCtx);
-      lines.push(prefix + tuples[i] + comma);
+      const trailing = tupleNode.trailingComments && tupleNode.trailingComments.length > 0
+        ? ' ' + tupleNode.trailingComments.map(c => c.text).join(' ')
+        : '';
+      lines.push(prefix + tuple + trailing + comma);
     }
   } else if (node.defaultValues) {
     lines.push(rightAlign('DEFAULT', dmlCtx) + ' VALUES');
@@ -2341,6 +2392,9 @@ function formatColumnConstraint(constraint: AST.ColumnConstraint): string {
       if (constraint.columns && constraint.columns.length > 0) {
         out += ' (' + constraint.columns.join(', ') + ')';
       }
+      if (constraint.matchType) {
+        out += ' MATCH ' + constraint.matchType;
+      }
       if (constraint.actions) {
         for (const action of constraint.actions) {
           out += ` ON ${action.event} ${action.action}`;
@@ -2366,7 +2420,7 @@ function normalizeRawColumnConstraint(text: string): string {
 }
 
 function wrapTextByWords(text: string, maxWidth: number): string[] {
-  const words = text.trim().split(/\s+/).filter(Boolean);
+  const words = splitWordsPreservingQuotedLiterals(text.trim());
   if (words.length === 0) return [];
   if (maxWidth < 8) return [words.join(' ')];
 
@@ -2384,6 +2438,51 @@ function wrapTextByWords(text: string, maxWidth: number): string[] {
   }
   lines.push(current);
   return lines;
+}
+
+function splitWordsPreservingQuotedLiterals(text: string): string[] {
+  const words: string[] = [];
+  let token = '';
+  let quote: "'" | '"' | null = null;
+
+  const pushToken = () => {
+    if (!token) return;
+    words.push(token);
+    token = '';
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      token += ch;
+      if (ch === quote) {
+        const next = text[i + 1];
+        if (next === quote) {
+          token += next;
+          i++;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+
+    if (ch === '\'' || ch === '"') {
+      quote = ch;
+      token += ch;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      pushToken();
+      continue;
+    }
+
+    token += ch;
+  }
+
+  pushToken();
+  return words;
 }
 
 function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | undefined): string | undefined {
@@ -2404,6 +2503,11 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       queryLines[queryLines.length - 1] = queryLines[queryLines.length - 1].replace(/;$/, '') + ';';
     }
     lines.push(...queryLines);
+    return lines.join('\n');
+  }
+
+  if (node.likeTable) {
+    lines.push(createPrefix + node.tableName + ' LIKE ' + node.likeTable + ';');
     return lines.join('\n');
   }
 
@@ -2488,12 +2592,17 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       } else {
         lines.push('    FOREIGN KEY (' + elem.fkColumns + ')');
       }
-      lines.push('        REFERENCES ' + elem.fkRefTable + ' (' + elem.fkRefColumns + ')');
-      if (elem.fkActions) {
-        for (const action of elem.fkActions.split(/\n/)) {
+      let referenceLine = '        REFERENCES ' + elem.fkRefTable + ' (' + elem.fkRefColumns + ')';
+      const actionLines = elem.fkActions
+        ? elem.fkActions.split(/\n/).map(action => action.trim()).filter(Boolean)
+        : [];
+      if (actionLines.length > 0 && actionLines[0].startsWith('MATCH ')) {
+        referenceLine += ' ' + actionLines.shift();
+      }
+      lines.push(referenceLine);
+      for (const action of actionLines) {
           const trimmed = action.trim();
           if (trimmed) lines.push('        ' + trimmed);
-        }
       }
       if (comma) lines[lines.length - 1] += comma;
     }
@@ -2927,6 +3036,11 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
     case 'position':
       return `POSITION(${formatExpr(expr.substring, d)} IN ${formatExpr(expr.source, d)})`;
     case 'substring': {
+      if (expr.style === 'comma') {
+        let out = `SUBSTRING(${formatExpr(expr.source, d)}, ${formatExpr(expr.start, d)}`;
+        if (expr.length) out += `, ${formatExpr(expr.length, d)}`;
+        return out + ')';
+      }
       let out = `SUBSTRING(${formatExpr(expr.source, d)} FROM ${formatExpr(expr.start, d)}`;
       if (expr.length) out += ` FOR ${formatExpr(expr.length, d)}`;
       return out + ')';

@@ -339,8 +339,8 @@ describe('Category 9: Window Functions', () => {
        AVG(salary) OVER (PARTITION BY department) AS dept_avg,
        RANK() OVER (ORDER BY salary DESC) AS salary_rank,
        SUM(salary) OVER (ORDER BY hire_date
-                         ROWS BETWEEN UNBOUNDED PRECEDING
-                                  AND CURRENT ROW) AS running_total
+                          ROWS BETWEEN UNBOUNDED PRECEDING
+                           AND CURRENT ROW) AS running_total
   FROM employees;`
   );
 });
@@ -1238,7 +1238,7 @@ WINDOW dept_window AS (PARTITION BY department),
        value,
        AVG(value) OVER (ORDER BY measurement_date
                          ROWS BETWEEN 3 PRECEDING
-                                  AND 3 FOLLOWING
+                          AND 3 FOLLOWING
                          EXCLUDE CURRENT ROW) AS smoothed
   FROM sensor_data;`
   );
@@ -1248,8 +1248,8 @@ WINDOW dept_window AS (PARTITION BY department),
     `SELECT event_date,
        event_count,
        SUM(event_count) OVER (ORDER BY event_date
-                               RANGE BETWEEN INTERVAL '7 days' PRECEDING
-                                         AND CURRENT ROW) AS rolling_7d
+                              RANGE BETWEEN INTERVAL '7 days' PRECEDING
+                                AND CURRENT ROW) AS rolling_7d
   FROM daily_events;`
   );
 });
