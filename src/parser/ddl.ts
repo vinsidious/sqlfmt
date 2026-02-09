@@ -550,6 +550,8 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
     'ALTER',
     'CHANGE',
     'MODIFY',
+    'CHECK',
+    'WITH',
   ]);
   while (!ctx.isAtEnd() && !ctx.check(';')) {
     const upper = ctx.peekUpper();
@@ -581,6 +583,8 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
         || ctx.peekUpper() === 'ALTER'
         || ctx.peekUpper() === 'CHANGE'
         || ctx.peekUpper() === 'MODIFY'
+        || ctx.peekUpper() === 'CHECK'
+        || ctx.peekUpper() === 'WITH'
       )
     ) {
       break;
@@ -634,6 +638,7 @@ function tryParseAlterAddNonColumnAction(ctx: DdlParser): AST.AlterAction | null
     && ctx.peekUpper() !== 'FULLTEXT'
     && ctx.peekUpper() !== 'SPATIAL'
     && ctx.peekUpper() !== 'VALUE'
+    && ctx.peekUpper() !== 'TABLE'
   ) {
     ctx.setPos(start);
     return null;
@@ -797,7 +802,7 @@ function parseRawAlterAction(ctx: DdlParser): AST.AlterRawAction {
   const tokens = ctx.consumeTokensUntilActionBoundary();
   return {
     type: 'raw',
-    text: ctx.tokensToSqlPreserveCase(tokens),
+    text: ctx.tokensToSql(tokens),
   };
 }
 
@@ -851,7 +856,7 @@ export function parseDropStatement(ctx: DdlParser, comments: AST.CommentNode[]):
     if (consumed.value === '(' || consumed.value === '[' || consumed.value === '{') depth++;
     if (consumed.value === ')' || consumed.value === ']' || consumed.value === '}') depth = Math.max(0, depth - 1);
   }
-  const objectName = ctx.tokensToSql(objectNameTokens);
+  const objectName = ctx.tokensToSqlPreserveCase(objectNameTokens);
   if (!objectName) {
     throw ctx.parseError('object name', ctx.peek());
   }

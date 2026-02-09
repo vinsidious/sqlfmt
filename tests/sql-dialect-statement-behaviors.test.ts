@@ -178,4 +178,29 @@ end;`;
     expect(out).toContain(`:'db_name'`);
     expect(out).toContain(':\"schema_name\"');
   });
+
+  it('keeps ALTER PUBLICATION ... ADD TABLE semantics', () => {
+    const sql = 'alter publication supabase_realtime add table profiles;';
+    const out = expectStrictAndRecoveryFree(sql);
+
+    expect(out).toMatch(/ALTER PUBLICATION supabase_realtime[\s\S]*ADD TABLE profiles;/i);
+    expect(out).not.toContain('ADD COLUMN');
+    expect(out).not.toContain('ADD TABLE table');
+  });
+
+  it('formats PIVOT as a clause following FROM sources', () => {
+    const sql = `SELECT *
+FROM (
+  SELECT [ReaderId], datename(month, [Read]) AS [Month], [Average]
+  FROM dbo.x
+) AS [source]
+PIVOT(
+  AVG([Average])
+  FOR [Month] IN([April], [May])
+) AS PivotTable;`;
+
+    const out = expectStrictAndRecoveryFree(sql);
+    expect(out).toMatch(/\)\s+AS \[source\]\s*\n\s*PIVOT\s*\(/);
+    expect(out).toContain('FOR [Month] IN ([April], [May])');
+  });
 });

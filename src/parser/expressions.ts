@@ -681,6 +681,17 @@ function tryParseCurrentDatetimePrimary(ctx: PrimaryExpressionParser, token: Tok
     || token.upper === 'CURRENT_TIMESTAMP'
   ) {
     ctx.advance();
+    if (ctx.check('(')) {
+      const suffixTokens: Token[] = [];
+      let depth = 0;
+      do {
+        const t = ctx.advance();
+        suffixTokens.push(t);
+        if (t.value === '(') depth++;
+        if (t.value === ')') depth--;
+      } while (ctx.peekTypeAt(0) !== 'eof' && depth > 0);
+      return { type: 'raw', text: token.upper + ctx.tokensToSql(suffixTokens), reason: 'verbatim' };
+    }
     return { type: 'raw', text: token.upper, reason: 'verbatim' };
   }
   return null;
