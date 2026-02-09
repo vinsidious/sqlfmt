@@ -268,6 +268,7 @@ function deriveRiverWidth(node: AST.Node): number {
     case 'create_index': {
       let width = 'ON'.length;
       if (node.using) width = Math.max(width, 'USING'.length);
+      if (node.include && node.include.length > 0) width = Math.max(width, 'INCLUDE'.length);
       if (node.where) width = Math.max(width, 'WHERE'.length);
       return Math.max(width, DEFAULT_RIVER);
     }
@@ -353,6 +354,92 @@ function contentPad(ctx: FormatContext): string {
   return ' '.repeat(contentCol(ctx));
 }
 
+function appendStatementSemicolon(sql: string): string {
+  if (!sql) return ';';
+  if (endsWithLineComment(sql)) return sql;
+  return sql.endsWith(';') ? sql : sql + ';';
+}
+
+function endsWithLineComment(sql: string): boolean {
+  const trimmed = sql.trimEnd();
+  if (!trimmed) return false;
+
+  const lastNl = Math.max(trimmed.lastIndexOf('\n'), trimmed.lastIndexOf('\r'));
+  const line = trimmed.slice(lastNl + 1);
+
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let inBracket = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const next = i + 1 < line.length ? line[i + 1] : '';
+
+    if (inSingle) {
+      if (ch === "'" && next === "'") {
+        i++;
+        continue;
+      }
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"' && next === '"') {
+        i++;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inBacktick) {
+      if (ch === '`' && next === '`') {
+        i++;
+        continue;
+      }
+      if (ch === '`') inBacktick = false;
+      continue;
+    }
+    if (inBracket) {
+      if (ch === ']' && next === ']') {
+        i++;
+        continue;
+      }
+      if (ch === ']') inBracket = false;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === '`') {
+      inBacktick = true;
+      continue;
+    }
+    if (ch === '[') {
+      inBracket = true;
+      continue;
+    }
+
+    if (ch === '-' && next === '-') return true;
+    if (ch === '/' && next === '/') return true;
+    if (ch === '#') {
+      const prev = i > 0 ? line[i - 1] : '';
+      const nextCh = next;
+      const prevOk = !prev || prev === ' ' || prev === '\t';
+      const nextOk = !nextCh || nextCh === ' ' || nextCh === '\t';
+      if (prevOk && nextOk) return true;
+    }
+  }
+
+  return false;
+}
+
 function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
@@ -381,7 +468,7 @@ function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
   lines.push(inner);
 
   let result = lines.join('\n');
-  if (!ctx.isSubquery) result += ';';
+  if (!ctx.isSubquery) result = appendStatementSemicolon(result);
   return result;
 }
 
@@ -500,7 +587,7 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   }
 
   let result = lines.join('\n');
-  if (!ctx.isSubquery) result += ';';
+  if (!ctx.isSubquery) result = appendStatementSemicolon(result);
   return result;
 }
 
@@ -1015,12 +1102,13 @@ function formatArrayConstructorWrapped(expr: AST.ArrayConstructorExpr, col: numb
 
 // Wrap a binary expression at the outermost operator
 function formatBinaryWrapped(expr: AST.BinaryExpr, colStart: number): string {
-  if (expr.operator === '||') {
-    const parts = flattenBinaryChain(expr, '||').map(part => formatExpr(part));
+  if (expr.operator === '||' || expr.operator === '+') {
+    const op = expr.operator;
+    const parts = flattenBinaryChain(expr, op).map(part => formatExpr(part));
     const wrapPad = ' '.repeat(colStart + 2);
     const lines = [parts[0]];
     for (let i = 1; i < parts.length; i++) {
-      lines.push(wrapPad + '|| ' + parts[i]);
+      lines.push(wrapPad + op + ' ' + parts[i]);
     }
     return lines.join('\n');
   }
@@ -1082,6 +1170,9 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
     if (from.aliasColumns && from.aliasColumns.length > 0) {
       result += '(' + from.aliasColumns.join(', ') + ')';
     }
+  }
+  if (from.pivotClause) {
+    result += ' ' + from.pivotClause;
   }
   if (from.trailingComments && from.trailingComments.length > 0) {
     for (const comment of from.trailingComments) {
@@ -1172,6 +1263,7 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number, runtime: F
       result += '(' + join.aliasColumns.join(', ') + ')';
     }
   }
+  if (join.pivotClause) result += ' ' + join.pivotClause;
   return result;
 }
 
@@ -1231,13 +1323,14 @@ function formatConditionRight(expr: AST.Expression, ctx: FormatContext): string 
 
 function formatGroupByClause(groupBy: AST.GroupByClause, ctx: FormatContext): string {
   const plainItems = groupBy.items.map(e => formatExpr(e));
+  const withRollup = groupBy.withRollup ? ' WITH ROLLUP' : '';
   if (!groupBy.groupingSets || groupBy.groupingSets.length === 0) {
-    return plainItems.join(', ');
+    return plainItems.join(', ') + withRollup;
   }
 
   const specs = groupBy.groupingSets.map(spec => formatGroupingSpec(spec, ctx));
   const all = [...plainItems, ...specs];
-  return all.join(', ');
+  return all.join(', ') + withRollup;
 }
 
 function formatGroupingSpec(
@@ -1693,9 +1786,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   }
 
   if (appendReturningClause(lines, node.returning, dmlCtx)) return lines.join('\n');
-
-  lines[lines.length - 1] += ';';
-  return lines.join('\n');
+  return appendStatementSemicolon(lines.join('\n'));
 }
 
 // ─── UPDATE ──────────────────────────────────────────────────────────
@@ -1719,6 +1810,17 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
 
   for (let i = 0; i < node.setItems.length; i++) {
     const item = node.setItems[i];
+    const comma = i < node.setItems.length - 1 ? ',' : '';
+    if (item.methodCall) {
+      const val = formatExpr(item.value);
+      if (i === 0) {
+        lines.push(setKw + ' ' + val + comma);
+      } else {
+        lines.push(' '.repeat(setContentCol) + val + comma);
+      }
+      continue;
+    }
+
     const valueCol = i === 0
       ? setKw.length + 1 + item.column.length + 3
       : setContentCol + item.column.length + 3;
@@ -1726,7 +1828,6 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
       ? formatSubqueryAtColumn(item.value, valueCol, dmlCtx.runtime)
       : formatExpr(item.value);
     const val = item.column + ' = ' + valExpr;
-    const comma = i < node.setItems.length - 1 ? ',' : '';
     if (i === 0) {
       lines.push(setKw + ' ' + val + comma);
     } else {
@@ -1767,7 +1868,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
 
   if (appendReturningClause(lines, node.returning, dmlCtx)) return lines.join('\n');
 
-  return lines.join('\n') + ';';
+  return appendStatementSemicolon(lines.join('\n'));
 }
 
 // ─── DELETE ──────────────────────────────────────────────────────────
@@ -1780,8 +1881,29 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  lines.push(rightAlign('DELETE', dmlCtx));
+  const deleteKw = rightAlign('DELETE', dmlCtx);
+  if (node.targets && node.targets.length > 0) {
+    lines.push(deleteKw + ' ' + node.targets.map(formatAlias).join(', '));
+  } else {
+    lines.push(deleteKw);
+  }
   lines.push(rightAlign('FROM', dmlCtx) + ' ' + node.from + (node.alias ? ' AS ' + formatAlias(node.alias) : ''));
+
+  if (node.fromJoins && node.fromJoins.length > 0) {
+    const hasSubqueryJoins = node.fromJoins.some(j => j.table.type === 'subquery');
+    for (let i = 0; i < node.fromJoins.length; i++) {
+      const prev = i > 0 ? node.fromJoins[i - 1] : undefined;
+      const current = node.fromJoins[i];
+      const joinHasClause = !!(current.on || current.usingClause);
+      const prevHasClause = !!(prev && (prev.on || prev.usingClause));
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const needsBlank = i > 0 && (joinHasClause || prevHasClause) && !bothPlain;
+      lines.push(formatJoin(current, dmlCtx, needsBlank));
+    }
+    if (node.where && hasSubqueryJoins && node.fromJoins.length > 1) {
+      lines.push('');
+    }
+  }
 
   if (node.using && node.using.length > 0) {
     const usingKw = rightAlign('USING', dmlCtx);
@@ -1816,7 +1938,7 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
 
   if (appendReturningClause(lines, node.returning, dmlCtx)) return lines.join('\n');
 
-  return lines.join('\n') + ';';
+  return appendStatementSemicolon(lines.join('\n'));
 }
 
 function appendReturningClause(
@@ -1859,22 +1981,31 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   header += ' INDEX';
   if (node.concurrently) header += ' CONCURRENTLY';
   if (node.ifNotExists) header += ' IF NOT EXISTS';
-  header += ' ' + node.name;
+  if (node.name) header += ' ' + node.name;
   lines.push(header);
 
   const cols = node.columns.map(formatExpr).join(', ');
+  const onTarget = node.only ? 'ONLY ' + node.table : node.table;
   if (node.using) {
-    lines.push(rightAlign('ON', idxCtx) + ' ' + node.table);
+    lines.push(rightAlign('ON', idxCtx) + ' ' + onTarget);
     lines.push(rightAlign('USING', idxCtx) + ' ' + node.using + ' (' + cols + ')');
   } else {
-    lines.push(rightAlign('ON', idxCtx) + ' ' + node.table + ' (' + cols + ')');
+    lines.push(rightAlign('ON', idxCtx) + ' ' + onTarget + ' (' + cols + ')');
+  }
+
+  if (node.include && node.include.length > 0) {
+    lines.push(rightAlign('INCLUDE', idxCtx) + ' (' + node.include.map(formatExpr).join(', ') + ')');
   }
 
   if (node.where) {
-    lines.push(rightAlign('WHERE', idxCtx) + ' ' + formatCondition(node.where, idxCtx) + ';');
-  } else {
-    lines[lines.length - 1] += ';';
+    lines.push(rightAlign('WHERE', idxCtx) + ' ' + formatCondition(node.where, idxCtx));
   }
+
+  if (node.options) {
+    lines.push(contentPad(idxCtx) + node.options);
+  }
+
+  lines[lines.length - 1] += ';';
   return lines.join('\n');
 }
 
@@ -1887,7 +2018,20 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
   if (node.materialized) header += ' MATERIALIZED';
   header += ' VIEW';
   if (node.ifNotExists) header += ' IF NOT EXISTS';
-  header += ' ' + node.name + ' AS';
+  header += ' ' + node.name;
+  if (node.columnList && node.columnList.length > 0) {
+    header += ' (' + node.columnList.join(', ') + ')';
+  }
+  if (node.toTable) {
+    header += ' TO ' + node.toTable;
+    if (node.toColumns && node.toColumns.length > 0) {
+      header += ' (' + node.toColumns.join(', ') + ')';
+    }
+  }
+  if (node.comment) {
+    header += ' COMMENT = ' + node.comment;
+  }
+  header += ' AS';
   lines.push(header);
 
   const queryCtx: FormatContext = {
@@ -1898,13 +2042,15 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
     runtime: ctx.runtime,
   };
   let queryStr = formatNode(node.query as AST.Node, queryCtx).trimEnd();
-  if (node.withData !== undefined && queryStr.endsWith(';')) {
+  if ((node.withData !== undefined || node.withClause !== undefined) && queryStr.endsWith(';')) {
     queryStr = queryStr.slice(0, -1);
   }
   lines.push(queryStr);
 
   if (node.withData !== undefined) {
     lines.push(node.withData ? '  WITH DATA;' : '  WITH NO DATA;');
+  } else if (node.withClause) {
+    lines.push('  ' + node.withClause + ';');
   }
 
   return lines.join('\n');
@@ -1947,14 +2093,14 @@ function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
 
   if (node.kind === 'GRANT') {
     if (node.object) {
-      lines.push('   ON ' + node.object);
+      lines.push(...formatGrantObjectLines(node.object, '   ON ', ctx.runtime.maxLineLength));
       lines.push('   TO ' + node.recipients.join(', '));
     } else {
       lines.push('   TO ' + node.recipients.join(', '));
     }
   } else {
     if (node.object) {
-      lines.push('  ON ' + node.object);
+      lines.push(...formatGrantObjectLines(node.object, '  ON ', ctx.runtime.maxLineLength));
       lines.push('FROM ' + node.recipients.join(', '));
     } else {
       lines.push('FROM ' + node.recipients.join(', '));
@@ -1975,6 +2121,109 @@ function formatGrant(node: AST.GrantStatement, ctx: FormatContext): string {
 
   lines[lines.length - 1] += ';';
   return lines.join('\n');
+}
+
+function formatGrantObjectLines(object: string, onPrefix: string, maxLineLength: number): string[] {
+  const singleLine = onPrefix + object;
+  if (stringDisplayWidth(singleLine) <= maxLineLength) return [singleLine];
+
+  const fnMatch = object.match(/^FUNCTION\s+([^(]+)\(([\s\S]*)\)$/i);
+  if (!fnMatch) return [singleLine];
+
+  const functionName = fnMatch[1].trim();
+  const paramsRaw = fnMatch[2].trim();
+  if (!paramsRaw) return [onPrefix + `FUNCTION ${functionName}()`];
+
+  const params = splitTopLevelCommaSegments(paramsRaw);
+  if (params.length === 0) return [singleLine];
+
+  const lines: string[] = [onPrefix + `FUNCTION ${functionName}(`];
+  for (let i = 0; i < params.length; i++) {
+    const comma = i < params.length - 1 ? ',' : '';
+    lines.push('      ' + params[i] + comma);
+  }
+  lines.push('      )');
+  return lines;
+}
+
+function splitTopLevelCommaSegments(text: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = i + 1 < text.length ? text[i + 1] : '';
+
+    if (inSingle) {
+      current += ch;
+      if (ch === "'" && next === "'") {
+        current += next;
+        i++;
+      } else if (ch === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+    if (inDouble) {
+      current += ch;
+      if (ch === '"' && next === '"') {
+        current += next;
+        i++;
+      } else if (ch === '"') {
+        inDouble = false;
+      }
+      continue;
+    }
+    if (inBacktick) {
+      current += ch;
+      if (ch === '`' && next === '`') {
+        current += next;
+        i++;
+      } else if (ch === '`') {
+        inBacktick = false;
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '`') {
+      inBacktick = true;
+      current += ch;
+      continue;
+    }
+
+    if (ch === '(') parenDepth++;
+    else if (ch === ')') parenDepth = Math.max(0, parenDepth - 1);
+    else if (ch === '[') bracketDepth++;
+    else if (ch === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+
+    if (ch === ',' && parenDepth === 0 && bracketDepth === 0) {
+      const trimmed = current.trim();
+      if (trimmed) parts.push(trimmed);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  const tail = current.trim();
+  if (tail) parts.push(tail);
+  return parts;
 }
 
 function formatTruncate(node: AST.TruncateStatement, ctx: FormatContext): string {
@@ -2030,10 +2279,13 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
       for (let i = 0; i < (wc.setItems || []).length; i++) {
         const item = wc.setItems![i];
         const comma = i < wc.setItems!.length - 1 ? ',' : '';
+        const itemText = item.methodCall
+          ? formatExpr(item.value)
+          : item.column + ' = ' + formatExpr(item.value);
         if (i === 0) {
-          lines.push(' '.repeat(setOffset) + 'SET ' + item.column + ' = ' + formatExpr(item.value) + comma);
+          lines.push(' '.repeat(setOffset) + 'SET ' + itemText + comma);
         } else {
-          lines.push(setContinuePad + item.column + ' = ' + formatExpr(item.value) + comma);
+          lines.push(setContinuePad + itemText + comma);
         }
       }
       continue;
@@ -2078,14 +2330,39 @@ function formatColumnConstraint(constraint: AST.ColumnConstraint): string {
       return out;
     }
     case 'generated_identity':
-      return `${prefix}GENERATED ${constraint.always ? 'ALWAYS' : 'BY DEFAULT'} AS IDENTITY${constraint.options ? ' ' + constraint.options : ''}`;
+      return `${prefix}GENERATED ${constraint.always ? 'ALWAYS' : 'BY DEFAULT'}${constraint.onNull ? ' ON NULL' : ''} AS IDENTITY${constraint.options ? ' ' + constraint.options : ''}`;
     case 'primary_key':
       return prefix + 'PRIMARY KEY';
     case 'unique':
       return prefix + 'UNIQUE';
     case 'raw':
-      return constraint.text;
+      return normalizeRawColumnConstraint(constraint.text);
   }
+}
+
+function normalizeRawColumnConstraint(text: string): string {
+  return text.replace(/\bAS\(/gi, 'AS (');
+}
+
+function wrapTextByWords(text: string, maxWidth: number): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  if (maxWidth < 8) return [words.join(' ')];
+
+  const lines: string[] = [];
+  let current = words[0];
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i];
+    const candidate = current + ' ' + word;
+    if (stringDisplayWidth(candidate) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+  }
+  lines.push(current);
+  return lines;
 }
 
 function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | undefined): string | undefined {
@@ -2096,9 +2373,10 @@ function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | 
 function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
+  const createPrefix = node.orReplace ? 'CREATE OR REPLACE TABLE ' : 'CREATE TABLE ';
 
   if (node.asQuery) {
-    lines.push('CREATE TABLE ' + node.tableName + ' AS');
+    lines.push(createPrefix + node.tableName + ' AS');
     const query = formatQueryExpressionForSubquery(node.asQuery, ctx.runtime);
     const queryLines = query.split('\n');
     if (queryLines.length > 0) {
@@ -2108,7 +2386,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     return lines.join('\n');
   }
 
-  lines.push('CREATE TABLE ' + node.tableName + ' (');
+  lines.push(createPrefix + node.tableName + ' (');
 
   // Calculate column widths for alignment
   const colElems = node.elements.filter(e => e.elementType === 'column');
@@ -2131,28 +2409,48 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       const name = (elem.name || '').padEnd(maxNameLen);
       const typeNorm = (elem.dataType || '').replace(/\s+/g, ' ');
       const type = typeNorm.padEnd(maxTypeLen);
-      let line = '    ' + name + ' ' + type;
       const constraints = formatColumnConstraints(elem.columnConstraints) || elem.constraints;
-      if (constraints) {
-        const isLongestType = typeNorm.length >= maxTypeLen;
-        if (maxTypeLen >= 13 && !isLongestType) {
-          line += constraints;
-        } else {
-          line += ' ' + constraints;
-        }
+      const headRaw = '    ' + name + ' ' + type;
+      const head = headRaw.trimEnd();
+
+      if (!constraints) {
+        lines.push(head + comma);
+        continue;
       }
-      lines.push(line.trimEnd() + comma);
+
+      const isLongestType = typeNorm.length >= maxTypeLen;
+      let inlineRaw = headRaw;
+      if (maxTypeLen >= 13 && !isLongestType) {
+        inlineRaw += constraints;
+      } else {
+        inlineRaw += ' ' + constraints;
+      }
+      const inline = inlineRaw.trimEnd();
+      if (stringDisplayWidth(inline) <= ctx.runtime.maxLineLength) {
+        lines.push(inline + comma);
+        continue;
+      }
+
+      lines.push(head);
+      const continuationIndentWidth = stringDisplayWidth('    ' + name + ' ' + type + ' ');
+      const continuationIndent = ' '.repeat(Math.max(5, continuationIndentWidth));
+      const wrapped = wrapTextByWords(
+        constraints,
+        Math.max(20, ctx.runtime.maxLineLength - continuationIndentWidth),
+      );
+      for (let j = 0; j < wrapped.length; j++) {
+        const isLastWrapped = j === wrapped.length - 1;
+        lines.push(continuationIndent + wrapped[j] + (isLastWrapped ? comma : ''));
+      }
     } else if (elem.elementType === 'constraint') {
-      // Indent constraint name to align with type column
-      const constraintPad = ' '.repeat(4 + maxNameLen + 1);
       if (elem.constraintName) {
-        lines.push(constraintPad + 'CONSTRAINT ' + elem.constraintName);
+        lines.push('    CONSTRAINT ' + elem.constraintName);
         if (elem.constraintType === 'check' && elem.checkExpr) {
-          lines.push(constraintPad + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
+          lines.push('        CHECK(' + formatExpr(elem.checkExpr) + ')');
         } else if (elem.constraintBody) {
-          lines.push(constraintPad + elem.constraintBody);
+          lines.push('        ' + elem.constraintBody);
         } else {
-          lines.push(constraintPad + elem.raw);
+          lines.push('        ' + elem.raw);
         }
       } else if (elem.constraintType === 'check' && elem.checkExpr) {
         lines.push('    CHECK(' + formatExpr(elem.checkExpr) + ')');
@@ -2180,7 +2478,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     }
   }
 
-  lines.push(');');
+  const options = node.tableOptions ? ' ' + node.tableOptions : '';
+  lines.push(')' + options + ';');
   return lines.join('\n');
 }
 
@@ -2569,6 +2868,13 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
       const neg = expr.negated ? 'NOT ' : '';
       return formatExpr(expr.expr, d) + ' ' + neg + 'BETWEEN ' + formatExpr(expr.low, d) + ' AND ' + formatExpr(expr.high, d);
     }
+    case 'quantified_comparison': {
+      const left = formatExpr(expr.left, d);
+      if (expr.kind === 'subquery') {
+        return left + ' ' + expr.operator + ' ' + expr.quantifier + ' ' + formatSubquerySimple(expr.subquery);
+      }
+      return left + ' ' + expr.operator + ' ' + expr.quantifier + '(' + expr.values.map(v => formatExpr(v, d)).join(', ') + ')';
+    }
     case 'in': {
       const neg = expr.negated ? 'NOT ' : '';
       if (isInExprSubquery(expr)) {
@@ -2748,13 +3054,11 @@ function formatOrderByItem(item: AST.OrderByItem): string {
   return s;
 }
 
-// Check if an alias is redundant (matches the last component of the expression)
 function isRedundantAlias(expr: AST.Expression, alias: string): boolean {
   if (expr.type === 'identifier') {
-    // For "a.b", the last component is "b"
     const parts = expr.value.split('.');
-    const lastPart = parts[parts.length - 1].toLowerCase();
-    return lastPart === alias.toLowerCase();
+    const lastPart = parts[parts.length - 1];
+    return lastPart === alias;
   }
   return false;
 }
