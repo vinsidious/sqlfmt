@@ -469,7 +469,10 @@ export class Parser {
   }
 
   private skipSemicolons(): void {
-    while (this.check(';')) this.advance();
+    while (this.check(';')) {
+      if (this.isSyntheticSlashSemicolon(this.peek())) break;
+      this.advance();
+    }
   }
 
   private parseStatement(): AST.Node | null {
@@ -479,6 +482,16 @@ export class Parser {
     if (this.isAtEnd()) {
       if (comments.length === 0) return null;
       return this.commentsToRaw(comments);
+    }
+
+    // SQL*Plus run terminator: slash on its own line (tokenized as synthetic ";").
+    if (this.check(';') && this.isSyntheticSlashSemicolon(this.peek())) {
+      this.advance();
+      return this.combineCommentsWithRaw(
+        comments,
+        { type: 'raw', text: '/', reason: 'trailing_semicolon_comment' },
+        'trailing_semicolon_comment',
+      );
     }
 
     // Comment-only statement terminated by a semicolon.
@@ -1436,7 +1449,10 @@ export class Parser {
       this.consumeComments();
       const condition = this.parseExpression();
       let whereComment: AST.CommentNode | undefined;
-      if (this.peekType() === 'line_comment') {
+      if (
+        this.peekType() === 'line_comment'
+        && this.peek().line === this.peekAt(-1).line
+      ) {
         const t = this.advance();
         whereComment = { type: 'comment', style: 'line', text: t.value };
       }
@@ -4626,6 +4642,13 @@ export class Parser {
     const next = this.peekAt(1);
     if (next.type === 'eof') return true;
     return next.line > token.line;
+  }
+
+  private isSyntheticSlashSemicolon(token: Token): boolean {
+    if (token.value !== ';') return false;
+    if (this.source === undefined) return false;
+    if (this.source[token.position] !== '/') return false;
+    return token.column === 1;
   }
 
   private tokensToSqlPreserveCase(tokens: Token[]): string {
