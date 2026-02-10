@@ -187,20 +187,27 @@ SELECT name,
 ## When NOT to use holywell
 
 - **You need highly configurable style output** -- holywell intentionally does not expose style knobs for indentation strategy, keyword casing, or alignment mode. If you need full style customization, use [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) or [prettier-plugin-sql](https://github.com/JounQin/prettier-plugin-sql).
-- **You exclusively target MySQL or SQL Server** -- holywell is PostgreSQL-first. Standard ANSI SQL works fine, but vendor-specific syntax (stored procedures, MySQL-only functions) may not be fully parsed.
+- **You need full procedural-language AST rewriting** -- holywell formats SQL and supports many procedural/script syntaxes, but it does not build full PL/pgSQL / PL/SQL / T-SQL procedural ASTs for semantic rewrites.
 - **You need a language server** -- holywell is a formatter, not a linter or LSP. It does not provide diagnostics, completions, or semantic analysis.
 
 ## SQL Dialect Support
 
-| Dialect | Status | Notes |
-|---|---|---|
-| PostgreSQL | Primary / continuously tested | Full formatter/parser coverage target |
-| ANSI SQL core | Broad support | Most query/DDL patterns covered |
-| MySQL | Partial | Many ANSI queries work; MySQL-specific extensions may recover as raw |
-| SQL Server (T-SQL) | Partial | Many ANSI queries work; procedural T-SQL is limited |
-| SQLite | Partial | Common ANSI queries work; SQLite-specific extensions are limited |
+Coverage is PostgreSQL-first, but materially broader than ANSI + PostgreSQL alone. The list below reflects current implementation and regression tests.
 
-holywell test coverage is PostgreSQL-first. If you rely on non-PostgreSQL vendor extensions, run `--check` in CI and prefer `--strict` where parse failures should block merges.
+| Dialect / Syntax Family | Coverage | Notes |
+|---|---|---|
+| ANSI SQL core | First-class | Structured parsing/formatting for SELECT/CTE/DML/MERGE, joins, windows, and common DDL |
+| PostgreSQL | First-class / continuously tested | Casts, arrays, JSON operators, FILTER/WITHIN GROUP, ON CONFLICT, RETURNING, COPY stdin handling |
+| MySQL / MariaDB | Substantial / continuously tested | Backticks, LIMIT offset normalization, STRAIGHT_JOIN, RLIKE, INTERVAL, ALTER key actions, FULLTEXT, DELIMITER scripts |
+| SQL Server (T-SQL) | Substantial / continuously tested | GO batches, IF/BEGIN/END chains, CROSS APPLY, PIVOT, bracket identifiers, BACKUP/BULK, PRINT, compound assignments |
+| Oracle / PL/SQL surface syntax | Substantial / continuously tested | START WITH/CONNECT BY, q-quoted strings, slash terminators, RETURNING INTO, type declarations, nested table storage |
+| SQLite | Targeted | Numbered positional parameters (`?1`, `?2`, ...) plus ANSI-compatible statements |
+| Snowflake | Targeted | CREATE STAGE, CREATE FILE FORMAT, CREATE VIEW COMMENT, COPY INTO handling |
+| ClickHouse | Targeted | CREATE MATERIALIZED VIEW ... TO ... AS and CREATE TABLE option clauses |
+| BigQuery / Exasol / DB2 / H2 | Targeted | Backtick multipart identifiers + SAFE_CAST/TRY_CAST, Lua bracket strings, slash delimiters, MERGE ... VALUES shorthand |
+| Client/meta command syntax | First-class passthrough | psql `\` commands/variables, SQL*Plus slash run terminators, MySQL DELIMITER blocks, T-SQL GO separators |
+
+If you rely heavily on vendor extensions, run `--check` in CI and use `--strict` where parse failures should block merges.
 
 You can extend keyword/clause recognition without forking:
 
@@ -215,34 +222,34 @@ const formatted = formatSQL(sql, {
 });
 ```
 
-### PostgreSQL (Full Support)
+### PostgreSQL + ANSI (First-class)
 
 - Type casts (`::integer`), JSON operators (`->`, `->>`), dollar-quoting (`$$...$$`)
 - Array constructors, window functions, CTEs, LATERAL joins
 - ON CONFLICT (UPSERT), RETURNING clauses
-- **Note:** PL/pgSQL function bodies are preserved verbatim (not reformatted)
+- COPY stdin blocks and psql interpolation forms are preserved and formatted safely
+- **Note:** procedural bodies are block-aware, but not modeled as full procedural ASTs
 
-### ANSI SQL (Full Support)
+### MySQL / MariaDB (Substantial)
 
-- SELECT, INSERT, UPDATE, DELETE, MERGE
-- JOINs (INNER, LEFT, RIGHT, FULL, CROSS, NATURAL)
-- CTEs (WITH, WITH RECURSIVE)
-- Window functions (PARTITION BY, ORDER BY, frame clauses)
-- DDL (CREATE TABLE, ALTER TABLE, DROP, CREATE INDEX, CREATE VIEW)
+- STRAIGHT_JOIN, RLIKE, INSERT ... VALUE, UPDATE multi-target/join forms
+- CREATE/ALTER TABLE options including ENGINE/CHARSET and FULLTEXT/KEY constraints
+- DELIMITER script boundaries and conditional comments are preserved
 
-### MySQL (Partial)
+### SQL Server (T-SQL) + Oracle (Substantial)
 
-- Standard ANSI SQL queries format correctly
-- Backtick identifiers are tokenized and formatted; LIMIT offset syntax and storage engine clauses are not yet supported
+- SQL Server: GO separators, IF/BEGIN/END and ELSE IF chains, CROSS APPLY, PIVOT, BACKUP/BULK statements
+- Oracle: hierarchical queries, q-quoted strings, slash run terminators, DELETE shorthand normalization, RETURNING ... INTO
 
-### SQL Server (Partial)
+### Pass-Through Model and Strict Mode
 
-- Standard ANSI SQL queries format correctly
-- T-SQL procedural syntax (BEGIN/END blocks, DECLARE, @@variables) is not yet supported
+holywell supports statements through a mix of:
 
-### Recovery Mode
+- Structured AST parsing (deep formatting)
+- Keyword-normalized pass-through for unmodeled statement families
+- Verbatim pass-through for client/script commands
 
-Unsupported syntax is passed through unchanged rather than causing errors. Use `--strict` to fail on unparseable SQL.
+In default mode, unparseable statements are preserved where possible. Use `--strict` to fail on true parse errors instead of recovering.
 
 ## Style Guide
 
@@ -513,9 +520,9 @@ Not directly. River width is derived automatically from statement structure. You
 
 holywell only changes whitespace and casing. Specifically: SQL keywords are uppercased (`select` becomes `SELECT`), unquoted identifiers are lowercased (`MyTable` becomes `mytable`), and quoted identifiers are preserved exactly (`"MyTable"` stays `"MyTable"`). If your database is case-sensitive for unquoted identifiers (rare, but possible), see the [Migration Guide](docs/migration-guide.md) for details.
 
-**Q: Does holywell work with MySQL / SQL Server / SQLite?**
+**Q: Does holywell work with MySQL / SQL Server / SQLite / Oracle?**
 
-holywell is PostgreSQL-first, but any query written in standard ANSI SQL will format correctly regardless of your target database. Vendor-specific extensions (stored procedures, MySQL-only syntax) may not be fully parsed. See [SQL Dialect Support](#sql-dialect-support) for details.
+Yes. holywell is PostgreSQL-first, but it has substantial tested coverage for MySQL, SQL Server, and Oracle surface syntax, plus targeted support for SQLite/Snowflake/ClickHouse and client scripting commands (`GO`, `DELIMITER`, `\gset`, slash terminators). See [SQL Dialect Support](#sql-dialect-support) for the current matrix.
 
 ## Documentation
 
@@ -551,8 +558,8 @@ holywell has zero runtime dependencies and formats SQL through a single tokenize
 ## Limitations
 
 - Dialect coverage is broad but intentionally pragmatic, with strongest support for PostgreSQL-style syntax.
-- Procedural SQL bodies (`CREATE FUNCTION ... LANGUAGE plpgsql` control-flow blocks, vendor-specific scripting extensions) are not fully parsed as procedural ASTs.
-- Unknown/unsupported constructs may fall back to raw statement preservation.
+- Procedural SQL bodies and vendor scripting commands are mostly handled via block-aware pass-through, not full procedural AST rewriting.
+- Unknown/unmodeled constructs may still fall back to raw statement preservation.
 - Formatting style is opinionated and focused on faithfully implementing the [Simon Holywell SQL Style Guide](https://www.sqlstyle.guide/) rather than per-project style configurability.
 
 ## License

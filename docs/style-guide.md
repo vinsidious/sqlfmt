@@ -27,7 +27,7 @@ These rules are addressed but may not cover all edge cases.
 | Rule | Description | Notes |
 |------|-------------|-------|
 | Operator spacing | Spaces around comparison and arithmetic operators (`=`, `<>`, `+`, `-`, etc.) | Handled for most operators; some PostgreSQL-specific operators (e.g., `@>`, `?|`) are spaced but not configurable |
-| Line length | Long expressions are wrapped to multiple lines | Wrapping is driven by column count heuristics rather than a strict character limit; no configurable max line width |
+| Line length | Long expressions are wrapped to multiple lines | Wrapping is guided by heuristics plus `maxLineLength`; very long single tokens may still exceed the configured width |
 | Alignment of VALUES | INSERT ... VALUES rows are formatted | Multi-row VALUES lists are formatted but column alignment across rows is not guaranteed |
 
 ## Not Enforced

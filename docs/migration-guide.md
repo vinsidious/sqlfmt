@@ -123,4 +123,14 @@ For large repos, migrate package-by-package:
 
 ## 8) Handling unsupported syntax
 
-In recovery mode (default), unknown constructs are preserved as raw SQL where possible. If you need strict parse failures, use API parse options with `recover: false` in custom tooling.
+In recovery mode (default), statements that fail structural parsing are preserved as raw SQL where possible.
+
+To make parse failures block CI:
+
+```bash
+npx holywell --strict --check "**/*.sql"
+```
+
+For custom tooling, use API parse options with `recover: false`.
+
+For a current dialect-by-dialect coverage snapshot, see [SQL Dialect Support](../README.md#sql-dialect-support).
