@@ -1278,6 +1278,10 @@ function formatArrayConstructorWrapped(expr: AST.ArrayConstructorExpr, col: numb
 
 // Wrap a binary expression at the outermost operator
 function formatBinaryWrapped(expr: AST.BinaryExpr, colStart: number): string {
+  if (expr.operator === ':') {
+    return formatExpr(expr.left) + ':' + formatExpr(expr.right);
+  }
+
   if (expr.operator === '||' || expr.operator === '+') {
     const op = expr.operator;
     const parts = flattenBinaryChain(expr, op).map(part => formatExpr(part));
@@ -2112,6 +2116,17 @@ function formatWriteIdentifier(name: string): string {
   return lowerIdent(name);
 }
 
+function formatInsertSourceAlias(
+  alias: AST.InsertStatement['valuesAlias'] | undefined,
+): string {
+  if (!alias) return '';
+  let out = ' AS ' + formatAlias(alias.name);
+  if (alias.columns && alias.columns.length > 0) {
+    out += '(' + alias.columns.map(lowerIdent).join(', ') + ')';
+  }
+  return out;
+}
+
 function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const dmlCtx: FormatContext = {
     ...ctx,
@@ -2185,10 +2200,35 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       const trailing = tupleNode.trailingComments && tupleNode.trailingComments.length > 0
         ? ' ' + tupleNode.trailingComments.map(c => c.text).join(' ')
         : '';
-      lines.push(prefix + tuple + trailing + comma);
+      const sourceAlias = i === node.values.length - 1 ? formatInsertSourceAlias(node.valuesAlias) : '';
+      lines.push(prefix + tuple + trailing + comma + sourceAlias);
     }
   } else if (node.defaultValues) {
     lines.push(rightAlign('DEFAULT', dmlCtx) + ' VALUES');
+  } else if (node.setItems && node.setItems.length > 0) {
+    for (let i = 0; i < node.setItems.length; i++) {
+      const item = node.setItems[i];
+      const operator = item.assignmentOperator ?? '=';
+      const text = item.methodCall
+        ? formatExpr(item.value)
+        : item.column + ' ' + operator + ' ' + formatExpr(item.value);
+      const comma = i < node.setItems.length - 1 ? ',' : '';
+      const sourceAlias = i === node.setItems.length - 1 ? formatInsertSourceAlias(node.valuesAlias) : '';
+      if (i === 0) {
+        lines.push(rightAlign('SET', dmlCtx) + ' ' + text + comma + sourceAlias);
+      } else {
+        lines.push(contentPad(dmlCtx) + text + comma + sourceAlias);
+      }
+    }
+  } else if (node.tableSource) {
+    let tableLine = rightAlign('TABLE', dmlCtx) + ' ' + lowerIdent(node.tableSource.table);
+    if (node.tableSource.alias) {
+      tableLine += ' AS ' + formatAlias(node.tableSource.alias);
+      if (node.tableSource.aliasColumns && node.tableSource.aliasColumns.length > 0) {
+        tableLine += '(' + node.tableSource.aliasColumns.map(lowerIdent).join(', ') + ')';
+      }
+    }
+    lines.push(tableLine);
   } else if (node.selectQuery) {
     lines.push(formatQueryExpressionForSubquery(node.selectQuery, dmlCtx.runtime));
   }
@@ -2220,6 +2260,20 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       }
       if (node.onConflict.where) {
         lines.push(rightAlign('WHERE', conflictCtx) + ' ' + formatCondition(node.onConflict.where, dmlCtx));
+      }
+    }
+  }
+
+  if (node.onDuplicateKeyUpdate && node.onDuplicateKeyUpdate.length > 0) {
+    for (let i = 0; i < node.onDuplicateKeyUpdate.length; i++) {
+      const item = node.onDuplicateKeyUpdate[i];
+      const operator = item.assignmentOperator ?? '=';
+      const val = item.column + ' ' + operator + ' ' + formatExpr(item.value);
+      const comma = i < node.onDuplicateKeyUpdate.length - 1 ? ',' : '';
+      if (i === 0) {
+        lines.push(rightAlign('ON', dmlCtx) + ' DUPLICATE KEY UPDATE ' + val + comma);
+      } else {
+        lines.push(contentPad(dmlCtx) + val + comma);
       }
     }
   }
@@ -2453,6 +2507,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
 
   let header = 'CREATE';
   if (node.unique) header += ' UNIQUE';
+  if (node.clustered) header += ' ' + node.clustered;
   header += ' INDEX';
   if (node.concurrently) header += ' CONCURRENTLY';
   if (node.ifNotExists) header += ' IF NOT EXISTS';
@@ -2866,6 +2921,12 @@ function packConstraintWordGroups(words: string[]): string[] {
       continue;
     }
 
+    if (currentUpper === 'DEFAULT' && words[i + 1]) {
+      packed.push(`DEFAULT ${words[i + 1]}`);
+      i += 2;
+      continue;
+    }
+
     if (currentUpper === 'NOT' && nextUpper === 'DEFERRABLE') {
       packed.push('NOT DEFERRABLE');
       i += 2;
@@ -2992,14 +3053,26 @@ function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | 
 
 function lowerMaybeQualifiedNameWithIfNotExists(name: string): string {
   const match = name.match(/^IF\s+NOT\s+EXISTS\s+(.+)$/i);
-  if (!match) return lowerIdent(name);
-  return `IF NOT EXISTS ${lowerIdent(match[1])}`;
+  if (!match) return normalizeObjectName(name);
+  return `IF NOT EXISTS ${normalizeObjectName(match[1])}`;
 }
 
 function lowerMaybeQualifiedNameWithIfExists(name: string): string {
   const match = name.match(/^IF\s+EXISTS\s+(.+)$/i);
-  if (!match) return lowerIdent(name);
-  return `IF EXISTS ${lowerIdent(match[1])}`;
+  if (!match) return normalizeObjectName(name);
+  return `IF EXISTS ${normalizeObjectName(match[1])}`;
+}
+
+function normalizeObjectName(name: string): string {
+  const identifierCall = normalizeIdentifierCall(name);
+  if (identifierCall) return identifierCall;
+  return lowerIdent(name);
+}
+
+function normalizeIdentifierCall(name: string): string | null {
+  const match = name.trim().match(/^IDENTIFIER\s*\(([\s\S]*)\)$/i);
+  if (!match) return null;
+  return `IDENTIFIER(${match[1].trim()})`;
 }
 
 function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): string {
@@ -3638,6 +3711,9 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
     case 'star':
       return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
     case 'binary':
+      if (expr.operator === ':') {
+        return formatExpr(expr.left, d) + ':' + formatExpr(expr.right, d);
+      }
       return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
     case 'unary':
       // Special case: NOT EXISTS should format like EXISTS with NOT prefix

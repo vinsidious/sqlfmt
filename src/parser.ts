@@ -55,7 +55,7 @@ const IMPLICIT_STATEMENT_STARTERS = new Set([
   'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DEALLOCATE',
   'USE', 'DO', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE',
   'START', 'VALUES', 'COPY', 'DELIMITER',
-  'GO', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE', 'PROMPT', 'SP_RENAME',
+  'GO', 'DBCC', 'ACCEPT', 'DESCRIBE', 'REM', 'DEFINE', 'PROMPT', 'SP_RENAME',
 ]);
 
 const CREATE_KEYWORD_NORMALIZED_TYPES = new Set([
@@ -251,6 +251,7 @@ export class Parser {
   private readonly totalStatements: number;
   private currentStatementIndex: number = 0;
   private depth: number = 0;
+  private parsingArraySubscriptBounds: boolean = false;
 
   constructor(tokens: Token[], options: ParseOptions = {}, source?: string) {
     // Record blank lines preceding each non-whitespace token, then filter whitespace.
@@ -632,6 +633,9 @@ export class Parser {
     if (kw === 'GO') return this.parseSingleLineStatement(comments, 'unsupported');
     if (kw === 'BACKUP' || kw === 'BULK' || kw === 'CLUSTER') {
       return this.parseVerbatimStatement(comments, 'unsupported');
+    }
+    if (kw === 'DBCC') {
+      return this.parseVerbatimStatement(comments, 'unsupported', true);
     }
     if (kw === 'ACCEPT' || kw === 'DESCRIBE' || kw === 'REM' || kw === 'DEFINE' || kw === 'PROMPT') {
       return this.parseSingleLineStatement(comments, 'unsupported');
@@ -2651,7 +2655,7 @@ export class Parser {
         this.advance(); // consume [
         if (this.check(':')) {
           this.advance();
-          const upper = this.check(']') ? undefined : this.parseExpression();
+          const upper = this.check(']') ? undefined : this.parseArraySubscriptBoundExpression();
           this.expect(']');
           expr = {
             type: 'array_subscript',
@@ -2662,10 +2666,10 @@ export class Parser {
           continue;
         }
 
-        const lower = this.parseExpression();
+        const lower = this.parseArraySubscriptBoundExpression();
         if (this.check(':')) {
           this.advance();
-          const upper = this.check(']') ? undefined : this.parseExpression();
+          const upper = this.check(']') ? undefined : this.parseArraySubscriptBoundExpression();
           this.expect(']');
           expr = {
             type: 'array_subscript',
@@ -2704,10 +2708,49 @@ export class Parser {
         continue;
       }
 
+      // Snowflake VARIANT path access: value:key[:nested]
+      if (!this.parsingArraySubscriptBounds && this.check(':')) {
+        this.advance();
+        const segment = this.parseVariantPathSegment();
+        expr = { type: 'binary', left: expr, operator: ':', right: segment };
+        continue;
+      }
+
       break;
     }
 
     return expr;
+  }
+
+  private parseVariantPathSegment(): AST.Expression {
+    const token = this.peek();
+    if (
+      token.type === 'identifier'
+      || token.type === 'keyword'
+      || token.type === 'string'
+      || token.type === 'number'
+      || token.type === 'parameter'
+    ) {
+      let text = this.advance().value;
+      while (this.check('.')) {
+        this.advance();
+        text += '.' + this.advance().value;
+      }
+      return { type: 'raw', text, reason: 'verbatim' };
+    }
+
+    // Keep parser moving for less-common path fragments while preserving text.
+    return { type: 'raw', text: this.advance().value, reason: 'unsupported' };
+  }
+
+  private parseArraySubscriptBoundExpression(): AST.Expression {
+    const previous = this.parsingArraySubscriptBounds;
+    this.parsingArraySubscriptBounds = true;
+    try {
+      return this.parseExpression();
+    } finally {
+      this.parsingArraySubscriptBounds = previous;
+    }
   }
 
   private parseQualifiedName(): string {
@@ -3817,6 +3860,13 @@ export class Parser {
     }
 
     const colName = this.advance().value;
+    if (this.check(',') || this.check(')')) {
+      return {
+        elementType: 'column',
+        raw: colName,
+        name: colName,
+      };
+    }
     const dataType = this.consumeTypeSpecifier();
     const constraintsStart = this.pos;
     const columnConstraints = this.parseColumnConstraints();

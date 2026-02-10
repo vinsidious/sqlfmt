@@ -117,7 +117,18 @@ export interface InsertStatement {
   readonly valueClauseLeadingComments?: readonly CommentNode[];
   readonly defaultValues?: boolean;
   readonly values?: readonly ValuesList[];
+  readonly setItems?: readonly SetItem[];
+  readonly valuesAlias?: {
+    readonly name: string;
+    readonly columns?: readonly string[];
+  };
+  readonly tableSource?: {
+    readonly table: string;
+    readonly alias?: string;
+    readonly aliasColumns?: readonly string[];
+  };
   readonly selectQuery?: QueryExpression;
+  readonly onDuplicateKeyUpdate?: readonly SetItem[];
   readonly returning?: readonly Expression[];
   readonly returningInto?: readonly string[];
   readonly onConflict?: {
@@ -339,6 +350,7 @@ export interface ExplainStatement {
 export interface CreateIndexStatement {
   readonly type: 'create_index';
   readonly unique?: boolean;
+  readonly clustered?: 'CLUSTERED' | 'NONCLUSTERED';
   readonly concurrently?: boolean;
   readonly ifNotExists?: boolean;
   readonly name?: string;
