@@ -133,6 +133,7 @@ export interface UpdateStatement {
   readonly type: 'update';
   readonly table: string;
   readonly alias?: string;
+  readonly additionalTables?: readonly { readonly table: string; readonly alias?: string }[];
   readonly joinSources?: readonly JoinClause[];
   readonly setItems: readonly SetItem[];
   readonly from?: readonly FromClause[];
@@ -180,6 +181,7 @@ export type AlterAction =
   | AlterDropColumnAction
   | AlterDropConstraintAction
   | AlterAlterColumnAction
+  | AlterOwnerToAction
   | AlterRenameToAction
   | AlterRenameColumnAction
   | AlterSetSchemaAction
@@ -211,6 +213,11 @@ export interface AlterAlterColumnAction {
   readonly type: 'alter_column';
   readonly columnName: string;
   readonly operation: string;
+}
+
+export interface AlterOwnerToAction {
+  readonly type: 'owner_to';
+  readonly owner: string;
 }
 
 export interface AlterRenameToAction {
@@ -345,6 +352,7 @@ export interface CreateIndexStatement {
 export interface CreateViewStatement {
   readonly type: 'create_view';
   readonly orReplace?: boolean;
+  readonly temporary?: boolean;
   readonly materialized?: boolean;
   readonly ifNotExists?: boolean;
   readonly name: string;

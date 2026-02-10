@@ -49,10 +49,19 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
     materialized = true;
   }
 
+  let temporary = false;
+  if (
+    (ctx.peekUpper() === 'TEMPORARY' || ctx.peekUpper() === 'TEMP')
+    && ctx.peekUpperAt(1) === 'VIEW'
+  ) {
+    ctx.advance();
+    temporary = true;
+  }
+
   const kw = ctx.peekUpper();
   if (kw === 'TABLE') return parseCreateTableStatement(ctx, comments, statementStart, orReplace);
   if (kw === 'INDEX') return parseCreateIndexStatement(ctx, comments, unique);
-  if (kw === 'VIEW') return parseCreateViewStatement(ctx, comments, orReplace, materialized);
+  if (kw === 'VIEW') return parseCreateViewStatement(ctx, comments, orReplace, materialized, temporary);
   if (kw === 'POLICY') return parseCreatePolicyStatement(ctx, comments);
 
   ctx.setPos(statementStart);
@@ -142,7 +151,13 @@ function parseCreateTableStatement(
     };
   }
 
-  if (!ctx.check('(')) {
+  const parenthesizedQuery = tryParseParenthesizedCreateTableQuery(ctx);
+
+  let elements: AST.TableElement[] = [];
+  let trailingComma = false;
+  let asQuery: AST.QueryExpression | undefined = parenthesizedQuery || undefined;
+
+  if (!parenthesizedQuery && !ctx.check('(')) {
     ctx.setPos(statementStart);
     const raw = ctx.parseRawStatement('unsupported');
     if (!raw) throw ctx.parseError('CREATE TABLE statement', ctx.peek());
@@ -150,14 +165,27 @@ function parseCreateTableStatement(
     return { type: 'raw', text: `${comments.map(c => c.text).join('\n')}\n${raw.text}`.trim(), reason: 'unsupported' };
   }
 
-  ctx.expect('(');
-  const { elements, trailingComma } = ctx.parseTableElements();
-  ctx.expect(')');
+  if (!parenthesizedQuery) {
+    ctx.expect('(');
+    const parsedElements = ctx.parseTableElements();
+    elements = parsedElements.elements;
+    trailingComma = parsedElements.trailingComma;
+    ctx.expect(')');
+  }
 
   let tableOptions: string | undefined;
   if (!ctx.isAtEnd() && !ctx.check(';')) {
     const optionTokens: Token[] = [];
     while (!ctx.isAtEnd() && !ctx.check(';')) {
+      if (!asQuery && ctx.peekUpper() === 'AS') {
+        ctx.advance(); // AS
+        const query = ctx.parseStatement();
+        if (!query || (query.type !== 'select' && query.type !== 'union' && query.type !== 'cte')) {
+          throw ctx.parseError('SELECT, UNION, or WITH query in CREATE TABLE AS', ctx.peek());
+        }
+        asQuery = query;
+        break;
+      }
       if (ctx.hasImplicitStatementBoundary?.() && !isCreateTableOptionStart(ctx)) break;
       optionTokens.push(ctx.advance());
     }
@@ -171,8 +199,30 @@ function parseCreateTableStatement(
     elements,
     trailingComma: trailingComma || undefined,
     tableOptions,
+    asQuery,
     leadingComments: comments,
   };
+}
+
+function tryParseParenthesizedCreateTableQuery(ctx: DdlParser): AST.QueryExpression | null {
+  if (!ctx.check('(')) return null;
+  const start = ctx.getPos();
+
+  ctx.advance(); // (
+  let query: AST.Node | null;
+  try {
+    query = ctx.parseStatement();
+  } catch {
+    ctx.setPos(start);
+    return null;
+  }
+  if (query && (query.type === 'select' || query.type === 'union' || query.type === 'cte') && ctx.check(')')) {
+    ctx.advance(); // )
+    return query;
+  }
+
+  ctx.setPos(start);
+  return null;
 }
 
 function parseCreateIndexStatement(
@@ -318,7 +368,8 @@ function parseCreateViewStatement(
   ctx: DdlParser,
   comments: AST.CommentNode[],
   orReplace: boolean,
-  materialized: boolean
+  materialized: boolean,
+  temporary: boolean,
 ): AST.CreateViewStatement {
   ctx.advance(); // VIEW
 
@@ -418,6 +469,7 @@ function parseCreateViewStatement(
   return {
     type: 'create_view',
     orReplace,
+    temporary: temporary || undefined,
     materialized,
     ifNotExists,
     name,
@@ -548,6 +600,7 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
     'RENAME',
     'SET',
     'ALTER',
+    'OWNER',
     'CHANGE',
     'MODIFY',
     'CHECK',
@@ -572,14 +625,18 @@ export function parseAlterStatement(ctx: DdlParser, comments: AST.CommentNode[])
   }
 
   const actions: AST.AlterAction[] = [];
+  let actionSeparatorConsumed = false;
   while (!ctx.isAtEnd() && !ctx.check(';')) {
-    if (actions.length > 0 && ctx.hasImplicitStatementBoundary?.()) {
-      break;
-    }
-    actions.push(parseAlterAction(ctx));
     if (ctx.check(',')) {
       ctx.advance();
+      actionSeparatorConsumed = true;
+      continue;
     }
+    if (actions.length > 0 && !actionSeparatorConsumed && ctx.hasImplicitStatementBoundary?.()) {
+      break;
+    }
+    actionSeparatorConsumed = false;
+    actions.push(parseAlterAction(ctx));
   }
 
   return {
@@ -598,6 +655,7 @@ function parseAlterAction(ctx: DdlParser): AST.AlterAction {
     ?? tryParseAlterDropColumnAction(ctx)
     ?? tryParseAlterDropConstraintAction(ctx)
     ?? tryParseAlterAlterColumnAction(ctx)
+    ?? tryParseAlterOwnerToAction(ctx)
     ?? tryParseAlterRenameAction(ctx)
     ?? tryParseAlterSetSchemaAction(ctx)
     ?? tryParseAlterSetTablespaceAction(ctx)
@@ -767,6 +825,27 @@ function tryParseAlterAlterColumnAction(ctx: DdlParser): AST.AlterAction | null 
     columnName,
     operation,
   };
+}
+
+function tryParseAlterOwnerToAction(ctx: DdlParser): AST.AlterAction | null {
+  if (ctx.peekUpper() !== 'OWNER') return null;
+  ctx.advance();
+
+  if (ctx.peekUpper() === 'TO') {
+    ctx.advance();
+  }
+
+  if (ctx.peekType() !== 'identifier' && ctx.peekType() !== 'keyword' && ctx.peekType() !== 'string') {
+    return null;
+  }
+
+  let owner = ctx.advance().value;
+  while (ctx.check('.')) {
+    ctx.advance();
+    owner += '.' + ctx.advance().value;
+  }
+
+  return { type: 'owner_to', owner };
 }
 
 function tryParseAlterSetSchemaAction(ctx: DdlParser): AST.AlterAction | null {
