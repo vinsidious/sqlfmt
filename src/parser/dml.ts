@@ -39,11 +39,14 @@ export function parseInsertStatement(
   }
   const alias = parseOptionalTableAlias(
     ctx,
-    new Set(['OVERRIDING', 'DEFAULT', 'VALUE', 'VALUES', 'SELECT', 'WITH', 'ON', 'RETURNING'])
+    new Set(['OVERRIDING', 'DEFAULT', 'VALUE', 'VALUES', 'SET', 'TABLE', 'SELECT', 'WITH', 'ON', 'RETURNING'])
   );
 
   let columns: string[] = [];
   let selectQuery: AST.QueryExpression | undefined;
+  let setItems: AST.SetItem[] | undefined;
+  let valuesAlias: AST.InsertStatement['valuesAlias'];
+  let tableSource: AST.InsertStatement['tableSource'];
   if (ctx.check('(')) {
     const queryAtCurrent = ctx.tryParseQueryExpressionAtCurrent?.();
     if (queryAtCurrent) {
@@ -89,6 +92,37 @@ export function parseInsertStatement(
       ctx.advance();
       values.push(parseValuesTuple(ctx, ctx.consumeComments?.() ?? []));
     }
+    valuesAlias = parseOptionalInsertSourceAlias(ctx);
+  } else if (ctx.peekUpper() === 'SET') {
+    ctx.advance();
+    setItems = [];
+    ctx.consumeComments?.();
+    setItems.push(parseSetItem(ctx));
+    ctx.consumeComments?.();
+    while (ctx.check(',')) {
+      ctx.advance();
+      ctx.consumeComments?.();
+      setItems.push(parseSetItem(ctx));
+      ctx.consumeComments?.();
+    }
+    valuesAlias = parseOptionalInsertSourceAlias(ctx);
+  } else if (ctx.peekUpper() === 'TABLE') {
+    ctx.advance();
+    const sourceTable = parseDottedName(ctx);
+    let sourceAlias: string | undefined;
+    let sourceAliasColumns: string[] | undefined;
+    if (ctx.peekUpper() === 'AS') {
+      ctx.advance();
+      sourceAlias = ctx.advance().value;
+      if (ctx.check('(')) {
+        sourceAliasColumns = parseParenthesizedIdentifierList(ctx);
+      }
+    }
+    tableSource = {
+      table: sourceTable,
+      alias: sourceAlias,
+      aliasColumns: sourceAliasColumns && sourceAliasColumns.length > 0 ? sourceAliasColumns : undefined,
+    };
   } else if (ctx.peekUpper() === 'SELECT' || ctx.peekUpper() === 'WITH' || ctx.check('(')) {
     selectQuery = ctx.parseQueryExpression();
   }
@@ -98,6 +132,29 @@ export function parseInsertStatement(
     ctx.advance();
     ctx.advance();
     onConflict = parseInsertOnConflictClause(ctx);
+  }
+
+  let onDuplicateKeyUpdate: AST.SetItem[] | undefined;
+  if (
+    ctx.peekUpper() === 'ON'
+    && ctx.peekUpperAt(1) === 'DUPLICATE'
+    && ctx.peekUpperAt(2) === 'KEY'
+    && ctx.peekUpperAt(3) === 'UPDATE'
+  ) {
+    ctx.advance();
+    ctx.advance();
+    ctx.advance();
+    ctx.advance();
+    onDuplicateKeyUpdate = [];
+    ctx.consumeComments?.();
+    onDuplicateKeyUpdate.push(parseSetItem(ctx));
+    ctx.consumeComments?.();
+    while (ctx.check(',')) {
+      ctx.advance();
+      ctx.consumeComments?.();
+      onDuplicateKeyUpdate.push(parseSetItem(ctx));
+      ctx.consumeComments?.();
+    }
   }
 
   const returningClause = parseInsertReturningClause(ctx);
@@ -112,8 +169,12 @@ export function parseInsertStatement(
     valueClauseLeadingComments: valueClauseLeadingComments.length > 0 ? valueClauseLeadingComments : undefined,
     defaultValues,
     values,
+    setItems,
+    valuesAlias,
+    tableSource,
     selectQuery,
     onConflict,
+    onDuplicateKeyUpdate,
     returning: returningClause.returning,
     returningInto: returningClause.returningInto,
     leadingComments: comments,
@@ -371,7 +432,7 @@ export function parseDeleteStatement(
     ctx.advance();
     table = parseDottedName(ctx);
   }
-  const alias = parseOptionalTableAlias(ctx, new Set(['USING', 'WHERE', 'RETURNING']));
+  const alias = parseOptionalTableAlias(ctx, new Set(['USING', 'WHERE', 'RETURNING', 'GO', 'DBCC']));
 
   let fromJoins: AST.JoinClause[] | undefined;
   {
@@ -439,6 +500,20 @@ function parseParenthesizedIdentifierList(ctx: DmlParser): string[] {
   }
   ctx.expect(')');
   return items;
+}
+
+function parseOptionalInsertSourceAlias(ctx: DmlParser): AST.InsertStatement['valuesAlias'] {
+  if (ctx.peekUpper() !== 'AS') return undefined;
+  ctx.advance();
+  const name = ctx.advance().value;
+  let columns: string[] | undefined;
+  if (ctx.check('(')) {
+    columns = parseParenthesizedIdentifierList(ctx);
+  }
+  return {
+    name,
+    columns: columns && columns.length > 0 ? columns : undefined,
+  };
 }
 
 function parseOptionalReturning(ctx: DmlParser): AST.Expression[] | undefined {
