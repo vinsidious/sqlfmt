@@ -58,9 +58,17 @@ export function parseCreateStatement(ctx: DdlParser, comments: AST.CommentNode[]
     temporary = true;
   }
 
+  let clustered: AST.CreateIndexStatement['clustered'];
+  if (
+    (ctx.peekUpper() === 'CLUSTERED' || ctx.peekUpper() === 'NONCLUSTERED')
+    && ctx.peekUpperAt(1) === 'INDEX'
+  ) {
+    clustered = ctx.advance().upper as AST.CreateIndexStatement['clustered'];
+  }
+
   const kw = ctx.peekUpper();
   if (kw === 'TABLE') return parseCreateTableStatement(ctx, comments, statementStart, orReplace);
-  if (kw === 'INDEX') return parseCreateIndexStatement(ctx, comments, unique);
+  if (kw === 'INDEX') return parseCreateIndexStatement(ctx, comments, unique, clustered);
   if (kw === 'VIEW') return parseCreateViewStatement(ctx, comments, orReplace, materialized, temporary);
   if (kw === 'POLICY') return parseCreatePolicyStatement(ctx, comments);
 
@@ -109,11 +117,7 @@ function parseCreateTableStatement(
 ): AST.Node {
   ctx.expect('TABLE');
   const ifNotExists = ctx.consumeIfNotExists();
-  let tableName = ctx.advance().value;
-  while (ctx.check('.')) {
-    ctx.advance(); // consume dot
-    tableName += '.' + ctx.advance().value;
-  }
+  const tableName = parseCreateObjectName(ctx);
   const fullName = ifNotExists ? 'IF NOT EXISTS ' + tableName : tableName;
 
   // CREATE TABLE ... AS SELECT ...
@@ -249,7 +253,8 @@ function tryParseParenthesizedCreateTableQuery(ctx: DdlParser): AST.QueryExpress
 function parseCreateIndexStatement(
   ctx: DdlParser,
   comments: AST.CommentNode[],
-  unique: boolean
+  unique: boolean,
+  clustered?: AST.CreateIndexStatement['clustered'],
 ): AST.CreateIndexStatement {
   ctx.advance(); // INDEX
   skipInlineComments(ctx);
@@ -334,6 +339,7 @@ function parseCreateIndexStatement(
   return {
     type: 'create_index',
     unique,
+    clustered,
     concurrently,
     ifNotExists,
     name,
@@ -346,6 +352,30 @@ function parseCreateIndexStatement(
     options,
     leadingComments: comments,
   };
+}
+
+function parseCreateObjectName(ctx: DdlParser): string {
+  if (ctx.peekUpper() === 'IDENTIFIER' && ctx.peekUpperAt(1) === '(') {
+    const tokens: Token[] = [];
+    tokens.push(ctx.advance()); // IDENTIFIER
+    let depth = 0;
+    do {
+      const token = ctx.advance();
+      tokens.push(token);
+      if (token.value === '(') depth++;
+      else if (token.value === ')') depth--;
+    } while (!ctx.isAtEnd() && depth > 0);
+
+    if (depth !== 0) throw ctx.parseError(')', ctx.peek());
+    return normalizeIdentifierCall(ctx.tokensToSqlPreserveCase(tokens));
+  }
+  return parseDottedName(ctx);
+}
+
+function normalizeIdentifierCall(text: string): string {
+  const match = text.match(/^IDENTIFIER\s*\(([\s\S]*)\)$/i);
+  if (!match) return text;
+  return `IDENTIFIER(${match[1].trim()})`;
 }
 
 function parseIndexColumn(ctx: DdlParser): AST.Expression {
