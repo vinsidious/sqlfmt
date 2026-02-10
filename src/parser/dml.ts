@@ -15,6 +15,7 @@ export interface DmlParser {
   parseReturningList(): AST.Expression[];
   parseFromItem(): AST.FromClause;
   parseQueryExpression(): AST.QueryExpression;
+  tryParseQueryExpressionAtCurrent?(): AST.QueryExpression | null;
   consumeComments?: () => AST.CommentNode[];
 }
 
@@ -38,8 +39,14 @@ export function parseInsertStatement(
   }
 
   let columns: string[] = [];
+  let selectQuery: AST.QueryExpression | undefined;
   if (ctx.check('(')) {
-    columns = parseParenthesizedIdentifierList(ctx);
+    const queryAtCurrent = ctx.tryParseQueryExpressionAtCurrent?.();
+    if (queryAtCurrent) {
+      selectQuery = queryAtCurrent;
+    } else {
+      columns = parseParenthesizedIdentifierList(ctx);
+    }
   }
 
   let overriding: AST.InsertStatement['overriding'];
@@ -61,9 +68,10 @@ export function parseInsertStatement(
   let defaultValues = false;
   const valueClauseLeadingComments: AST.CommentNode[] = ctx.consumeComments?.() ?? [];
   let values: AST.ValuesList[] | undefined;
-  let selectQuery: AST.QueryExpression | undefined;
 
-  if (matchesKeywords(ctx, 'DEFAULT', 'VALUES')) {
+  if (selectQuery) {
+    // already parsed from a parenthesized query source after table name
+  } else if (matchesKeywords(ctx, 'DEFAULT', 'VALUES')) {
     ctx.advance();
     ctx.advance();
     defaultValues = true;
@@ -128,10 +136,14 @@ export function parseInsertOnConflictClause(ctx: DmlParser): AST.InsertStatement
   ctx.expect('UPDATE');
   ctx.expect('SET');
   const setItems: { column: string; value: AST.Expression }[] = [];
+  ctx.consumeComments?.();
   setItems.push(parseSetItem(ctx));
+  ctx.consumeComments?.();
   while (ctx.check(',')) {
     ctx.advance();
+    ctx.consumeComments?.();
     setItems.push(parseSetItem(ctx));
+    ctx.consumeComments?.();
   }
 
   let where: AST.Expression | undefined;
@@ -192,12 +204,16 @@ export function parseUpdateStatement(
   comments: AST.CommentNode[]
 ): AST.UpdateStatement {
   ctx.expect('UPDATE');
-  let table = ctx.advance().value;
-  while (ctx.check('.')) {
-    ctx.advance(); // consume dot
-    table += '.' + ctx.advance().value;
+  const table = parseDottedName(ctx);
+  const alias = parseOptionalTableAlias(ctx, new Set(['SET', ',']));
+
+  const additionalTables: Array<{ table: string; alias?: string }> = [];
+  while (ctx.check(',')) {
+    ctx.advance();
+    const additionalTable = parseDottedName(ctx);
+    const additionalAlias = parseOptionalTableAlias(ctx, new Set(['SET', ',']));
+    additionalTables.push({ table: additionalTable, alias: additionalAlias });
   }
-  const alias = parseOptionalTableAlias(ctx, new Set(['SET']));
 
   let joinSources: AST.JoinClause[] | undefined;
   if (ctx.isJoinKeyword()) {
@@ -210,10 +226,14 @@ export function parseUpdateStatement(
 
   ctx.expect('SET');
   const setItems: AST.SetItem[] = [];
+  ctx.consumeComments?.();
   setItems.push(parseSetItem(ctx));
+  ctx.consumeComments?.();
   while (ctx.check(',')) {
     ctx.advance();
+    ctx.consumeComments?.();
     setItems.push(parseSetItem(ctx));
+    ctx.consumeComments?.();
   }
 
   let from: AST.FromClause[] | undefined;
@@ -244,6 +264,7 @@ export function parseUpdateStatement(
     type: 'update',
     table,
     alias,
+    additionalTables: additionalTables.length > 0 ? additionalTables : undefined,
     joinSources,
     setItems,
     from,
@@ -255,6 +276,7 @@ export function parseUpdateStatement(
 }
 
 export function parseSetItem(ctx: DmlParser): AST.SetItem {
+  ctx.consumeComments?.();
   let column = ctx.advance().value;
   while (ctx.check('.')) {
     ctx.advance(); // consume dot
@@ -285,8 +307,11 @@ export function parseSetItem(ctx: DmlParser): AST.SetItem {
     };
   }
 
+  ctx.consumeComments?.();
   ctx.expect('=');
+  ctx.consumeComments?.();
   const value = ctx.parseExpression();
+  ctx.consumeComments?.();
   return { column, value };
 }
 

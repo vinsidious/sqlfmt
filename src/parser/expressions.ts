@@ -258,6 +258,7 @@ export interface PrimaryExpressionParser {
   parseSubquery(): AST.SubqueryExpr;
   tryParseSubqueryAtCurrent(): AST.SubqueryExpr | null;
   parseExpression(): AST.Expression;
+  parseAddSub(): AST.Expression;
   parseCaseExpr(): AST.CaseExpr;
   parseCast(): AST.CastExpr;
   parseExtract(): AST.ExtractExpr;
@@ -324,12 +325,27 @@ const INTERVAL_UNITS = new Set([
 
 function tryParseIntervalPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
   if (token.upper !== 'INTERVAL') return null;
-  const nextType = ctx.peekTypeAt(1);
-  if (nextType !== 'string' && nextType !== 'number') return null;
+  const checkpoint = ctx.getPos();
 
-  ctx.advance();
-  const valueToken = ctx.advance();
-  let value = valueToken.value;
+  ctx.advance(); // INTERVAL
+  const valueStart = ctx.getPos();
+  try {
+    ctx.parseAddSub();
+  } catch {
+    ctx.setPos(checkpoint);
+    return null;
+  }
+  const valueEnd = ctx.getPos();
+  if (valueEnd <= valueStart) {
+    ctx.setPos(checkpoint);
+    return null;
+  }
+
+  let value = readTokenRangeAsSql(ctx, valueStart, valueEnd);
+  if (!value) {
+    ctx.setPos(checkpoint);
+    return null;
+  }
 
   // INTERVAL '1' DAY, INTERVAL '1' DAY TO SECOND, INTERVAL 30 DAY
   if (INTERVAL_UNITS.has(ctx.peek().upper)) {
@@ -341,6 +357,17 @@ function tryParseIntervalPrimary(ctx: PrimaryExpressionParser, token: Token): AS
   }
 
   return { type: 'interval', value };
+}
+
+function readTokenRangeAsSql(ctx: PrimaryExpressionParser, start: number, end: number): string {
+  const savedPos = ctx.getPos();
+  const tokens: Token[] = [];
+  ctx.setPos(start);
+  while (ctx.getPos() < end) {
+    tokens.push(ctx.advance());
+  }
+  ctx.setPos(savedPos);
+  return ctx.tokensToSql(tokens);
 }
 
 function tryParseArrayConstructorPrimary(ctx: PrimaryExpressionParser, token: Token): AST.Expression | null {
