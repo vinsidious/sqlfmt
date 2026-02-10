@@ -153,6 +153,8 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
     if (node.type === 'raw' && node.reason === 'trailing_semicolon_comment') {
       if (parts.length === 0) {
         parts.push(node.text);
+      } else if (node.text.trim() === '/') {
+        parts[parts.length - 1] = parts[parts.length - 1].trimEnd() + '\n/';
       } else {
         const previous = parts[parts.length - 1].trimEnd();
         parts[parts.length - 1] = previous + ' ' + node.text;
@@ -1572,6 +1574,23 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
     return '(' + formatParenLogical(expr.expr, contentCol(ctx) + 1) + ')';
   }
 
+  if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'in' && isInExprSubquery(expr.operand)) {
+    const inExpr = expr.operand;
+    const e = formatExpr(inExpr.expr);
+    const subqExpr = getInExprSubquery(inExpr);
+    const inner = formatQueryExpressionForSubquery(subqExpr.query, ctx.runtime);
+    const lineCount = inner.split('\n').length;
+
+    if (lineCount <= 2) {
+      const prefix = 'NOT ' + e + ' IN ';
+      const parenCol = contentCol(ctx) + prefix.length;
+      return prefix + wrapSubqueryLines(inner, parenCol);
+    }
+
+    const subq = wrapSubqueryLines(inner, contentCol(ctx));
+    return 'NOT ' + e + ' IN\n' + contentPad(ctx) + subq;
+  }
+
   // IN with subquery
   if (expr.type === 'in' && isInExprSubquery(expr)) {
     const e = formatExpr(expr.expr);
@@ -1662,6 +1681,16 @@ function formatParenLogical(expr: AST.BinaryExpr, opCol: number, depth: number =
   }
   const left = formatParenOperand(expr.left, opCol, expr.operator, depth + 1);
   const right = formatParenOperand(expr.right, opCol, expr.operator, depth + 1);
+  if (expr.right.type === 'raw') {
+    const continuationCol = opCol + expr.operator.length + 1;
+    const normalizedRight = normalizeMultilineLogicalOperand(right, continuationCol);
+    const leadingComment = splitLeadingLineComment(normalizedRight, continuationCol);
+    if (leadingComment) {
+      return left + ' ' + leadingComment.comment + '\n'
+        + ' '.repeat(opCol) + expr.operator + ' ' + leadingComment.remainder;
+    }
+    return left + '\n' + ' '.repeat(opCol) + expr.operator + ' ' + normalizedRight;
+  }
   return left + '\n' + ' '.repeat(opCol) + expr.operator + ' ' + right;
 }
 
@@ -2635,46 +2664,56 @@ function packConstraintWordGroups(words: string[]): string[] {
   let i = 0;
 
   while (i < words.length) {
-    if (words[i] === 'NOT' && words[i + 1] === 'NULL') {
+    const currentUpper = words[i]?.toUpperCase();
+    const nextUpper = words[i + 1]?.toUpperCase();
+    const thirdUpper = words[i + 2]?.toUpperCase();
+    const fourthUpper = words[i + 3]?.toUpperCase();
+
+    if (currentUpper === 'NOT' && nextUpper === 'NULL') {
       packed.push('NOT NULL');
       i += 2;
       continue;
     }
 
-    if (words[i] === 'NOT' && words[i + 1] === 'DEFERRABLE') {
+    if (currentUpper === 'NOT' && nextUpper === 'DEFERRABLE') {
       packed.push('NOT DEFERRABLE');
       i += 2;
       continue;
     }
 
     if (
-      words[i] === 'DEFERRABLE'
-      && words[i + 1] === 'INITIALLY'
-      && (words[i + 2] === 'DEFERRED' || words[i + 2] === 'IMMEDIATE')
+      currentUpper === 'DEFERRABLE'
+      && nextUpper === 'INITIALLY'
+      && (thirdUpper === 'DEFERRED' || thirdUpper === 'IMMEDIATE')
     ) {
-      packed.push(`DEFERRABLE INITIALLY ${words[i + 2]}`);
+      packed.push(`DEFERRABLE INITIALLY ${thirdUpper}`);
       i += 3;
       continue;
     }
 
-    if (words[i] === 'INITIALLY' && (words[i + 1] === 'DEFERRED' || words[i + 1] === 'IMMEDIATE')) {
-      packed.push(`INITIALLY ${words[i + 1]}`);
+    if (currentUpper === 'INITIALLY' && (nextUpper === 'DEFERRED' || nextUpper === 'IMMEDIATE')) {
+      packed.push(`INITIALLY ${nextUpper}`);
       i += 2;
       continue;
     }
 
     if (
-      words[i] === 'ON'
-      && (words[i + 1] === 'DELETE' || words[i + 1] === 'UPDATE')
-      && words[i + 2]
+      currentUpper === 'ON'
+      && (nextUpper === 'DELETE' || nextUpper === 'UPDATE')
+      && thirdUpper
     ) {
-      let take = 3;
-      const actionHead = words[i + 2];
-      const actionTail = words[i + 3];
-      if (actionHead === 'NO' && actionTail === 'ACTION') take = 4;
-      if (actionHead === 'SET' && (actionTail === 'NULL' || actionTail === 'DEFAULT')) take = 4;
-      packed.push(words.slice(i, i + take).join(' '));
-      i += take;
+      if (thirdUpper === 'NO' && fourthUpper === 'ACTION') {
+        packed.push(`ON ${nextUpper} NO ACTION`);
+        i += 4;
+        continue;
+      }
+      if (thirdUpper === 'SET' && (fourthUpper === 'NULL' || fourthUpper === 'DEFAULT')) {
+        packed.push(`ON ${nextUpper} SET ${fourthUpper}`);
+        i += 4;
+        continue;
+      }
+      packed.push(`ON ${nextUpper} ${thirdUpper}`);
+      i += 3;
       continue;
     }
 
@@ -2808,12 +2847,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
 
       const isLongestType = typeNorm.length >= maxTypeLen;
-      let inlineRaw = headRaw;
-      if (maxTypeLen >= 13 && !isLongestType) {
-        inlineRaw += constraints;
-      } else {
-        inlineRaw += ' ' + constraints;
-      }
+      const constraintPad = maxTypeLen >= 13 && !isLongestType ? '' : ' ';
+      let inlineRaw = headRaw + constraintPad + constraints;
       const inline = inlineRaw.trimEnd();
       if (stringDisplayWidth(inline) <= ctx.runtime.maxLineLength) {
         lines.push(inline + trailingComment + comma);
@@ -2834,7 +2869,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         continue;
       }
 
-      const firstInline = headRaw + ' ' + wrapped[0];
+      const firstInline = headRaw + constraintPad + wrapped[0];
       let wrappedStartIndex = 0;
       if (stringDisplayWidth(firstInline) <= ctx.runtime.maxLineLength) {
         const firstIsOnly = wrapped.length === 1;
