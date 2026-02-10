@@ -593,12 +593,18 @@ export class Parser {
     if (kw === 'CREATE') {
       const createType = this.getCreateKeywordNormalizedType();
       if (createType) {
-        const allowImplicitBoundary = createType !== 'ROLE' && createType !== 'USER';
+        let allowImplicitBoundary = createType !== 'ROLE' && createType !== 'USER';
+        if (createType === 'SCHEMA' && this.hasCreateSchemaEmbeddedDdl()) {
+          allowImplicitBoundary = false;
+        }
         return this.parseKeywordNormalizedStatement(comments, 'unsupported', allowImplicitBoundary);
       }
       return this.parseCreate(comments);
     }
     if (kw === 'ALTER') {
+      if (this.looksLikeAlterViewWithQueryStatement()) {
+        return this.parseAlterViewWithQuery(comments);
+      }
       if (this.peekUpperAt(1) === 'DEFAULT' && this.peekUpperAt(2) === 'PRIVILEGES') {
         return this.parseKeywordNormalizedStatement(comments, 'unsupported', true);
       }
@@ -738,8 +744,52 @@ export class Parser {
     return null;
   }
 
+  private hasCreateSchemaEmbeddedDdl(maxLookahead: number = 1000): boolean {
+    if (this.peekUpper() !== 'CREATE' || this.peekUpperAt(1) !== 'SCHEMA') return false;
+
+    let depth = 0;
+    for (let i = 2; i <= maxLookahead; i++) {
+      const token = this.peekAt(i);
+      if (token.type === 'eof' || token.value === ';') break;
+      if (this.isOpenGroupToken(token)) {
+        depth++;
+        continue;
+      }
+      if (this.isCloseGroupToken(token)) {
+        depth = Math.max(0, depth - 1);
+        continue;
+      }
+      if (depth === 0 && token.upper === 'CREATE') {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private looksLikeAlterRoutineStatement(): boolean {
     return this.getAlterRoutineKind() !== null;
+  }
+
+  private looksLikeAlterViewWithQueryStatement(maxLookahead: number = 1000): boolean {
+    if (this.peekUpper() !== 'ALTER' || this.peekUpperAt(1) !== 'VIEW') return false;
+
+    let depth = 0;
+    for (let i = 2; i <= maxLookahead; i++) {
+      const token = this.peekAt(i);
+      if (token.type === 'eof' || token.value === ';') break;
+      if (this.isOpenGroupToken(token)) {
+        depth++;
+        continue;
+      }
+      if (this.isCloseGroupToken(token)) {
+        depth = Math.max(0, depth - 1);
+        continue;
+      }
+      if (depth === 0 && token.upper === 'AS') {
+        return true;
+      }
+    }
+    return false;
   }
 
   private getAlterRoutineKind(): 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT' | null {
@@ -924,6 +974,53 @@ export class Parser {
         break;
       }
       const token = this.advance();
+      if (this.isOpenGroupToken(token)) depth++;
+      else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
+    }
+    if (this.check(';')) {
+      this.advance();
+    }
+
+    const tokens = this.tokens.slice(start, this.pos);
+    if (tokens.length === 0) return this.combineCommentsWithRaw(comments, null, reason);
+    const text = this.tokensToSqlKeywordNormalized(tokens).trim();
+    const raw = text ? ({ type: 'raw', text, reason } as AST.RawExpression) : null;
+    return this.combineCommentsWithRaw(comments, raw, reason);
+  }
+
+  private parseAlterViewWithQuery(
+    comments: AST.CommentNode[],
+    reason: AST.RawReason = 'unsupported',
+  ): AST.RawExpression | null {
+    const start = this.pos;
+    let depth = 0;
+    let sawAsKeyword = false;
+    let expectingViewQueryStart = false;
+
+    while (!this.isAtEnd() && !this.check(';')) {
+      if (depth === 0 && this.pos > start && this.hasImplicitStatementBoundary()) {
+        if (sawAsKeyword) {
+          const boundaryKeyword = this.peekUpper();
+          const startsViewQuery =
+            expectingViewQueryStart
+            && (boundaryKeyword === 'SELECT' || boundaryKeyword === 'WITH' || boundaryKeyword === 'VALUES');
+          if (!startsViewQuery) break;
+        }
+      }
+
+      const token = this.advance();
+      if (token.upper === 'AS' && depth === 0) {
+        sawAsKeyword = true;
+        expectingViewQueryStart = true;
+      } else if (
+        expectingViewQueryStart
+        && token.type !== 'whitespace'
+        && token.type !== 'line_comment'
+        && token.type !== 'block_comment'
+      ) {
+        expectingViewQueryStart = false;
+      }
+
       if (this.isOpenGroupToken(token)) depth++;
       else if (this.isCloseGroupToken(token)) depth = Math.max(0, depth - 1);
     }

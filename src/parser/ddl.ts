@@ -177,14 +177,12 @@ function parseCreateTableStatement(
   if (!ctx.isAtEnd() && !ctx.check(';')) {
     const optionTokens: Token[] = [];
     while (!ctx.isAtEnd() && !ctx.check(';')) {
-      if (!asQuery && ctx.peekUpper() === 'AS') {
-        ctx.advance(); // AS
-        const query = ctx.parseStatement();
-        if (!query || (query.type !== 'select' && query.type !== 'union' && query.type !== 'cte')) {
-          throw ctx.parseError('SELECT, UNION, or WITH query in CREATE TABLE AS', ctx.peek());
+      if (!asQuery) {
+        const parsedAsQuery = tryParseCreateTableAsQuery(ctx);
+        if (parsedAsQuery) {
+          asQuery = parsedAsQuery;
+          break;
         }
-        asQuery = query;
-        break;
       }
       if (ctx.hasImplicitStatementBoundary?.() && !isCreateTableOptionStart(ctx)) break;
       optionTokens.push(ctx.advance());
@@ -202,6 +200,29 @@ function parseCreateTableStatement(
     asQuery,
     leadingComments: comments,
   };
+}
+
+function tryParseCreateTableAsQuery(ctx: DdlParser): AST.QueryExpression | null {
+  if (ctx.peekUpper() !== 'AS') return null;
+  const start = ctx.getPos();
+
+  ctx.advance(); // AS
+  let query: AST.Node | null;
+  try {
+    query = ctx.parseStatement();
+  } catch {
+    ctx.setPos(start);
+    return null;
+  }
+  if (
+    query
+    && (query.type === 'select' || query.type === 'union' || query.type === 'cte')
+  ) {
+    return query;
+  }
+
+  ctx.setPos(start);
+  return null;
 }
 
 function tryParseParenthesizedCreateTableQuery(ctx: DdlParser): AST.QueryExpression | null {
