@@ -717,6 +717,19 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     // SQL Server bracket-quoted identifier: [identifier]
     // Distinguish from array subscripts by context (dot/no-gap patterns).
     if (ch === '[') {
+      // Exasol Lua long bracket strings: [[ ... ]]
+      if (pos + 1 < len && input[pos + 1] === '[') {
+        const close = input.indexOf(']]', pos + 2);
+        if (close < 0) {
+          const { line: eLine, column: eCol } = lc(start);
+          throw new TokenizeError('Unterminated bracket string literal', start, eLine, eCol);
+        }
+        pos = close + 2;
+        const val = input.slice(start, pos);
+        emit('string', val, val, start);
+        continue;
+      }
+
       const prev = previousSignificantToken(tokens);
       const hasGapFromPrev = !!prev && start > (prev.position + prev.value.length);
       const prevCanStartSubscript =
@@ -935,6 +948,18 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       // bare ! (not standard SQL but consume it)
       pos++;
       emit('operator', '!', '!', start);
+      continue;
+    }
+
+    // Compound assignment operators: +=, -=, *=, /=, %=, &=, ^=, |=
+    if (
+      pos + 1 < len
+      && input[pos + 1] === '='
+      && (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%' || ch === '&' || ch === '^' || ch === '|')
+    ) {
+      pos += 2;
+      const op = input.slice(start, pos);
+      emit('operator', op, op, start);
       continue;
     }
 

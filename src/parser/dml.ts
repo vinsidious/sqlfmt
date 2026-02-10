@@ -135,7 +135,7 @@ export function parseInsertOnConflictClause(ctx: DmlParser): AST.InsertStatement
 
   ctx.expect('UPDATE');
   ctx.expect('SET');
-  const setItems: { column: string; value: AST.Expression }[] = [];
+  const setItems: AST.SetItem[] = [];
   ctx.consumeComments?.();
   setItems.push(parseSetItem(ctx));
   ctx.consumeComments?.();
@@ -308,11 +308,29 @@ export function parseSetItem(ctx: DmlParser): AST.SetItem {
   }
 
   ctx.consumeComments?.();
-  ctx.expect('=');
+  let assignmentOperator: AST.SetItem['assignmentOperator'] = '=';
+  if (
+    ctx.check('+=')
+    || ctx.check('-=')
+    || ctx.check('*=')
+    || ctx.check('/=')
+    || ctx.check('%=')
+    || ctx.check('&=')
+    || ctx.check('^=')
+    || ctx.check('|=')
+  ) {
+    assignmentOperator = ctx.advance().value as AST.SetItem['assignmentOperator'];
+  } else {
+    ctx.expect('=');
+  }
   ctx.consumeComments?.();
   const value = ctx.parseExpression();
   ctx.consumeComments?.();
-  return { column, value };
+  return {
+    column,
+    value,
+    assignmentOperator: assignmentOperator === '=' ? undefined : assignmentOperator,
+  };
 }
 
 export function parseDeleteStatement(
@@ -321,15 +339,33 @@ export function parseDeleteStatement(
 ): AST.DeleteStatement {
   ctx.expect('DELETE');
   let targets: string[] | undefined;
+  let table: string;
   if (ctx.peekUpper() !== 'FROM') {
-    targets = [parseDottedName(ctx)];
+    const first = parseDottedName(ctx);
+    const parsedTargets = [first];
     while (ctx.check(',')) {
       ctx.advance();
-      targets.push(parseDottedName(ctx));
+      parsedTargets.push(parseDottedName(ctx));
     }
+
+    if (ctx.peekUpper() === 'FROM') {
+      targets = parsedTargets;
+      ctx.advance();
+      table = parseDottedName(ctx);
+    } else if (
+      parsedTargets.length === 1
+      && (ctx.check(';') || ctx.isAtEnd() || ctx.peekUpper() === 'WHERE' || ctx.peekUpper() === 'RETURNING')
+    ) {
+      // Oracle shorthand: DELETE table_name [WHERE ...]
+      table = first;
+    } else {
+      ctx.expect('FROM');
+      table = parseDottedName(ctx);
+    }
+  } else {
+    ctx.advance();
+    table = parseDottedName(ctx);
   }
-  ctx.expect('FROM');
-  const table = parseDottedName(ctx);
   const alias = parseOptionalTableAlias(ctx, new Set(['USING', 'WHERE', 'RETURNING']));
 
   let fromJoins: AST.JoinClause[] | undefined;

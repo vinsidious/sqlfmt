@@ -123,7 +123,7 @@ export interface InsertStatement {
     readonly columns?: readonly string[];
     readonly constraintName?: string;
     readonly action: 'nothing' | 'update';
-    readonly setItems?: readonly { readonly column: string; readonly value: Expression }[];
+    readonly setItems?: readonly SetItem[];
     readonly where?: Expression;
   };
   readonly leadingComments: readonly CommentNode[];
@@ -804,6 +804,7 @@ export interface OffsetClause {
 export interface SetItem {
   readonly column: string;
   readonly value: Expression;
+  readonly assignmentOperator?: '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '^=' | '|=';
   readonly methodCall?: boolean;
 }
 
