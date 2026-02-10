@@ -64,6 +64,11 @@ const CREATE_KEYWORD_NORMALIZED_TYPES = new Set([
   'EXTENSION',
 ]);
 
+const SELECT_PROJECTION_BOUNDARY_KEYWORDS = new Set([
+  'FROM', 'INTO', 'WHERE', 'GROUP', 'HAVING', 'WINDOW', 'ORDER', 'LIMIT',
+  'OFFSET', 'FETCH', 'FOR', 'UNION', 'INTERSECT', 'EXCEPT',
+]);
+
 // Lookup table for multi-word SQL type names.
 // Key = last consumed word, value = set of valid next words.
 const TYPE_CONTINUATIONS: Record<string, Set<string>> = {
@@ -663,7 +668,7 @@ export class Parser {
     // Transaction control — consume tokens without the semicolon (parseStatements handles it)
     if (kw === 'BEGIN' || kw === 'COMMIT' || kw === 'ROLLBACK' || kw === 'SAVEPOINT' || kw === 'RELEASE'
         || (kw === 'START' && this.peekUpperAt(1) === 'TRANSACTION')) {
-      return this.parseKeywordNormalizedStatement(comments, 'transaction_control');
+      return this.parseKeywordNormalizedStatement(comments, 'transaction_control', true);
     }
 
     // Unknown statement — in strict mode, fail instead of falling back to raw
@@ -2592,6 +2597,7 @@ export class Parser {
       parseSubquery: () => this.parseSubquery(),
       tryParseSubqueryAtCurrent: () => this.tryParseSubqueryAtCurrent(),
       parseExpression: () => this.parseExpression(),
+      parseAddSub: () => this.parseAddSub(),
       parseCaseExpr: () => this.parseCaseExpr(),
       parseCast: () => this.parseCast(),
       parseExtract: () => this.parseExtract(),
@@ -3235,6 +3241,7 @@ export class Parser {
       parseReturningList: () => this.parseReturningList(),
       parseFromItem: () => this.parseFromItem(),
       parseQueryExpression: () => this.parseQueryExpression(),
+      tryParseQueryExpressionAtCurrent: () => this.tryParseQueryExpressionAtCurrent(),
       consumeComments: () => this.consumeComments(),
     };
   }
@@ -3599,12 +3606,7 @@ export class Parser {
       return this.parseUniqueTableElement();
     }
 
-    if (
-      this.peekUpper() === 'KEY'
-      || this.peekUpper() === 'INDEX'
-      || this.peekUpper() === 'FULLTEXT'
-      || this.peekUpper() === 'SPATIAL'
-    ) {
+    if (this.looksLikeKeyLikeTableElement()) {
       return this.parseKeyLikeTableElement();
     }
 
@@ -3680,6 +3682,32 @@ export class Parser {
       constraints,
       columnConstraints: columnConstraints.length > 0 ? columnConstraints : undefined,
     };
+  }
+
+  private looksLikeKeyLikeTableElement(): boolean {
+    const starter = this.peekUpper();
+    if (starter === 'FULLTEXT' || starter === 'SPATIAL') {
+      const next = this.peekUpperAt(1);
+      if (next === 'KEY' || next === 'INDEX') return true;
+
+      const nextToken = this.peekAt(1);
+      if (!nextToken || nextToken.type === 'eof') return false;
+      if (nextToken.value === '(') return true;
+
+      const nextNext = this.peekAt(2);
+      return nextNext?.value === '(';
+    }
+    if (starter !== 'KEY' && starter !== 'INDEX') return false;
+
+    const next = this.peekAt(1);
+    if (!next || next.type === 'eof') return false;
+    if (next.value === '(') return true;
+    if (next.type === 'keyword') {
+      return next.upper === 'USING';
+    }
+
+    const nextNext = this.peekAt(2);
+    return nextNext?.value === '(';
   }
 
   private parsePrimaryKeyTableElement(constraintName?: string): AST.TableElement {
@@ -3758,10 +3786,7 @@ export class Parser {
 
     if (this.peekUpper() === 'KEY' || this.peekUpper() === 'INDEX') {
       prefixParts.push(this.advance().upper);
-    } else if (prefixParts.length > 0) {
-      this.expect('KEY');
-      prefixParts.push('KEY');
-    } else {
+    } else if (prefixParts.length === 0) {
       throw new ParseError('KEY or INDEX', this.peek());
     }
 
@@ -4793,6 +4818,7 @@ export class Parser {
       const prevSig = previousSignificant;
       const prevSigValue = prevSig?.value;
       const prevSigUpper = prevSig?.upper;
+      const nextSig = this.getNextSignificantToken(tokens, i + 1);
 
       if (routineParamDepth > 0) {
         if (token.value === '(') routineParamDepth++;
@@ -4826,10 +4852,16 @@ export class Parser {
         )
         && !routineParamModes.has(token.upper);
 
+      const keywordLooksLikeSelectProjectionIdentifier =
+        token.type === 'keyword'
+        && (prevSigUpper === 'SELECT' || prevSigValue === ',')
+        && this.isSelectProjectionBoundaryToken(nextSig);
+
       out += (
         token.type === 'keyword'
         && !inQualifiedIdentifier
         && !keywordLooksLikeRoutineParamName
+        && !keywordLooksLikeSelectProjectionIdentifier
       ) ? token.upper : token.value;
       cursor = token.position + token.value.length;
 
@@ -4838,6 +4870,22 @@ export class Parser {
       }
     }
     return out.trim();
+  }
+
+  private getNextSignificantToken(tokens: Token[], startIndex: number): Token | undefined {
+    for (let i = startIndex; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token.type === 'line_comment' || token.type === 'block_comment') continue;
+      return token;
+    }
+    return undefined;
+  }
+
+  private isSelectProjectionBoundaryToken(token: Token | undefined): boolean {
+    if (!token) return false;
+    if (token.value === ',') return true;
+    if (token.value === ')') return true;
+    return token.type === 'keyword' && SELECT_PROJECTION_BOUNDARY_KEYWORDS.has(token.upper);
   }
 
   private tokensToSql(tokens: Token[]): string {
