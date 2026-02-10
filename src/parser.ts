@@ -5064,14 +5064,17 @@ export class Parser {
 
   private consumeComments(): AST.CommentNode[] {
     const comments: AST.CommentNode[] = [];
+    let previousLine = this.pos > 0 ? this.tokens[this.pos - 1].line : this.peek().line;
     while (this.peekType() === 'line_comment' || this.peekType() === 'block_comment') {
       const t = this.advance();
       comments.push({
         type: 'comment',
         style: t.type === 'line_comment' ? 'line' : 'block',
         text: t.value,
+        startsOnOwnLine: t.line > previousLine,
         blankLinesBefore: this.blankLinesBeforeToken.get(t.position) || 0,
       });
+      previousLine = t.line;
     }
     if (comments.length > 0 && !this.isAtEnd()) {
       const blanksAfter = this.blankLinesBeforeToken.get(this.peek().position) || 0;

@@ -425,6 +425,7 @@ export interface CommentNode {
   readonly type: 'comment';
   readonly style: 'line' | 'block';
   readonly text: string;
+  readonly startsOnOwnLine?: boolean;
   readonly blankLinesBefore?: number;  // number of blank lines preceding this comment (0 = none)
   readonly blankLinesAfter?: number;   // number of blank lines before the next non-comment token
 }

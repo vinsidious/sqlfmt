@@ -1358,11 +1358,35 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
     result += '\n' + ' '.repeat(baseCol) + normalizePivotClauseText(from.pivotClause);
   }
   if (from.trailingComments && from.trailingComments.length > 0) {
-    for (const comment of from.trailingComments) {
-      result += ' ' + comment.text;
-    }
+    result = appendFromTrailingComments(result, from.trailingComments, baseCol);
   }
   return result;
+}
+
+function appendFromTrailingComments(
+  base: string,
+  comments: readonly AST.CommentNode[],
+  baseCol: number,
+): string {
+  if (comments.length === 0) return base;
+
+  const inlineEligible = comments.length === 1
+    && !(comments[0].startsOnOwnLine ?? false)
+    && (comments[0].blankLinesBefore ?? 0) === 0
+    && (comments[0].blankLinesAfter ?? 0) === 0;
+  if (inlineEligible) return base + ' ' + comments[0].text;
+
+  const lines: string[] = [base];
+  const indent = ' '.repeat(baseCol);
+  for (const comment of comments) {
+    const before = comment.blankLinesBefore || 0;
+    for (let i = 0; i < before; i++) lines.push('');
+    lines.push(indent + comment.text);
+
+    const after = comment.blankLinesAfter || 0;
+    for (let i = 0; i < after; i++) lines.push('');
+  }
+  return lines.join('\n');
 }
 
 function wrapJoinLikeRawSource(text: string, startCol: number, runtime: FormatterRuntime): string {
