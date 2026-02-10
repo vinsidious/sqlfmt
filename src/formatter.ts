@@ -585,10 +585,10 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
     const current = node.joins[i];
     const joinHasClause = !!(current.on || current.usingClause);
     const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-    const currentIsFullOuter = /^FULL(?:\s+OUTER)?\s+JOIN$/i.test(current.joinType);
+    const currentIsJoinClause = /\bJOIN$/i.test(current.joinType);
     const bothPlain = !!prev
       && prev.joinType === 'JOIN'
-      && (current.joinType === 'JOIN' || currentIsFullOuter);
+      && (current.joinType === 'JOIN' || currentIsJoinClause);
     const needsBlank = fromHasSubquery || (i > 0 && (joinHasClause || prevHasClause) && !bothPlain);
     const joinLines = formatJoin(node.joins[i], ctx, needsBlank);
     lines.push(joinLines);
@@ -708,7 +708,7 @@ function formatColumnList(columns: readonly AST.ColumnExpr[], firstColStartCol: 
 function buildFormattedColumnParts(columns: readonly AST.ColumnExpr[], ctx: FormatContext): FormattedColumnPart[] {
   return columns.map(col => {
     let text = formatExprInSelect(col.expr, contentCol(ctx), ctx, ctx.outerColumnOffset || 0, ctx.depth);
-    if (col.alias && !isRedundantAlias(col.expr, col.alias)) {
+    if (col.alias) {
       text += ' AS ' + formatProjectionAlias(col.alias);
     }
     return {
@@ -720,7 +720,7 @@ function buildFormattedColumnParts(columns: readonly AST.ColumnExpr[], ctx: Form
 }
 
 function hasEffectiveAlias(column: AST.ColumnExpr): boolean {
-  return !!(column.alias && !isRedundantAlias(column.expr, column.alias));
+  return !!column.alias;
 }
 
 function getMaxInlineColumnLength(columns: readonly AST.ColumnExpr[], ctx: FormatContext): number {
@@ -1226,6 +1226,17 @@ function formatExprAtColumn(expr: AST.Expression, colStart: number, runtime: For
   if (expr.type === 'case') return formatCaseAtColumn(expr, colStart, runtime);
   if (expr.type === 'subquery') return formatSubqueryAtColumn(expr, colStart, runtime);
   if (expr.type === 'window_function') return formatWindowFunctionAtColumn(expr, colStart, runtime);
+  if (expr.type === 'paren') return '(' + formatExprAtColumn(expr.expr, colStart + 1, runtime) + ')';
+  if (expr.type === 'binary' && expr.right.type === 'subquery') {
+    const left = formatExpr(expr.left);
+    const operator = ' ' + expr.operator + ' ';
+    const subquery = formatSubqueryAtColumn(
+      expr.right,
+      colStart + stringDisplayWidth(left) + stringDisplayWidth(operator),
+      runtime,
+    );
+    return left + operator + subquery;
+  }
   if (expr.type === 'function_call') {
     const wrapped = formatFunctionCallMultiline(expr, colStart, runtime);
     if (wrapped) return wrapped;
@@ -1577,6 +1588,9 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   if (expr.type === 'paren' && expr.expr.type === 'binary' && (expr.expr.operator === 'AND' || expr.expr.operator === 'OR')) {
     return '(' + formatParenLogical(expr.expr, contentCol(ctx) + 1, ctx.runtime) + ')';
   }
+  if (expr.type === 'paren' && expr.expr.type === 'binary' && expr.expr.right.type === 'subquery') {
+    return '(' + formatExprAtColumn(expr.expr, contentCol(ctx) + 1, ctx.runtime) + ')';
+  }
 
   if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'in' && isInExprSubquery(expr.operand)) {
     const inExpr = expr.operand;
@@ -1640,6 +1654,14 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'exists') {
     const subq = formatSubqueryAtColumn(expr.operand.subquery, contentCol(ctx), ctx.runtime);
     return 'NOT EXISTS\n' + contentPad(ctx) + subq;
+  }
+
+  if (expr.type === 'quantified_comparison' && expr.kind === 'subquery') {
+    const left = formatExpr(expr.left);
+    const prefix = `${left} ${expr.operator} ${expr.quantifier} `;
+    const parenCol = contentCol(ctx) + prefix.length;
+    const inner = formatQueryExpressionForSubquery(expr.subquery.query, ctx.runtime);
+    return prefix + wrapSubqueryLines(inner, parenCol);
   }
 
   // Comparison where right side is a subquery
@@ -1725,7 +1747,7 @@ function formatParenOperand(
   if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'exists') {
     return 'NOT EXISTS ' + formatSubqueryAtColumn(expr.operand.subquery, opCol + 'NOT EXISTS '.length, runtime, depth + 1);
   }
-  return formatExpr(expr);
+  return formatExprAtColumn(expr, opCol + parentOp.length + 1, runtime);
 }
 
 // ─── Subquery formatting ─────────────────────────────────────────────
@@ -1978,6 +2000,11 @@ function isInsertColumnComment(text: string): boolean {
   return trimmed.startsWith('--') || trimmed.startsWith('/*') || trimmed.startsWith('#');
 }
 
+function formatWriteIdentifier(name: string): string {
+  if (isInsertColumnComment(name)) return name;
+  return lowerIdent(name);
+}
+
 function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const dmlCtx: FormatContext = {
     ...ctx,
@@ -1986,10 +2013,11 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  const insertHead = rightAlign('INSERT', dmlCtx) + (node.ignore ? ' IGNORE' : '') + ' INTO ' + node.table;
+  const insertHead = rightAlign('INSERT', dmlCtx) + (node.ignore ? ' IGNORE' : '') + ' INTO ' + lowerIdent(node.table);
   const hasCommentColumns = node.columns.some(isInsertColumnComment);
+  const formattedColumns = node.columns.map(formatWriteIdentifier);
   const inlineColumns = node.columns.length > 0
-    ? ' (' + node.columns.join(', ') + ')'
+    ? ' (' + formattedColumns.join(', ') + ')'
     : '';
   const shouldWrapColumns =
     node.columns.length > 0
@@ -1999,10 +2027,10 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   if (hasCommentColumns) {
     const colPad = contentPad(dmlCtx);
     lines.push(insertHead + ' (');
-    for (let i = 0; i < node.columns.length; i++) {
-      const text = node.columns[i];
+    for (let i = 0; i < formattedColumns.length; i++) {
+      const text = formattedColumns[i];
       const hasComma = /,\s*$/.test(text);
-      const comma = i < node.columns.length - 1 && !hasComma ? ',' : '';
+      const comma = i < formattedColumns.length - 1 && !hasComma ? ',' : '';
       lines.push(colPad + text + comma);
     }
     let closeLine = colPad + ')';
@@ -2013,9 +2041,9 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   } else if (shouldWrapColumns) {
     const colPad = contentPad(dmlCtx);
     lines.push(insertHead + ' (');
-    for (let i = 0; i < node.columns.length; i++) {
-      const comma = i < node.columns.length - 1 ? ',' : '';
-      lines.push(colPad + node.columns[i] + comma);
+    for (let i = 0; i < formattedColumns.length; i++) {
+      const comma = i < formattedColumns.length - 1 ? ',' : '';
+      lines.push(colPad + formattedColumns[i] + comma);
     }
     let closeLine = colPad + ')';
     if (node.overriding) {
@@ -2098,10 +2126,16 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  lines.push(rightAlign('UPDATE', dmlCtx) + ' ' + lowerIdent(node.table));
-  if (node.alias) {
-    lines[lines.length - 1] += ' AS ' + formatAlias(node.alias);
+  const updateTargets: string[] = [];
+  updateTargets.push(lowerIdent(node.table) + (node.alias ? ' AS ' + formatAlias(node.alias) : ''));
+  if (node.additionalTables && node.additionalTables.length > 0) {
+    for (const tableRef of node.additionalTables) {
+      updateTargets.push(
+        lowerIdent(tableRef.table) + (tableRef.alias ? ' AS ' + formatAlias(tableRef.alias) : '')
+      );
+    }
   }
+  lines.push(rightAlign('UPDATE', dmlCtx) + ' ' + updateTargets.join(', '));
 
   if (node.joinSources && node.joinSources.length > 0) {
     const hasSubqueryJoins = node.joinSources.some(j => j.table.type === 'subquery');
@@ -2110,7 +2144,8 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
       const current = node.joinSources[i];
       const joinHasClause = !!(current.on || current.usingClause);
       const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const currentIsJoinClause = /\bJOIN$/i.test(current.joinType);
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && (current.joinType === 'JOIN' || currentIsJoinClause);
       const needsBlank = i > 0 && (joinHasClause || prevHasClause) && !bothPlain;
       lines.push(formatJoin(current, dmlCtx, needsBlank));
     }
@@ -2168,7 +2203,8 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
       const current = node.fromJoins[i];
       const joinHasClause = !!(current.on || current.usingClause);
       const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const currentIsJoinClause = /\bJOIN$/i.test(current.joinType);
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && (current.joinType === 'JOIN' || currentIsJoinClause);
       const needsBlank = !!fromHasSubquery || (i > 0 && (joinHasClause || prevHasClause) && !bothPlain);
       lines.push(formatJoin(current, dmlCtx, needsBlank));
     }
@@ -2203,7 +2239,7 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
   } else {
     lines.push(deleteKw);
   }
-  lines.push(rightAlign('FROM', dmlCtx) + ' ' + node.from + (node.alias ? ' AS ' + formatAlias(node.alias) : ''));
+  lines.push(rightAlign('FROM', dmlCtx) + ' ' + lowerIdent(node.from) + (node.alias ? ' AS ' + formatAlias(node.alias) : ''));
 
   if (node.fromJoins && node.fromJoins.length > 0) {
     const hasSubqueryJoins = node.fromJoins.some(j => j.table.type === 'subquery');
@@ -2212,7 +2248,8 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
       const current = node.fromJoins[i];
       const joinHasClause = !!(current.on || current.usingClause);
       const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const currentIsJoinClause = /\bJOIN$/i.test(current.joinType);
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && (current.joinType === 'JOIN' || currentIsJoinClause);
       const needsBlank = i > 0 && (joinHasClause || prevHasClause) && !bothPlain;
       lines.push(formatJoin(current, dmlCtx, needsBlank));
     }
@@ -2238,7 +2275,8 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
       const current = node.usingJoins[i];
       const joinHasClause = !!(current.on || current.usingClause);
       const prevHasClause = !!(prev && (prev.on || prev.usingClause));
-      const bothPlain = !!prev && prev.joinType === 'JOIN' && current.joinType === 'JOIN';
+      const currentIsJoinClause = /\bJOIN$/i.test(current.joinType);
+      const bothPlain = !!prev && prev.joinType === 'JOIN' && (current.joinType === 'JOIN' || currentIsJoinClause);
       const needsBlank = !!usingHasSubquery || (i > 0 && (joinHasClause || prevHasClause) && !bothPlain);
       lines.push(formatJoin(current, dmlCtx, needsBlank));
     }
@@ -2336,17 +2374,18 @@ function formatCreateView(node: AST.CreateViewStatement, ctx: FormatContext): st
 
   let header = 'CREATE';
   if (node.orReplace) header += ' OR REPLACE';
+  if (node.temporary) header += ' TEMPORARY';
   if (node.materialized) header += ' MATERIALIZED';
   header += ' VIEW';
   if (node.ifNotExists) header += ' IF NOT EXISTS';
-  header += ' ' + node.name;
+  header += ' ' + lowerIdent(node.name);
   if (node.columnList && node.columnList.length > 0) {
-    header += ' (' + node.columnList.join(', ') + ')';
+    header += ' (' + node.columnList.map(lowerIdent).join(', ') + ')';
   }
   if (node.toTable) {
-    header += ' TO ' + node.toTable;
+    header += ' TO ' + lowerIdent(node.toTable);
     if (node.toColumns && node.toColumns.length > 0) {
-      header += ' (' + node.toColumns.join(', ') + ')';
+      header += ' (' + node.toColumns.map(lowerIdent).join(', ') + ')';
     }
   }
   if (node.comment) {
@@ -2768,6 +2807,12 @@ function packConstraintWordGroups(words: string[]): string[] {
       continue;
     }
 
+    if (currentUpper === 'MATCH' && (nextUpper === 'SIMPLE' || nextUpper === 'FULL' || nextUpper === 'PARTIAL')) {
+      packed.push(`MATCH ${nextUpper}`);
+      i += 2;
+      continue;
+    }
+
     packed.push(words[i]);
     i++;
   }
@@ -2829,13 +2874,27 @@ function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | 
   return constraints.map(formatColumnConstraint).join(' ');
 }
 
+function lowerMaybeQualifiedNameWithIfNotExists(name: string): string {
+  const match = name.match(/^IF\s+NOT\s+EXISTS\s+(.+)$/i);
+  if (!match) return lowerIdent(name);
+  return `IF NOT EXISTS ${lowerIdent(match[1])}`;
+}
+
+function lowerMaybeQualifiedNameWithIfExists(name: string): string {
+  const match = name.match(/^IF\s+EXISTS\s+(.+)$/i);
+  if (!match) return lowerIdent(name);
+  return `IF EXISTS ${lowerIdent(match[1])}`;
+}
+
 function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
   const createPrefix = node.orReplace ? 'CREATE OR REPLACE TABLE ' : 'CREATE TABLE ';
+  const tableName = lowerMaybeQualifiedNameWithIfNotExists(node.tableName);
 
-  if (node.asQuery) {
-    lines.push(createPrefix + node.tableName + ' AS');
+  if (node.asQuery && node.elements.length === 0) {
+    const options = node.tableOptions ? formatCreateTableOptions(node.tableOptions) : '';
+    lines.push(createPrefix + tableName + options + ' AS');
     const query = formatQueryExpressionForSubquery(node.asQuery, ctx.runtime);
     const queryLines = query.split('\n');
     if (queryLines.length > 0) {
@@ -2846,11 +2905,11 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
   }
 
   if (node.likeTable) {
-    lines.push(createPrefix + node.tableName + ' LIKE ' + node.likeTable + ';');
+    lines.push(createPrefix + tableName + ' LIKE ' + lowerIdent(node.likeTable) + ';');
     return lines.join('\n');
   }
 
-  lines.push(createPrefix + node.tableName + ' (');
+  lines.push(createPrefix + tableName + ' (');
 
   // Calculate column widths for alignment
   const colElems = node.elements.filter(e => e.elementType === 'column');
@@ -2884,7 +2943,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     if (elem.elementType === 'primary_key') {
       lines.push('    ' + elem.raw + comma);
     } else if (elem.elementType === 'column') {
-      const name = (elem.name || '').padEnd(maxNameLen);
+      const loweredName = elem.name ? lowerIdent(elem.name) : '';
+      const name = loweredName.padEnd(maxNameLen);
       const typeNorm = (elem.dataType || '').replace(/\s+/g, ' ');
       const type = typeNorm.padEnd(maxTypeLen);
       const constraints = formatColumnConstraints(elem.columnConstraints) || elem.constraints;
@@ -2984,6 +3044,16 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
   }
 
   const options = node.tableOptions ? formatCreateTableOptions(node.tableOptions) : '';
+  if (node.asQuery) {
+    lines.push(')' + options + ' AS');
+    const query = formatQueryExpressionForSubquery(node.asQuery, ctx.runtime);
+    const queryLines = query.split('\n');
+    if (queryLines.length > 0) {
+      queryLines[queryLines.length - 1] = queryLines[queryLines.length - 1].replace(/;$/, '') + ';';
+    }
+    lines.push(...queryLines);
+    return lines.join('\n');
+  }
   lines.push(')' + options + ';');
   return lines.join('\n');
 }
@@ -3033,7 +3103,7 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
   emitComments(node.leadingComments, lines);
 
   const objectType = node.objectType || 'TABLE';
-  const header = `ALTER ${objectType} ${node.objectName}`;
+  const header = `ALTER ${objectType} ${lowerMaybeQualifiedNameWithIfExists(node.objectName)}`;
 
   const actions = node.actions && node.actions.length > 0
     ? node.actions.map(formatAlterAction)
@@ -3061,14 +3131,14 @@ function formatAlterAction(action: AST.AlterAction): string {
     case 'add_column': {
       let out = 'ADD COLUMN ';
       if (action.ifNotExists) out += 'IF NOT EXISTS ';
-      out += action.columnName;
+      out += lowerIdent(action.columnName);
       if (action.definition) out += ' ' + action.definition;
       return out;
     }
     case 'drop_column': {
       let out = 'DROP COLUMN ';
       if (action.ifExists) out += 'IF EXISTS ';
-      out += action.columnName;
+      out += lowerIdent(action.columnName);
       if (action.behavior) out += ' ' + action.behavior;
       return out;
     }
@@ -3080,15 +3150,17 @@ function formatAlterAction(action: AST.AlterAction): string {
       return out;
     }
     case 'alter_column':
-      return `ALTER COLUMN ${action.columnName} ${action.operation}`;
+      return `ALTER COLUMN ${lowerIdent(action.columnName)} ${action.operation}`;
+    case 'owner_to':
+      return `OWNER TO ${lowerIdent(action.owner)}`;
     case 'rename_to':
-      return `RENAME TO ${action.newName}`;
+      return `RENAME TO ${lowerIdent(action.newName)}`;
     case 'rename_column':
-      return `RENAME COLUMN ${action.columnName} TO ${action.newName}`;
+      return `RENAME COLUMN ${lowerIdent(action.columnName)} TO ${lowerIdent(action.newName)}`;
     case 'set_schema':
-      return `SET SCHEMA ${action.schema}`;
+      return `SET SCHEMA ${lowerIdent(action.schema)}`;
     case 'set_tablespace':
-      return `SET TABLESPACE ${action.tablespace}`;
+      return `SET TABLESPACE ${lowerIdent(action.tablespace)}`;
     case 'raw':
       return formatRawAlterAction(action.text);
     default: {
@@ -3151,7 +3223,7 @@ function formatDropTable(node: AST.DropTableStatement, ctx: FormatContext): stri
   let line = `DROP ${objectType}`;
   if (node.concurrently) line += ' CONCURRENTLY';
   if (node.ifExists) line += ' IF EXISTS';
-  line += ' ' + node.objectName;
+  line += ' ' + lowerIdent(node.objectName);
   if (node.behavior) line += ' ' + node.behavior;
   line += ';';
   lines.push(line);
@@ -3675,15 +3747,6 @@ function formatOrderByItem(item: AST.OrderByItem): string {
   if (item.direction) s += ' ' + item.direction;
   if (item.nulls) s += ' NULLS ' + item.nulls;
   return s;
-}
-
-function isRedundantAlias(expr: AST.Expression, alias: string): boolean {
-  if (expr.type === 'identifier') {
-    const parts = expr.value.split('.');
-    const lastPart = parts[parts.length - 1];
-    return lastPart === alias;
-  }
-  return false;
 }
 
 function formatAlias(alias: string): string {

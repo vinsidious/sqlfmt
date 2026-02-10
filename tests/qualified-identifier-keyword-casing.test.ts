@@ -17,7 +17,7 @@ ALTER DOMAIN public.year OWNER TO postgres;`;
 
     const out = formatSQL(sql);
     expect(out).toContain('CREATE DOMAIN public.year AS integer;');
-    expect(out).toContain('ALTER DOMAIN public.year OWNER TO postgres;');
+    expect(out).toContain('ALTER DOMAIN public.year\n        OWNER TO postgres;');
     expect(out).not.toContain('ALTER DOMAIN public.YEAR');
   });
 

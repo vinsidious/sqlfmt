@@ -13,8 +13,8 @@ ALTER TABLE CUSTOMER DROP COLUMN CustomerSince`;
 
     const out = formatSQL(sql);
 
-    expect(out.match(/ALTER TABLE CUSTOMER/g)?.length ?? 0).toBe(3);
-    expect(out).toContain('DROP COLUMN CustomerSince;\n\nALTER TABLE CUSTOMER');
+    expect(out.match(/ALTER TABLE customer/g)?.length ?? 0).toBe(3);
+    expect(out).toContain('DROP COLUMN CustomerSince;\n\nALTER TABLE customer');
     expect(out).not.toContain('ALTER COLUMN TABLE CUSTOMER');
   });
 });
