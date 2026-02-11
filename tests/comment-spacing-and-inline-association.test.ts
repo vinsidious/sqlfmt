@@ -10,7 +10,9 @@ describe('Comment spacing and inline association', () => {
 CREATE TABLE t (id INT);`;
 
     const out = formatSQL(sql);
-    expect(out).toContain('--\n\nCREATE TABLE t');
+    expect(out).toContain('/* */');
+    expect(out).toContain('/* Table structure */');
+    expect(out).toContain('/* */\n\nCREATE TABLE t');
   });
 
   it('keeps statement-ending line comments on the same line', () => {

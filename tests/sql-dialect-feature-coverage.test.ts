@@ -75,7 +75,7 @@ DROP DATABASE IF EXISTS :"dbname";`;
 SELECT * FROM cteEndDates;`;
 
     const out = expectStrictParseAndNoRecoveries(sql);
-    expect(out).toContain('-- the magic');
+    expect(out).toContain('/* the magic */');
     expect(out).toContain('WITH cteEndDates');
   });
 

@@ -853,6 +853,10 @@ export interface ValuesList {
 export interface TableElement {
   readonly elementType: 'column' | 'primary_key' | 'constraint' | 'foreign_key' | 'comment';
   readonly raw: string;
+  readonly commentStyle?: 'line' | 'block';
+  readonly commentStartsOnOwnLine?: boolean;
+  readonly commentBlankLinesBefore?: number;
+  readonly commentBlankLinesAfter?: number;
   readonly name?: string;
   readonly dataType?: string;
   readonly constraints?: string;

@@ -1176,7 +1176,7 @@ function formatColumnsOnePerLine(parts: FormattedColumnPart[], indent: string): 
     const commentIndent = indent;
     if (p.leadingComments && p.leadingComments.length > 0) {
       for (const comment of p.leadingComments) {
-        result.push(commentIndent + comment.text);
+        result.push(commentIndent + normalizeStandaloneLineCommentText(comment.text));
       }
     }
     const isLast = i === parts.length - 1;
@@ -1628,7 +1628,7 @@ function appendFromTrailingComments(
   for (const comment of comments) {
     const before = comment.blankLinesBefore || 0;
     for (let i = 0; i < before; i++) lines.push('');
-    lines.push(indent + comment.text);
+    lines.push(indent + normalizeStandaloneLineCommentText(comment.text));
 
     const after = comment.blankLinesAfter || 0;
     for (let i = 0; i < after; i++) lines.push('');
@@ -3429,6 +3429,73 @@ function normalizeIdentifierCall(name: string): string | null {
   return `IDENTIFIER(${match[1].trim()})`;
 }
 
+function isCreateTableKeyLikeConstraintText(text: string): boolean {
+  const trimmed = text.trim();
+  return /^(?:UNIQUE\s+)?(?:KEY|INDEX)\b/i.test(trimmed)
+    || /^(?:FULLTEXT|SPATIAL)(?:\s+(?:KEY|INDEX))?\b/i.test(trimmed);
+}
+
+function isCreateTableKeyLikeConstraintElement(elem: AST.TableElement): boolean {
+  if (elem.elementType !== 'constraint') return false;
+  const source = elem.constraintBody || elem.raw;
+  return isCreateTableKeyLikeConstraintText(source);
+}
+
+function createTableElementIndent(elem: AST.TableElement, tableConstraintIndent: string): string {
+  if (elem.elementType === 'constraint') {
+    if (elem.constraintName || isCreateTableKeyLikeConstraintElement(elem)) return tableConstraintIndent;
+    return '    ';
+  }
+  if (elem.elementType === 'foreign_key') {
+    return elem.constraintName ? tableConstraintIndent : '    ';
+  }
+  return '    ';
+}
+
+function resolveCreateTableCommentIndent(
+  elements: readonly AST.TableElement[],
+  index: number,
+  tableConstraintIndent: string,
+): string {
+  for (let i = index + 1; i < elements.length; i++) {
+    if (elements[i].elementType === 'comment') continue;
+    return createTableElementIndent(elements[i], tableConstraintIndent);
+  }
+  for (let i = index - 1; i >= 0; i--) {
+    if (elements[i].elementType === 'comment') continue;
+    return createTableElementIndent(elements[i], tableConstraintIndent);
+  }
+  return '    ';
+}
+
+function looksLikeCommentedOutSqlCode(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/[;,]\s*$/.test(trimmed)) return true;
+  if (/^\(?\s*(?:SELECT|INSERT|UPDATE|DELETE|MERGE|WITH|CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|FROM|WHERE|JOIN|ON|GROUP\s+BY|ORDER\s+BY|HAVING|VALUES|SET)\b/i.test(trimmed)) {
+    return true;
+  }
+  return /\b[A-Za-z_][A-Za-z0-9_$]*\s+(?:BIGINT|SMALLINT|TINYINT|MEDIUMINT|INT|INTEGER|DECIMAL|NUMERIC|FLOAT|DOUBLE|REAL|CHAR(?:ACTER)?|VARCHAR|TEXT|DATE|TIME|TIMESTAMP|JSON|JSONB|BOOL|BOOLEAN|BLOB|NAME)\b/
+    .test(trimmed);
+}
+
+function normalizeStandaloneLineCommentText(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('--')) return raw;
+
+  const body = trimmed.replace(/^--\s?/, '').trim();
+  if (!body) return '/* */';
+  if (body.includes('*/') || body.includes('--')) return raw;
+  if (looksLikeCommentedOutSqlCode(body)) return raw;
+  return `/* ${body} */`;
+}
+
+function normalizeCreateTableElementComment(elem: AST.TableElement): string {
+  const raw = elem.raw;
+  if (elem.commentStartsOnOwnLine === false) return raw;
+  return normalizeStandaloneLineCommentText(raw);
+}
+
 function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
@@ -3484,7 +3551,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       : '';
 
     if (elem.elementType === 'comment') {
-      lines.push('    ' + elem.raw);
+      const commentIndent = resolveCreateTableCommentIndent(node.elements, i, tableConstraintIndent);
+      lines.push(commentIndent + normalizeCreateTableElementComment(elem));
       continue;
     }
 
@@ -3544,25 +3612,26 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         lines.push(continuationIndent + wrapped[j] + maybeComment + (isLastWrapped ? comma : ''));
       }
     } else if (elem.elementType === 'constraint') {
+      const constraintIndent = createTableElementIndent(elem, tableConstraintIndent);
       if (elem.constraintName) {
-        lines.push(tableConstraintIndent + 'CONSTRAINT ' + elem.constraintName);
+        lines.push(constraintIndent + 'CONSTRAINT ' + elem.constraintName);
         if (elem.constraintType === 'check' && elem.checkExpr) {
-          lines.push(tableConstraintIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
+          lines.push(constraintIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
         } else if (elem.constraintBody) {
-          lines.push(tableConstraintIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
+          lines.push(constraintIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
         } else {
           const pattern = new RegExp(`^CONSTRAINT\\s+${escapeRegExp(elem.constraintName)}\\b\\s*`, 'i');
           const body = elem.raw.trim().replace(pattern, '').trim();
           if (body) {
-            lines.push(tableConstraintIndent + normalizeConstraintIdentifierCase(body));
+            lines.push(constraintIndent + normalizeConstraintIdentifierCase(body));
           }
         }
       } else if (elem.constraintType === 'check' && elem.checkExpr) {
-        lines.push('    CHECK(' + formatExpr(elem.checkExpr) + ')');
+        lines.push(constraintIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
       } else if (elem.constraintBody) {
-        lines.push('    ' + normalizeConstraintIdentifierCase(elem.constraintBody));
+        lines.push(constraintIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
       } else {
-        lines.push('    ' + normalizeConstraintIdentifierCase(elem.raw));
+        lines.push(constraintIndent + normalizeConstraintIdentifierCase(elem.raw));
       }
       if (comma) lines[lines.length - 1] += comma;
     } else if (elem.elementType === 'foreign_key') {
@@ -4045,7 +4114,7 @@ function emitCTELeadingComments(comments: readonly AST.CommentNode[], lines: str
     for (let i = 0; i < blanks; i++) {
       lines.push('');
     }
-    lines.push(c.text);
+    lines.push(normalizeStandaloneLineCommentText(c.text));
   }
   if (lines.length > 0 && lines[lines.length - 1] !== '') {
     lines.push('');
@@ -4059,7 +4128,7 @@ function emitComments(comments: readonly AST.CommentNode[], lines: string[]): vo
     for (let i = 0; i < blanks; i++) {
       lines.push('');
     }
-    lines.push(c.text);
+    lines.push(normalizeStandaloneLineCommentText(c.text));
     const blanksAfter = c.blankLinesAfter || 0;
     for (let i = 0; i < blanksAfter; i++) {
       lines.push('');
@@ -4084,7 +4153,7 @@ function formatValuesClause(node: AST.ValuesClause, ctx: FormatContext): string 
     // Emit leading comments for this row
     if (row.leadingComments) {
       for (const c of row.leadingComments) {
-        lines.push(rowIndent + c.text);
+        lines.push(rowIndent + normalizeStandaloneLineCommentText(c.text));
       }
     }
 

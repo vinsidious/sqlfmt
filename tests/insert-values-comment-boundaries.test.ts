@@ -6,7 +6,7 @@ describe('INSERT VALUES and standalone comment boundaries', () => {
     const sql = "INSERT INTO t (c1, c2)\n-- comment\nVALUES (1, 'a');";
     const out = formatSQL(sql);
     expect(out).toContain('INSERT INTO t (c1, c2)');
-    expect(out).toContain('-- comment');
+    expect(out).toContain('/* comment */');
     expect(out).toContain("VALUES (1, 'a');");
     expect(out).not.toContain('INSERT INTO t (c1, c2);');
   });
@@ -21,7 +21,7 @@ describe('INSERT VALUES and standalone comment boundaries', () => {
   it('keeps standalone comments between statements on their own line without semicolons', () => {
     const sql = 'SELECT a FROM t1\n\n-- section divider\n\nSELECT b FROM t2';
     const out = formatSQL(sql);
-    expect(out).toContain('\n-- section divider\n\nSELECT b');
+    expect(out).toContain('\n/* section divider */\n\nSELECT b');
     expect(out).not.toContain('FROM t1 -- section divider');
   });
 });

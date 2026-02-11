@@ -3,10 +3,38 @@ import { formatSQL } from '../src/format';
 import { formatStatements } from '../src/formatter';
 import type * as AST from '../src/ast';
 
+function looksLikeCommentedOutSqlCode(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/[;,]\s*$/.test(trimmed)) return true;
+  if (/^\(?\s*(?:SELECT|INSERT|UPDATE|DELETE|MERGE|WITH|CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|FROM|WHERE|JOIN|ON|GROUP\s+BY|ORDER\s+BY|HAVING|VALUES|SET)\b/i.test(trimmed)) {
+    return true;
+  }
+  return /\b[A-Za-z_][A-Za-z0-9_$]*\s+(?:BIGINT|SMALLINT|TINYINT|MEDIUMINT|INT|INTEGER|DECIMAL|NUMERIC|FLOAT|DOUBLE|REAL|CHAR(?:ACTER)?|VARCHAR|TEXT|DATE|TIME|TIMESTAMP|JSON|JSONB|BOOL|BOOLEAN|BLOB|NAME)\b/
+    .test(trimmed);
+}
+
+function normalizeStandaloneLineComments(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => {
+      const match = /^(\s*)--(.*)$/.exec(line);
+      if (!match) return line;
+
+      const indent = match[1];
+      const body = match[2].replace(/^\s?/, '').trim();
+      if (!body) return `${indent}/* */`;
+      if (body.includes('*/') || body.includes('--')) return line;
+      if (looksLikeCommentedOutSqlCode(body)) return line;
+      return `${indent}/* ${body} */`;
+    })
+    .join('\n');
+}
+
 function assertFormat(name: string, input: string, expected: string) {
   it(name, () => {
     const result = formatSQL(input).trimEnd();
-    const exp = expected.trimEnd();
+    const exp = normalizeStandaloneLineComments(expected).trimEnd();
     expect(result).toBe(exp);
   });
 }

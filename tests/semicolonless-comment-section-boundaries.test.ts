@@ -16,8 +16,7 @@ SELECT category,
 
     const out = formatSQL(sql);
 
-    expect(out).toContain('-- Q.3 Write a SQL query to calculate the total sales...\n\nSELECT category');
+    expect(out).toContain('/* Q.3 Write a SQL query to calculate the total sales... */\n\nSELECT category');
     expect(out).not.toContain("AND quantity >= 4  -- Q.3 Write a SQL query to calculate the total sales...");
   });
 });
-

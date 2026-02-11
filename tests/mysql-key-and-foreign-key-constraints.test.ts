@@ -11,7 +11,7 @@ describe('MySQL table key and foreign key constraints', () => {
 );`;
 
     const out = formatSQL(sql);
-    expect(out).toContain('\n    KEY (id),\n');
+    expect(out).toContain('\n       KEY (id),\n');
     expect(out).toContain('\n    FOREIGN KEY (id)\n');
     expect(out).toContain('\n    PRIMARY KEY (id)\n');
     expect(out).not.toContain(') , FOREIGN KEY');
@@ -42,4 +42,3 @@ describe('MySQL table key and foreign key constraints', () => {
     expect(out).not.toContain('key idx_a(');
   });
 });
-

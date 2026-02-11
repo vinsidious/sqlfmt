@@ -20,6 +20,6 @@ SELECT * FROM CTE_EmplHierarchy;`;
 
     expect(twice).toBe(once);
     expect(thrice).toBe(twice);
-    expect((once.match(/-- Anchor member: start with employees who do not have a manager/g) ?? []).length).toBe(1);
+    expect((once.match(/\/\* Anchor member: start with employees who do not have a manager \*\//g) ?? []).length).toBe(1);
   });
 });

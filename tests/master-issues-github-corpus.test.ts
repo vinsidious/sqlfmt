@@ -55,8 +55,8 @@ describe('GitHub corpus issue regressions (2026-02-08)', () => {
 
   it('#5 keeps leading comments before first statement', () => {
     const out = formatSQL('\n\n-- file header\n-- license\nSELECT 1;');
-    expect(out).toContain('-- file header');
-    expect(out).toContain('-- license');
+    expect(out).toContain('/* file header */');
+    expect(out).toContain('/* license */');
     expect(out).toContain('SELECT 1;');
   });
 
@@ -236,7 +236,7 @@ describe('GitHub corpus issue regressions (2026-02-08)', () => {
 
   it('#35 preserves blank lines between comment paragraphs', () => {
     const out = formatSQL('-- paragraph 1\n\n-- paragraph 2\nSELECT 1;');
-    expect(out).toContain('-- paragraph 1\n\n-- paragraph 2');
+    expect(out).toContain('/* paragraph 1 */\n\n/* paragraph 2 */');
   });
 
   it('#36 enforces indentation for CREATE TABLE columns', () => {

@@ -47,7 +47,7 @@ describe('dialect and client SQL behavior coverage', () => {
   it('allows comments between CREATE VIEW AS and SELECT', () => {
     const sql = "CREATE VIEW v AS\n-- comment here\nSELECT 1;";
     const out = expectStrictAndRecoveryFree(sql);
-    expect(out).toContain('-- comment here');
+    expect(out).toContain('/* comment here */');
   });
 
   it('allows comments between the select list and FROM', () => {
@@ -60,7 +60,7 @@ describe('dialect and client SQL behavior coverage', () => {
   it('allows comments between UNION ALL and the following SELECT', () => {
     const sql = "SELECT 1 UNION ALL\n-- second part\nSELECT 2;";
     const out = expectStrictAndRecoveryFree(sql);
-    expect(out).toContain('-- second part');
+    expect(out).toContain('/* second part */');
     expect(out.toUpperCase()).toContain('UNION ALL');
   });
 

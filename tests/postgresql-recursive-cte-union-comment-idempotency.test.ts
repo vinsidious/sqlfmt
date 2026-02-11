@@ -22,6 +22,6 @@ SELECT 'val_' || s.name AS name, s.nr
 
     expect(twice).toBe(once);
     expect(thrice).toBe(twice);
-    expect((once.match(/-- non-recursive term/g) ?? []).length).toBe(1);
+    expect((once.match(/\/\* non-recursive term \*\//g) ?? []).length).toBe(1);
   });
 });

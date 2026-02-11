@@ -32,7 +32,7 @@ WHERE id = 1;`;
 
     const out = formatSQL(sql);
 
-    expect(out).toMatch(/FROM t\n\s*-- keep first group\n\s*-- keep first group continued\n\n\s*-- keep second group\n\s*WHERE id = 1;/);
+    expect(out).toMatch(/FROM t\n\s*\/\* keep first group \*\/\n\s*\/\* keep first group continued \*\/\n\n\s*\/\* keep second group \*\/\n\s*WHERE id = 1;/);
     expect(out).not.toContain('FROM t -- keep first group -- keep first group continued');
   });
 });
