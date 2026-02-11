@@ -515,7 +515,7 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     if (tokens.length >= maxTokenCount) {
       const { line, column } = lc(position);
       throw new TokenizeError(
-        `Token count exceeds maximum of ${maxTokenCount}`,
+        `Token count exceeds maximum of ${maxTokenCount}. Use the maxTokenCount option to increase the limit for large SQL inputs`,
         position,
         line,
         column,
