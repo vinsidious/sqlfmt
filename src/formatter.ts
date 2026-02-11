@@ -203,9 +203,13 @@ function shouldUseSingleNewlineBetween(previous: string, next: string): boolean 
   const previousTrimmed = previous.trimEnd();
   if (!/^IF\b/i.test(previousTrimmed)) return false;
   if (previousTrimmed.endsWith(';')) return false;
+  if (/\bBEGIN\b/i.test(previousTrimmed) && /\bEND\b/i.test(previousTrimmed)) return false;
 
   const nextTrimmed = next.trimStart();
-  return /^(BEGIN|INSERT|UPDATE|DELETE|MERGE|SET|SELECT|WITH|EXEC|EXECUTE|PRINT)\b/i.test(nextTrimmed);
+  if (!nextTrimmed) return false;
+  if (nextTrimmed.startsWith('--') || nextTrimmed.startsWith('/*')) return false;
+
+  return /^[A-Za-z_[(@]/.test(nextTrimmed);
 }
 
 function formatFormatterFallback(node: AST.Node): string {
@@ -3279,8 +3283,6 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     if (col.dataType) maxTypeLen = Math.max(maxTypeLen, col.dataType.replace(/\s+/g, ' ').length);
   }
   maxTypeLen = Math.min(maxTypeLen, ctx.runtime.layoutPolicy.createTableTypeAlignMax);
-  const tableConstraintIndent = ' '.repeat(Math.max(5, 4 + maxNameLen + 1));
-
   const hasDataElementAfter = (index: number): boolean => {
     for (let j = index + 1; j < node.elements.length; j++) {
       if (node.elements[j].elementType !== 'comment') return true;
@@ -3357,8 +3359,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
     } else if (elem.elementType === 'constraint') {
       if (elem.constraintName) {
-        const headIndent = elem.constraintType === 'check' ? tableConstraintIndent : '    ';
-        const bodyIndent = elem.constraintType === 'check' ? tableConstraintIndent : '        ';
+        const headIndent = '    ';
+        const bodyIndent = '        ';
         lines.push(headIndent + 'CONSTRAINT ' + elem.constraintName);
         if (elem.constraintType === 'check' && elem.checkExpr) {
           lines.push(bodyIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
