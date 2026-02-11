@@ -244,13 +244,23 @@ function readQuotedString(
     }
 
     if (ch === '\\' && pos + 1 < input.length && input[pos + 1] === "'") {
-      
       // Compatibility mode for MySQL dumps: treat \' as an escaped quote only
       // when another quote exists later to terminate the string.
-      const hasLaterQuote = input.indexOf("'", pos + 2) >= 0;
-      if (hasLaterQuote) {
-        pos += 2;
-        continue;
+      //
+      // Only an odd-length backslash run escapes the quote:
+      //   \'   -> escaped quote
+      //   \\'  -> literal backslash + closing quote
+      let runStart = pos;
+      while (runStart > start && input[runStart - 1] === '\\') {
+        runStart--;
+      }
+      const backslashRunLength = pos - runStart + 1;
+      if (backslashRunLength % 2 === 1) {
+        const hasLaterQuote = input.indexOf("'", pos + 2) >= 0;
+        if (hasLaterQuote) {
+          pos += 2;
+          continue;
+        }
       }
     }
     if (ch === "'") {
