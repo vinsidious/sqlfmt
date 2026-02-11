@@ -23,7 +23,7 @@ const BASE_CLAUSE_KEYWORDS = new Set([
   'INTO', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER',
   'DROP', 'WITH', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR',
   'RETURNING', 'FETCH', 'WINDOW', 'LATERAL', 'FOR', 'USING', 'ESCAPE',
-  'PIVOT', 'UNPIVOT', 'GO',
+  'PIVOT', 'UNPIVOT', 'GO', 'OPTION',
   'START', 'CONNECT', 'BY', 'PRIOR', 'NOCYCLE',
 ]);
 const FUNCTION_KEYWORD_OVERRIDES = new Set([
@@ -68,7 +68,7 @@ const CREATE_KEYWORD_NORMALIZED_TYPES = new Set([
 
 const SELECT_PROJECTION_BOUNDARY_KEYWORDS = new Set([
   'FROM', 'INTO', 'WHERE', 'GROUP', 'HAVING', 'WINDOW', 'ORDER', 'LIMIT',
-  'OFFSET', 'FETCH', 'FOR', 'UNION', 'INTERSECT', 'EXCEPT',
+  'OFFSET', 'FETCH', 'FOR', 'OPTION', 'UNION', 'INTERSECT', 'EXCEPT',
 ]);
 
 // Lookup table for multi-word SQL type names.
@@ -1667,6 +1667,7 @@ export class Parser {
     let offset: AST.OffsetClause | undefined;
     let fetch: { count: AST.Expression; withTies?: boolean } | undefined;
     let lockingClause: string | undefined;
+    let optionClause: string | undefined;
     let windowClause: { name: string; spec: AST.WindowSpec }[] | undefined;
 
     if (this.peekUpper() === 'FROM') {
@@ -1827,6 +1828,10 @@ export class Parser {
       lockingClause = this.parseForClause();
     }
 
+    if (this.peekUpper() === 'OPTION') {
+      optionClause = this.parseOptionClause();
+    }
+
     return {
       type: 'select',
       distinct,
@@ -1847,6 +1852,7 @@ export class Parser {
       offset,
       fetch,
       lockingClause,
+      optionClause,
       windowClause,
       leadingComments: [],
     };
@@ -2558,6 +2564,23 @@ export class Parser {
     }
 
     return parts.join(' ');
+  }
+
+  private parseOptionClause(): string {
+    this.expect('OPTION');
+    const tokens: Token[] = [{ ...this.peekAt(-1) }];
+
+    if (this.check('(')) {
+      let depth = 0;
+      do {
+        const token = this.advance();
+        tokens.push(token);
+        if (token.value === '(') depth++;
+        if (token.value === ')') depth--;
+      } while (!this.isAtEnd() && depth > 0);
+    }
+
+    return this.tokensToSql(tokens);
   }
 
   private parseOrderByItems(): AST.OrderByItem[] {
@@ -5030,10 +5053,14 @@ export class Parser {
     if (this.check('(') && this.peekUpperAt(0) === '(' && !this.looksLikeCTEBodyStart()) {
       this.advance(); // consume (
       columnList = [];
+      this.consumeComments();
       while (!this.check(')') && !this.isAtEnd()) {
-        const col = this.advance();
-        columnList.push(col.value);
-        if (this.check(',')) this.advance();
+        columnList.push(this.advance().value);
+        this.consumeComments();
+        if (this.check(',')) {
+          this.advance();
+          this.consumeComments();
+        }
       }
       this.expect(')');
     }

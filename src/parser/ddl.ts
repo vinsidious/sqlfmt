@@ -497,17 +497,15 @@ function parseCreateViewStatement(
   }
 
   let withOptions: string | undefined;
-  if (ctx.peekUpper() === 'WITH' && ctx.peekUpperAt(1) === '(') {
+  if (ctx.peekUpper() === 'WITH') {
     const optionTokens: Token[] = [];
-    optionTokens.push(ctx.advance()); // WITH
-    if (ctx.check('(')) {
-      let depth = 0;
-      do {
-        const token = ctx.advance();
-        optionTokens.push(token);
-        if (token.value === '(') depth++;
-        if (token.value === ')') depth--;
-      } while (!ctx.isAtEnd() && depth > 0);
+    let depth = 0;
+    while (!ctx.isAtEnd()) {
+      if (depth === 0 && ctx.peekUpper() === 'AS') break;
+      const token = ctx.advance();
+      optionTokens.push(token);
+      if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+      if (token.value === ')' || token.value === ']' || token.value === '}') depth = Math.max(0, depth - 1);
     }
     withOptions = ctx.tokensToSql(optionTokens) || undefined;
     skipInlineComments(ctx);
