@@ -21,13 +21,29 @@ export interface DmlParser {
   consumeComments?: () => AST.CommentNode[];
 }
 
+const SQLITE_INSERT_OR_ACTIONS = new Set<NonNullable<AST.InsertStatement['orConflictAction']>>([
+  'ROLLBACK',
+  'ABORT',
+  'FAIL',
+  'IGNORE',
+  'REPLACE',
+]);
+
 export function parseInsertStatement(
   ctx: DmlParser,
   comments: AST.CommentNode[]
 ): AST.InsertStatement {
   ctx.expect('INSERT');
   let ignore = false;
-  if (ctx.peekUpper() === 'IGNORE') {
+  let orConflictAction: AST.InsertStatement['orConflictAction'];
+  if (ctx.peekUpper() === 'OR') {
+    ctx.advance();
+    const action = ctx.peekUpper() as NonNullable<AST.InsertStatement['orConflictAction']>;
+    if (!SQLITE_INSERT_OR_ACTIONS.has(action)) {
+      ctx.expect('IGNORE');
+    }
+    orConflictAction = ctx.advance().upper as NonNullable<AST.InsertStatement['orConflictAction']>;
+  } else if (ctx.peekUpper() === 'IGNORE') {
     ctx.advance();
     ignore = true;
   }
@@ -167,6 +183,7 @@ export function parseInsertStatement(
   return {
     type: 'insert',
     ignore: ignore || undefined,
+    orConflictAction,
     table,
     alias,
     columns,

@@ -2283,7 +2283,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   emitComments(node.leadingComments, lines);
 
   const insertHead = rightAlign('INSERT', dmlCtx)
-    + (node.ignore ? ' IGNORE' : '')
+    + (node.orConflictAction ? ` OR ${node.orConflictAction}` : node.ignore ? ' IGNORE' : '')
     + ' INTO '
     + lowerIdent(node.table)
     + (node.alias ? ' AS ' + formatAlias(node.alias) : '');

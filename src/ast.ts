@@ -110,6 +110,7 @@ export interface SelectStatement {
 export interface InsertStatement {
   readonly type: 'insert';
   readonly ignore?: boolean;
+  readonly orConflictAction?: 'ROLLBACK' | 'ABORT' | 'FAIL' | 'IGNORE' | 'REPLACE';
   readonly table: string;
   readonly alias?: string;
   readonly columns: readonly string[];
