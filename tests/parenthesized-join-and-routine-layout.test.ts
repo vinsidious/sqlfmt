@@ -38,3 +38,22 @@ WHERE e.execution_id = @execution_id;`;
     expect(out).not.toMatch(/\n\s{7,}FULL OUTER JOIN/);
   });
 });
+
+describe('Parenthesized JOIN ON subquery alignment', () => {
+  it('keeps nested IN subquery lines aligned within ON clause context', () => {
+    const sql = `SELECT e.id, omename
+  FROM password, experimenter e
+  LEFT OUTER JOIN groupexperimentermap g ON (
+           g.child = e.id
+       AND g.parent IN (
+             SELECT id FROM experimentergroup WHERE name = 'user'
+           )
+       )
+ WHERE password.experimenter_id = e.id;`;
+
+    const out = formatSQL(sql);
+
+    expect(out).toMatch(/\n\s+ON \(g\.child = e\.id\n\s+AND g\.parent IN(?:\n\s+)?\(SELECT id/);
+    expect(out).toMatch(/\(SELECT id\n\s{10,}FROM experimentergroup\n\s{10,}WHERE name = 'user'\)\)/);
+  });
+});

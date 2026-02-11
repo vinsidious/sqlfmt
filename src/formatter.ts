@@ -1430,6 +1430,17 @@ function formatExprAtColumn(expr: AST.Expression, colStart: number, runtime: For
   if (expr.type === 'case') return formatCaseAtColumn(expr, colStart, runtime);
   if (expr.type === 'subquery') return formatSubqueryAtColumn(expr, colStart, runtime);
   if (expr.type === 'window_function') return formatWindowFunctionAtColumn(expr, colStart, runtime);
+  if (expr.type === 'in' && isInExprSubquery(expr)) {
+    return formatInExprWrapped(expr, colStart, runtime);
+  }
+  if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'in' && isInExprSubquery(expr.operand)) {
+    const inExpr = expr.operand;
+    const prefix = 'NOT ' + formatExpr(inExpr.expr) + ' IN ';
+    const subquery = getInExprSubquery(inExpr);
+    const inner = formatQueryExpressionForSubquery(subquery.query, runtime);
+    const wrapped = wrapSubqueryLines(inner, colStart + stringDisplayWidth(prefix));
+    return prefix + wrapped;
+  }
   if (expr.type === 'paren') return '(' + formatExprAtColumn(expr.expr, colStart + 1, runtime) + ')';
   if (expr.type === 'binary' && expr.right.type === 'subquery') {
     const left = formatExpr(expr.left);
@@ -1672,6 +1683,12 @@ function formatJoinOn(
 ): string {
   if (depth >= MAX_FORMATTER_DEPTH) {
     return formatExpr(expr);
+  }
+  if (expr.type === 'paren' && expr.expr.type === 'binary' && (expr.expr.operator === 'AND' || expr.expr.operator === 'OR')) {
+    return '(' + formatParenLogical(expr.expr, baseCol + 1, runtime, depth + 1) + ')';
+  }
+  if (expr.type === 'paren' && expr.expr.type === 'binary' && expr.expr.right.type === 'subquery') {
+    return '(' + formatExprAtColumn(expr.expr, baseCol + 1, runtime) + ')';
   }
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     const left = formatJoinOn(expr.left, baseCol, runtime, depth + 1);
