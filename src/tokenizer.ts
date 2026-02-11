@@ -211,6 +211,52 @@ function shouldPreferHashIdentifierAtLineStart(prev: Token | undefined): boolean
   );
 }
 
+const ANGLE_TEMPLATE_IDENTIFIER_PRECEDERS = new Set([
+  'TABLE',
+  'VIEW',
+  'INDEX',
+  'TRIGGER',
+  'PROCEDURE',
+  'FUNCTION',
+  'SCHEMA',
+  'DATABASE',
+  'FROM',
+  'JOIN',
+  'INTO',
+  'UPDATE',
+  'DELETE',
+  'TRUNCATE',
+  'DROP',
+  'CREATE',
+  'ALTER',
+  'ON',
+  'REFERENCES',
+]);
+
+function shouldPreferAngleTemplateIdentifier(prev: Token | undefined): boolean {
+  if (!prev) return true;
+  if (prev.value === '.' || prev.value === ',' || prev.value === '(') return true;
+  if (prev.type !== 'keyword') return false;
+  return ANGLE_TEMPLATE_IDENTIFIER_PRECEDERS.has(prev.upper);
+}
+
+function readAngleTemplateIdentifier(input: string, start: number): number | null {
+  if (input[start] !== '<') return null;
+  let pos = start + 1;
+  let sawComma = false;
+  while (pos < input.length) {
+    const ch = input[pos];
+    if (ch === '>') {
+      if (!sawComma || pos === start + 1) return null;
+      return pos + 1;
+    }
+    if (ch === ',' && !sawComma) sawComma = true;
+    if (ch === '<' || ch === ';' || ch === '\n' || ch === '\r') return null;
+    pos++;
+  }
+  return null;
+}
+
 function readDollarDelimiter(input: string, start: number): string | null {
   if (input[start] !== '$') return null;
 
@@ -886,6 +932,13 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
       continue;
     }
 
+    // Named argument / assignment operator used by PostgreSQL extensions.
+    if (ch === ':' && pos + 1 < len && input[pos + 1] === '=') {
+      pos += 2;
+      emit('operator', ':=', ':=', start);
+      continue;
+    }
+
     // Oracle/SQL*Plus bind parameters: :name, :1, :schema.object
     if (ch === ':' && input[pos + 1] !== ':') {
       const next = input[pos + 1];
@@ -983,6 +1036,16 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
 
     // < operators: <@ then <> then << then <= then <
     if (ch === '<') {
+      const prev = previousSignificantToken(tokens);
+      if (shouldPreferAngleTemplateIdentifier(prev)) {
+        const end = readAngleTemplateIdentifier(input, start);
+        if (end !== null) {
+          pos = end;
+          const val = input.slice(start, pos);
+          emit('identifier', val, val.toUpperCase(), start);
+          continue;
+        }
+      }
       if (pos + 1 < len) {
         const next = input[pos + 1];
         if (next === '@') {

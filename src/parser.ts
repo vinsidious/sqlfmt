@@ -2749,7 +2749,7 @@ export class Parser {
   private checkComparisonOperator(): boolean {
     const t = this.peek();
     if (t.type === 'operator') {
-      return ['=', '<>', '!=', '<', '>', '<=', '>=', '&&'].includes(t.value);
+      return ['=', ':=', '<>', '!=', '<', '>', '<=', '>=', '&&'].includes(t.value);
     }
     return false;
   }
