@@ -335,6 +335,7 @@ export interface MergeWhenClause {
 
 export interface ExplainStatement {
   readonly type: 'explain';
+  readonly planFor?: boolean;
   readonly analyze?: boolean;
   readonly verbose?: boolean;
   readonly costs?: boolean;

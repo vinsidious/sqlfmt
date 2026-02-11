@@ -885,8 +885,28 @@ export class Parser {
     return false;
   }
 
+  private peekUpperSkippingComments(offset: number = 0): string {
+    let lookahead = this.pos + offset;
+    while (lookahead < this.tokens.length) {
+      const token = this.tokens[lookahead];
+      if (token.type === 'line_comment' || token.type === 'block_comment') {
+        lookahead++;
+        continue;
+      }
+      return token.upper;
+    }
+    return '';
+  }
+
   private isControlFlowEndQualifier(kw: string): boolean {
-    return kw === 'IF' || kw === 'CASE' || kw === 'LOOP' || kw === 'WHILE' || kw === 'REPEAT';
+    if (kw === 'IF') {
+      // Avoid swallowing a new top-level IF statement after END.
+      // Treat END IF as a control-flow qualifier only when IF is followed
+      // by a terminator (or EOF), as in "END IF;".
+      const next = this.peekUpperSkippingComments(1);
+      return next === ';' || next === '' || next === this.activeDelimiter;
+    }
+    return kw === 'CASE' || kw === 'LOOP' || kw === 'WHILE' || kw === 'REPEAT';
   }
 
   private parseStatementUntilEndBlock(
@@ -3458,6 +3478,7 @@ export class Parser {
   private parseExplain(comments: AST.CommentNode[]): AST.ExplainStatement {
     this.expect('EXPLAIN');
 
+    let planFor = false;
     let analyze = false;
     let verbose = false;
     let costs: boolean | undefined;
@@ -3568,6 +3589,12 @@ export class Parser {
       if (this.check(',')) this.advance();
     }
 
+    if (this.peekUpper() === 'PLAN' && this.peekUpperAt(1) === 'FOR') {
+      this.advance();
+      this.advance();
+      planFor = true;
+    }
+
     const statementComments = this.consumeComments();
     let statement: AST.ExplainStatement['statement'];
     const queryStatement = this.tryParseQueryExpressionAtCurrent(statementComments);
@@ -3585,6 +3612,7 @@ export class Parser {
 
     return {
       type: 'explain',
+      planFor: planFor || undefined,
       analyze,
       verbose,
       costs,

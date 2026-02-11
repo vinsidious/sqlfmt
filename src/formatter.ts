@@ -188,12 +188,24 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
   // statement itself starts with blank lines (typically from leading comment
   // metadata), remove one leading newline to prevent pass-to-pass growth.
   let out = parts[0];
+  let previous = parts[0];
   for (let i = 1; i < parts.length; i++) {
     let next = parts[i];
     if (next.startsWith('\n')) next = next.slice(1);
-    out += '\n\n' + next;
+    const separator = shouldUseSingleNewlineBetween(previous, next) ? '\n' : '\n\n';
+    out += separator + next;
+    previous = next;
   }
   return out + '\n';
+}
+
+function shouldUseSingleNewlineBetween(previous: string, next: string): boolean {
+  const previousTrimmed = previous.trimEnd();
+  if (!/^IF\b/i.test(previousTrimmed)) return false;
+  if (previousTrimmed.endsWith(';')) return false;
+
+  const nextTrimmed = next.trimStart();
+  return /^(BEGIN|INSERT|UPDATE|DELETE|MERGE|SET|SELECT|WITH|EXEC|EXECUTE|PRINT)\b/i.test(nextTrimmed);
 }
 
 function formatFormatterFallback(node: AST.Node): string {
@@ -360,12 +372,44 @@ function formatNode(node: AST.Node, ctx: FormatContext): string {
 function formatRawTopLevelNode(text: string, ctx: FormatContext): string {
   const routine = tryFormatRoutineBlock(text, ctx.runtime);
   if (routine) return routine;
+  const createPipe = tryFormatCreatePipe(text);
+  if (createPipe) return createPipe;
   const beginEnd = tryFormatBeginEndBlock(text, ctx.runtime);
   if (beginEnd) return beginEnd;
   const alterView = tryFormatAlterViewAsQuery(text, ctx.runtime);
   if (alterView) return alterView;
   const returnSelect = tryFormatReturnParenthesizedSelect(text, ctx.runtime);
   return returnSelect ?? text;
+}
+
+function tryFormatCreatePipe(text: string): string | null {
+  const trimmed = text.trim();
+  if (!/^CREATE\s+(?:OR\s+REPLACE\s+)?PIPE\b/i.test(trimmed)) return null;
+
+  const lines = trimmed
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0);
+  if (lines.length === 0) return null;
+
+  const first = lines[0];
+  const firstMatch = /^CREATE\s+(OR\s+REPLACE\s+)?PIPE\b(.*)$/i.exec(first);
+  if (!firstMatch) return null;
+  const header = firstMatch[1] ? 'CREATE OR REPLACE PIPE' : 'CREATE PIPE';
+  const objectName = firstMatch[2].trim();
+
+  const out: string[] = [objectName ? `${header} ${objectName}` : header];
+  for (let i = 1; i < lines.length; i++) {
+    let line = lines[i];
+    line = line.replace(/^AUTO_INGEST\b/i, 'AUTO_INGEST');
+    line = line.replace(/^AS\b/i, 'AS');
+    line = line.replace(/^COPY\s+INTO\b/i, 'COPY INTO');
+    line = line.replace(/^FROM\b/i, 'FROM');
+    line = line.replace(/\s+;$/, ';');
+    out.push(line);
+  }
+
+  return out.join('\n');
 }
 
 function tryFormatAlterViewAsQuery(text: string, runtime: FormatterRuntime): string | null {
@@ -658,7 +702,11 @@ function formatExplain(node: AST.ExplainStatement, ctx: FormatContext): string {
   if (node.format) options.push(`FORMAT ${node.format}`);
 
   let header = 'EXPLAIN';
-  if (options.length > 0) header += ' (' + options.join(', ') + ')';
+  if (node.planFor) {
+    header += ' PLAN FOR';
+  } else if (options.length > 0) {
+    header += ' (' + options.join(', ') + ')';
+  }
   lines.push(header);
 
   const inner = formatNode(node.statement, {
