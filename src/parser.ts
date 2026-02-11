@@ -3710,6 +3710,7 @@ export class Parser {
       check: (value: string) => this.check(value),
       peekUpper: () => this.peekUpper(),
       peekUpperAt: (offset: number) => this.peekUpperAt(offset),
+      peekType: () => this.peekType(),
       isAtEnd: () => this.isAtEnd(),
       hasImplicitStatementBoundary: () => this.hasImplicitStatementBoundary(),
       tokensToSql: (tokens: Token[]) => this.tokensToSql(tokens),

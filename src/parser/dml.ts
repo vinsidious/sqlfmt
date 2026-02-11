@@ -7,6 +7,7 @@ export interface DmlParser {
   check(value: string): boolean;
   peekUpper(): string;
   peekUpperAt(offset: number): string;
+  peekType?(): Token['type'];
   isAtEnd(): boolean;
   hasImplicitStatementBoundary?(): boolean;
   tokensToSql?(tokens: Token[]): string;
@@ -47,8 +48,12 @@ export function parseInsertStatement(
     ctx.advance();
     ignore = true;
   }
-  if (ctx.peekUpper() === 'INTO') {
+  const hasIntoKeyword = ctx.peekUpper() === 'INTO';
+  if (hasIntoKeyword) {
     ctx.advance();
+  } else if (ctx.peekType?.() === 'keyword') {
+    // Avoid silently reinterpreting misspellings like `INSERT INT ...`.
+    ctx.expect('INTO');
   }
   let table = ctx.advance().value;
   while (ctx.check('.')) {
