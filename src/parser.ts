@@ -1482,6 +1482,12 @@ export class Parser {
         leadingComments: comments,
       };
     }
+    if (first.statement.type === 'values') {
+      return {
+        ...first.statement,
+        leadingComments: comments,
+      };
+    }
     if (first.statement.type !== 'select') {
       throw new ParseError('query expression', this.peek());
     }
@@ -1512,14 +1518,9 @@ export class Parser {
       if (this.peekUpper() === 'WITH') {
         return this.parseCTE(comments, { queryOnly: true });
       }
-      if (this.peekUpper() === 'VALUES') {
-        const values = this.parseValuesClause();
-        if (comments.length === 0) return values;
-        return { ...values, leadingComments: comments };
-      }
-      if (this.peekUpper() === 'SELECT' || this.check('(')) {
+      if (this.peekUpper() === 'SELECT' || this.peekUpper() === 'VALUES' || this.check('(')) {
         const query = this.parseUnionOrSelect(comments);
-        if (query.type === 'select' || query.type === 'union') return query;
+        if (query.type === 'select' || query.type === 'union' || query.type === 'values') return query;
       }
       throw new ParseError('query expression', this.peek());
     });
@@ -1896,14 +1897,16 @@ export class Parser {
 
     const { alias, aliasColumns } = this.parseOptionalAlias({
       allowColumnList: true,
-      stopKeywords: ['TABLESAMPLE', 'PIVOT', 'UNPIVOT'],
+      stopKeywords: ['TABLESAMPLE', 'PIVOT', 'UNPIVOT', 'USE', 'IGNORE', 'FORCE'],
     });
+    const indexHint = this.parseOptionalIndexHintClause();
     const pivotClause = this.parseOptionalPivotClause();
 
     return {
       table,
       alias,
       aliasColumns,
+      indexHint,
       pivotClause,
       lateral,
       ordinality,
@@ -1980,6 +1983,50 @@ export class Parser {
     }
 
     return this.tokensToSql(tokens) || undefined;
+  }
+
+  private parseOptionalIndexHintClause(): string | undefined {
+    const hintParts: string[] = [];
+
+    while (
+      (this.peekUpper() === 'USE' || this.peekUpper() === 'IGNORE' || this.peekUpper() === 'FORCE')
+      && (this.peekUpperAt(1) === 'INDEX' || this.peekUpperAt(1) === 'KEY')
+    ) {
+      const hintTokens: Token[] = [];
+      hintTokens.push(this.advance()); // USE / IGNORE / FORCE
+      hintTokens.push(this.advance()); // INDEX / KEY
+
+      if (this.peekUpper() === 'FOR') {
+        hintTokens.push(this.advance()); // FOR
+        if (this.peekUpper() === 'JOIN') {
+          hintTokens.push(this.advance());
+        } else if (
+          (this.peekUpper() === 'ORDER' || this.peekUpper() === 'GROUP')
+          && this.peekUpperAt(1) === 'BY'
+        ) {
+          hintTokens.push(this.advance());
+          hintTokens.push(this.advance());
+        } else {
+          throw new ParseError('JOIN, ORDER BY, or GROUP BY', this.peek());
+        }
+      }
+
+      this.expect('(');
+      hintTokens.push(this.peekAt(-1));
+      let depth = 1;
+      while (!this.isAtEnd() && depth > 0) {
+        const token = this.advance();
+        hintTokens.push(token);
+        if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+        else if (token.value === ')' || token.value === ']' || token.value === '}') depth--;
+      }
+
+      const hintText = this.tokensToSql(hintTokens).trim();
+      if (hintText) hintParts.push(hintText);
+      this.consumeComments();
+    }
+
+    return hintParts.length > 0 ? hintParts.join(' ') : undefined;
   }
 
   // Parse an optional parenthesized column alias list: (col1, col2, ...)
@@ -2143,8 +2190,9 @@ export class Parser {
       }
       const { alias, aliasColumns } = this.parseOptionalAlias({
         allowColumnList: true,
-        stopKeywords: ['PIVOT', 'UNPIVOT'],
+        stopKeywords: ['PIVOT', 'UNPIVOT', 'USE', 'IGNORE', 'FORCE'],
       });
+      const indexHint = this.parseOptionalIndexHintClause();
       const pivotClause = this.parseOptionalPivotClause();
       const commentsBeforeJoinPredicate = this.consumeComments();
 
@@ -2193,6 +2241,7 @@ export class Parser {
         table,
         alias,
         aliasColumns,
+        indexHint,
         pivotClause,
         ordinality,
         on,
@@ -2208,10 +2257,11 @@ export class Parser {
       const table = this.parseTableExprWithDescendants();
       const { alias, aliasColumns } = this.parseOptionalAlias({
         allowColumnList: true,
-        stopKeywords: ['PIVOT', 'UNPIVOT'],
+        stopKeywords: ['PIVOT', 'UNPIVOT', 'USE', 'IGNORE', 'FORCE'],
       });
+      const indexHint = this.parseOptionalIndexHintClause();
       const pivotClause = this.parseOptionalPivotClause();
-      return { joinType, table, alias, aliasColumns, pivotClause };
+      return { joinType, table, alias, aliasColumns, indexHint, pivotClause };
     }
 
     let joinType = '';
@@ -2236,8 +2286,9 @@ export class Parser {
     // ON and USING are already clause keywords, so no extra stop keywords needed
     const { alias, aliasColumns } = this.parseOptionalAlias({
       allowColumnList: true,
-      stopKeywords: ['PIVOT', 'UNPIVOT'],
+      stopKeywords: ['PIVOT', 'UNPIVOT', 'USE', 'IGNORE', 'FORCE'],
     });
+    const indexHint = this.parseOptionalIndexHintClause();
     const pivotClause = this.parseOptionalPivotClause();
     const commentsBeforeJoinPredicate = this.consumeComments();
 
@@ -2286,6 +2337,7 @@ export class Parser {
       table,
       alias,
       aliasColumns,
+      indexHint,
       pivotClause,
       lateral,
       ordinality,
@@ -2912,6 +2964,11 @@ export class Parser {
       const operand = this.parsePrimary();
       return { type: 'unary', operator: 'PRIOR', operand };
     }
+    if (this.peekUpper() === 'VARIADIC') {
+      this.advance();
+      const operand = this.parsePrimaryWithPostfix();
+      return { type: 'unary', operator: 'VARIADIC', operand };
+    }
     return this.parsePrimaryWithPostfix();
   }
 
@@ -3205,27 +3262,31 @@ export class Parser {
 
       this.expect(')');
 
-      // FILTER (WHERE ...)
+      // FILTER (WHERE ...) and WITHIN GROUP (ORDER BY ...) can appear in
+      // either order depending on the aggregate form.
       let filter: AST.Expression | undefined;
-      if (this.peekUpper() === 'FILTER') {
-        this.advance();
-        this.expect('(');
-        this.expect('WHERE');
-        filter = this.parseExpression();
-        this.expect(')');
-      }
-
-      // WITHIN GROUP (ORDER BY ...)
       let withinGroup: { orderBy: AST.OrderByItem[] } | undefined;
-      if (this.peekUpper() === 'WITHIN') {
-        this.advance();
-        this.expect('GROUP');
-        this.expect('(');
-        this.expect('ORDER');
-        this.expect('BY');
-        const withinOrderBy = this.parseOrderByItems();
-        this.expect(')');
-        withinGroup = { orderBy: withinOrderBy };
+      while (true) {
+        if (!withinGroup && this.peekUpper() === 'WITHIN') {
+          this.advance();
+          this.expect('GROUP');
+          this.expect('(');
+          this.expect('ORDER');
+          this.expect('BY');
+          const withinOrderBy = this.parseOrderByItems();
+          this.expect(')');
+          withinGroup = { orderBy: withinOrderBy };
+          continue;
+        }
+        if (!filter && this.peekUpper() === 'FILTER') {
+          this.advance();
+          this.expect('(');
+          this.expect('WHERE');
+          filter = this.parseExpression();
+          this.expect(')');
+          continue;
+        }
+        break;
       }
 
       const funcExpr: AST.FunctionCallExpr = {
@@ -5081,26 +5142,8 @@ export class Parser {
     const postHintComments = this.consumeComments();
     this.expect('(');
 
-    let query: AST.SelectStatement | AST.UnionStatement | AST.ValuesClause;
     const queryComments = [...postAsComments, ...postHintComments, ...this.consumeComments()];
-    const first = this.peekUpper() === 'VALUES' ? this.parseValuesClause() : this.parseSelect();
-    const firstWithComments = queryComments.length > 0
-      ? { ...first, leadingComments: queryComments }
-      : first;
-    if (this.checkUnionKeyword()) {
-      const members: { statement: AST.QueryExpression; parenthesized: boolean }[] = [
-        { statement: firstWithComments, parenthesized: false }
-      ];
-      const operators: string[] = [];
-      while (this.checkUnionKeyword()) {
-        operators.push(this.consumeUnionKeyword());
-        const memberComments = this.consumeComments();
-        members.push(this.parseQueryMember(memberComments));
-      }
-      query = { type: 'union', members, operators, leadingComments: queryComments };
-    } else {
-      query = firstWithComments;
-    }
+    const query = this.parseQueryExpression(queryComments);
 
     this.expect(')');
     return { name, columnList, materialized: materializedHint, query, leadingComments };

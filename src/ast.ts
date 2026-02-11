@@ -271,6 +271,7 @@ export interface DropTableStatement {
   readonly concurrently?: boolean;
   readonly ifExists: boolean;
   readonly objectName: string;
+  readonly withOptions?: string;
   readonly behavior?: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINT' | 'CASCADE CONSTRAINTS';
   readonly leadingComments: readonly CommentNode[];
 }
@@ -315,7 +316,7 @@ export interface CTEDefinition {
   readonly name: string;
   readonly columnList?: readonly string[];   // e.g., (revenue_date, amount)
   readonly materialized?: 'materialized' | 'not_materialized';
-  readonly query: SelectStatement | UnionStatement | ValuesClause;
+  readonly query: QueryExpression;
   readonly leadingComments?: readonly CommentNode[];  // comments before this CTE definition
 }
 
@@ -773,6 +774,7 @@ export interface FromClause {
   readonly table: Expression;
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
+  readonly indexHint?: string;
   readonly pivotClause?: string;
   readonly lateral?: boolean;
   readonly ordinality?: boolean;
@@ -785,6 +787,7 @@ export interface JoinClause {
   readonly table: Expression;
   readonly alias?: string;
   readonly aliasColumns?: readonly string[];
+  readonly indexHint?: string;
   readonly pivotClause?: string;
   readonly lateral?: boolean;
   readonly ordinality?: boolean;

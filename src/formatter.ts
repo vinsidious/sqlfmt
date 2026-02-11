@@ -1482,6 +1482,9 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
       result += '(' + from.aliasColumns.join(', ') + ')';
     }
   }
+  if (from.indexHint) {
+    result += ' ' + from.indexHint;
+  }
   if (from.pivotClause) {
     result += '\n' + ' '.repeat(baseCol) + normalizePivotClauseText(from.pivotClause);
   }
@@ -1656,6 +1659,7 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number, runtime: F
       result += '(' + join.aliasColumns.join(', ') + ')';
     }
   }
+  if (join.indexHint) result += ' ' + join.indexHint;
   if (join.pivotClause) result += ' ' + join.pivotClause;
   return result;
 }
@@ -3666,6 +3670,7 @@ function formatDropTable(node: AST.DropTableStatement, ctx: FormatContext): stri
   if (node.concurrently) line += ' CONCURRENTLY';
   if (node.ifExists) line += ' IF EXISTS';
   line += ' ' + lowerIdent(node.objectName);
+  if (node.withOptions) line += ' ' + node.withOptions;
   if (node.behavior) line += ' ' + node.behavior;
   line += ';';
   lines.push(line);
@@ -3825,6 +3830,8 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
       lines.push(formatValuesClause(cte.query, bodyCtx));
     } else if (cte.query.type === 'union') {
       lines.push(formatUnion(cte.query, bodyCtx));
+    } else if (cte.query.type === 'cte') {
+      lines.push(formatCTE(cte.query, bodyCtx));
     } else {
       lines.push(formatSelect(cte.query as AST.SelectStatement, bodyCtx));
     }
