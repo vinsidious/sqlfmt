@@ -261,6 +261,16 @@ function isBindParameterBoundaryChar(ch: string | undefined): boolean {
   return '([,{=<>!+-*/%|&^:;'.includes(ch);
 }
 
+function shouldTreatBackslashQuoteAsStringEscape(input: string, backslashPos: number): boolean {
+  const next = input[backslashPos + 2];
+  if (!next) return false;
+
+  if (next === "'" || next === '\\') return true;
+
+  const code = next.charCodeAt(0);
+  return isAsciiLetterCode(code) || isAsciiDigitCode(code) || next === '_';
+}
+
 function previousSignificantToken(tokens: Token[]): Token | undefined {
   for (let i = tokens.length - 1; i >= 0; i--) {
     if (tokens[i].type !== 'whitespace') return tokens[i];
@@ -367,11 +377,12 @@ function readQuotedString(
     }
 
     if (ch === '\\' && pos + 1 < input.length && input[pos + 1] === "'") {
-      // Compatibility mode for MySQL dumps: treat \' as an escaped quote only
-      // when another quote exists later to terminate the string.
+      // Compatibility mode for mixed-dialect inputs:
+      // keep supporting common MySQL-style \' escapes, but avoid swallowing
+      // PostgreSQL-style literals where backslash is ordinary text.
       //
-      // Only an odd-length backslash run escapes the quote:
-      //   \'   -> escaped quote
+      // Only an odd-length backslash run can escape the quote:
+      //   \'   -> potential escaped quote
       //   \\'  -> literal backslash + closing quote
       let runStart = pos;
       while (runStart > start && input[runStart - 1] === '\\') {
@@ -379,8 +390,7 @@ function readQuotedString(
       }
       const backslashRunLength = pos - runStart + 1;
       if (backslashRunLength % 2 === 1) {
-        const hasLaterQuote = input.indexOf("'", pos + 2) >= 0;
-        if (hasLaterQuote) {
+        if (shouldTreatBackslashQuoteAsStringEscape(input, pos)) {
           pos += 2;
           continue;
         }
