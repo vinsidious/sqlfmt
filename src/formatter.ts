@@ -162,7 +162,9 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
         parts[parts.length - 1] = withoutSyntheticSemicolon + '\n/';
       } else {
         const previous = parts[parts.length - 1].trimEnd();
-        parts[parts.length - 1] = previous + ' ' + node.text;
+        parts[parts.length - 1] = node.text.includes('\n')
+          ? previous + '\n' + node.text
+          : previous + ' ' + node.text;
       }
       continue;
     }
@@ -540,6 +542,11 @@ function formatBlockBody(body: string, runtime: FormatterRuntime): string | null
           parts.push(returnSelect.trim());
           continue;
         }
+        const formattedRaw = formatStatements([node], {
+          maxLineLength: runtime.maxLineLength,
+        }).trim();
+        parts.push(normalizeRawBlockPartIndent(formattedRaw));
+        continue;
       }
       parts.push(formatStatements([node], {
         maxLineLength: runtime.maxLineLength,
@@ -549,6 +556,32 @@ function formatBlockBody(body: string, runtime: FormatterRuntime): string | null
   } catch {
     return null;
   }
+}
+
+function normalizeRawBlockPartIndent(text: string): string {
+  const lines = text.split('\n');
+  if (lines.length < 2) return text;
+
+  let continuationMinIndent: number | null = null;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const leadingSpaces = line.match(/^ */)?.[0].length ?? 0;
+    continuationMinIndent = continuationMinIndent === null
+      ? leadingSpaces
+      : Math.min(continuationMinIndent, leadingSpaces);
+    if (continuationMinIndent === 0) break;
+  }
+
+  if (!continuationMinIndent || continuationMinIndent <= 0) return text;
+
+  const stripPrefix = ' '.repeat(continuationMinIndent);
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].startsWith(stripPrefix)) {
+      lines[i] = lines[i].slice(continuationMinIndent);
+    }
+  }
+  return lines.join('\n');
 }
 
 function tryFormatReturnParenthesizedSelect(text: string, runtime: FormatterRuntime): string | null {
