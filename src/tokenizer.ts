@@ -177,6 +177,83 @@ function isInlineMetaCommand(input: string, pos: number): boolean {
   return isAsciiLetterCode(code);
 }
 
+const SLASH_TERMINATOR_NEXT_KEYWORDS = new Set([
+  'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'MERGE',
+  'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'GRANT', 'REVOKE',
+  'VALUES', 'COPY', 'COMMENT', 'CALL', 'BEGIN', 'COMMIT',
+  'ROLLBACK', 'SAVEPOINT', 'RELEASE', 'START', 'SET', 'RESET',
+  'USE', 'SHOW', 'DESC', 'DESCRIBE', 'ANALYZE', 'VACUUM',
+  'REINDEX', 'DECLARE', 'PREPARE', 'EXECUTE', 'EXEC', 'DO',
+  'IF', 'GO', 'DELIMITER', 'PRAGMA', 'LOCK', 'UNLOCK',
+  'BACKUP', 'BULK', 'CLUSTER', 'DBCC', 'REORG',
+]);
+
+function readAsciiWordUpper(input: string, start: number): string {
+  let pos = start;
+  while (pos < input.length) {
+    const code = input.charCodeAt(pos);
+    if (isAsciiLetterCode(code) || (pos > start && isAsciiDigitCode(code)) || code === 95) {
+      pos++;
+      continue;
+    }
+    break;
+  }
+  return input.slice(start, pos).toUpperCase();
+}
+
+function previousNonWhitespaceChar(input: string, start: number): string | undefined {
+  let pos = start - 1;
+  while (pos >= 0) {
+    const ch = input[pos];
+    if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') return ch;
+    pos--;
+  }
+  return undefined;
+}
+
+function nextNonWhitespacePos(input: string, start: number): number {
+  let pos = start;
+  while (pos < input.length) {
+    const ch = input[pos];
+    if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') break;
+    pos++;
+  }
+  return pos;
+}
+
+function isLikelyDivisionOnStandaloneSlashLine(
+  input: string,
+  slashStart: number,
+  lineEnd: number,
+  groupDepth: number,
+): boolean {
+  if (groupDepth > 0) return true;
+
+  const prev = previousNonWhitespaceChar(input, slashStart);
+  if (!prev || prev === ';' || prev === ',' || prev === '(' || prev === '[' || prev === '{') return false;
+
+  const nextPos = nextNonWhitespacePos(input, lineEnd);
+  if (nextPos >= input.length) return false;
+  const next = input[nextPos];
+
+  if (
+    next === '(' || next === '[' || next === '{'
+    || next === "'" || next === '"' || next === '`'
+    || next === ':' || next === '$' || next === '@'
+    || isDigit(next)
+  ) {
+    return true;
+  }
+
+  if (isIdentifierStart(next)) {
+    const word = readAsciiWordUpper(input, nextPos);
+    if (word && SLASH_TERMINATOR_NEXT_KEYWORDS.has(word)) return false;
+    return true;
+  }
+
+  return false;
+}
+
 function isBindParameterBoundaryChar(ch: string | undefined): boolean {
   if (!ch) return true;
   const code = ch.charCodeAt(0);
@@ -418,6 +495,7 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
   const tokens: Token[] = [];
   let pos = 0;
   const len = input.length;
+  let groupDepth = 0;
   let statementStartTokenIndex = 0;
   let inCopyFromStdinData = false;
   const lineOffsets = buildLineOffsets(input);
@@ -446,12 +524,20 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
     const { line, column } = lc(position);
     tokens.push({ type, value, upper, position, line, column });
 
-    if (type === 'punctuation' && value === ';') {
-      const statementTokens = tokens.slice(statementStartTokenIndex, tokens.length);
-      if (isCopyFromStdinStatement(statementTokens)) {
-        inCopyFromStdinData = true;
+    if (type === 'punctuation') {
+      if (value === '(' || value === '[' || value === '{') {
+        groupDepth++;
+      } else if (value === ')' || value === ']' || value === '}') {
+        groupDepth = Math.max(0, groupDepth - 1);
       }
-      statementStartTokenIndex = tokens.length;
+
+      if (value === ';') {
+        const statementTokens = tokens.slice(statementStartTokenIndex, tokens.length);
+        if (isCopyFromStdinStatement(statementTokens)) {
+          inCopyFromStdinData = true;
+        }
+        statementStartTokenIndex = tokens.length;
+      }
     }
   }
 
@@ -565,9 +651,12 @@ export function tokenize(input: string, options: TokenizeOptions = {}): Token[] 
         lookahead++;
       }
       if (lookahead >= len || input[lookahead] === '\n' || input[lookahead] === '\r') {
-        pos = lookahead;
-        emit('punctuation', ';', ';', start);
-        continue;
+        const treatAsDivision = isLikelyDivisionOnStandaloneSlashLine(input, start, lookahead, groupDepth);
+        if (!treatAsDivision) {
+          pos = lookahead;
+          emit('punctuation', ';', ';', start);
+          continue;
+        }
       }
     }
 
