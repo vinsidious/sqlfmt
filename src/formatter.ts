@@ -558,6 +558,7 @@ function formatBlockBody(body: string, runtime: FormatterRuntime): string | null
         }).trim();
       }
 
+      part = normalizeBlockCommentIndentation(part);
       if (!part) continue;
 
       if (controlKind === 'if_end') {
@@ -623,6 +624,34 @@ function normalizeRawBlockPartIndent(text: string): string {
     }
   }
   return lines.join('\n');
+}
+
+function normalizeBlockCommentIndentation(text: string): string {
+  if (!text.includes('/*') || !text.includes('\n')) return text;
+  return text.replace(/\/\*[\s\S]*?\*\//g, comment => {
+    const lines = comment.split('\n');
+    if (lines.length < 2) return comment;
+
+    let continuationMinIndent: number | null = null;
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      const leadingSpaces = line.match(/^ */)?.[0].length ?? 0;
+      continuationMinIndent = continuationMinIndent === null
+        ? leadingSpaces
+        : Math.min(continuationMinIndent, leadingSpaces);
+      if (continuationMinIndent === 0) break;
+    }
+
+    if (!continuationMinIndent || continuationMinIndent <= 0) return comment;
+    const stripPrefix = ' '.repeat(continuationMinIndent);
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].startsWith(stripPrefix)) {
+        lines[i] = lines[i].slice(continuationMinIndent);
+      }
+    }
+    return lines.join('\n');
+  });
 }
 
 function tryFormatReturnParenthesizedSelect(text: string, runtime: FormatterRuntime): string | null {
@@ -1547,10 +1576,12 @@ function isLiteralLike(expr: AST.Expression): boolean {
 function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
   const baseCol = contentCol(ctx);
   const lateralOffset = from.lateral && from.table.type !== 'function_call' ? 'LATERAL '.length : 0;
-  let result = formatExprAtColumn(from.table, baseCol + lateralOffset, ctx.runtime);
+  const onlyOffset = from.only ? 'ONLY '.length : 0;
+  let result = formatExprAtColumn(from.table, baseCol + lateralOffset + onlyOffset, ctx.runtime);
   if (from.table.type === 'raw') {
-    result = wrapJoinLikeRawSource(result, baseCol + lateralOffset, ctx.runtime);
+    result = wrapJoinLikeRawSource(result, baseCol + lateralOffset + onlyOffset, ctx.runtime);
   }
+  if (from.only) result = 'ONLY ' + result;
   if (from.lateral) result = 'LATERAL ' + result;
   if (from.tablesample) {
     result += ' TABLESAMPLE ' + from.tablesample.method + '(' + from.tablesample.args.map(formatExpr).join(', ') + ')';
@@ -1732,10 +1763,12 @@ function formatSelectOrderByLines(items: readonly AST.OrderByItem[], orderKeywor
 
 function formatJoinTable(join: AST.JoinClause, tableStartCol: number, runtime: FormatterRuntime): string {
   const lateralOffset = join.lateral && join.table.type !== 'function_call' ? 'LATERAL '.length : 0;
-  let result = formatExprAtColumn(join.table, tableStartCol + lateralOffset, runtime);
+  const onlyOffset = join.only ? 'ONLY '.length : 0;
+  let result = formatExprAtColumn(join.table, tableStartCol + lateralOffset + onlyOffset, runtime);
   if (join.table.type === 'raw') {
-    result = wrapJoinLikeRawSource(result, tableStartCol + lateralOffset, runtime);
+    result = wrapJoinLikeRawSource(result, tableStartCol + lateralOffset + onlyOffset, runtime);
   }
+  if (join.only) result = 'ONLY ' + result;
   if (join.lateral) result = 'LATERAL ' + result;
   if (join.ordinality) result += ' WITH ORDINALITY';
   if (join.alias) {
@@ -3637,7 +3670,7 @@ function formatAlterTable(node: AST.AlterTableStatement, ctx: FormatContext): st
   lines.push(header);
   for (let i = 0; i < actions.length; i++) {
     const comma = i < actions.length - 1 ? ',' : ';';
-    const actionLines = actions[i].split('\n');
+    const actionLines = normalizeAlterActionContinuationIndent(actions[i]);
     lines.push(' '.repeat(8) + actionLines[0]);
     for (let j = 1; j < actionLines.length; j++) {
       lines.push(' '.repeat(8) + actionLines[j]);
@@ -3693,6 +3726,32 @@ function formatAlterAction(action: AST.AlterAction): string {
       throw new Error(`Unknown alter action type: ${(_exhaustive as { type?: string }).type}`);
     }
   }
+}
+
+function normalizeAlterActionContinuationIndent(actionText: string): string[] {
+  const lines = actionText.split('\n');
+  if (lines.length < 2) return lines;
+
+  let continuationMinIndent: number | null = null;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const leadingSpaces = line.match(/^ */)?.[0].length ?? 0;
+    continuationMinIndent = continuationMinIndent === null
+      ? leadingSpaces
+      : Math.min(continuationMinIndent, leadingSpaces);
+    if (continuationMinIndent === 0) break;
+  }
+
+  if (!continuationMinIndent || continuationMinIndent <= 0) return lines;
+  const stripPrefix = ' '.repeat(continuationMinIndent);
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].startsWith(stripPrefix)) {
+      lines[i] = lines[i].slice(continuationMinIndent);
+    }
+  }
+
+  return lines;
 }
 
 function formatRawAlterAction(text: string): string {
