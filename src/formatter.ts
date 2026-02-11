@@ -510,7 +510,7 @@ function tryFormatBeginEndBlock(text: string, runtime: FormatterRuntime): string
   if (!beginMatch || !endMatch || endMatch.index <= beginMatch.index) return null;
 
   const body = trimmed.slice(beginMatch[0].length, endMatch.index).trim();
-  const footer = trimmed.slice(endMatch.index).trim();
+  const footer = trimmed.slice(endMatch.index).trim().replace(/^end\b/i, 'END');
   if (!body) return `BEGIN\n${footer}`;
 
   const formattedBody = formatBlockBody(body, runtime);
@@ -1019,7 +1019,7 @@ function formatColumnListWithGroups(
 
     // Get trailing comment from last column in group (if any)
     const lastCol = group[group.length - 1];
-    const groupComment = lastCol.comment ? '  ' + lastCol.comment.text : '';
+    const groupComment = lastCol.comment ? ' ' + lastCol.comment.text : '';
     const groupComma = isLastGroup ? '' : ',';
 
     const effectiveGroupLen = groupLen + (ctx.outerColumnOffset || 0);
@@ -1032,7 +1032,7 @@ function formatColumnListWithGroups(
         const col = group[i];
         const isLastOverall = isLastGroup && i === group.length - 1;
         const comma = isLastOverall ? '' : ',';
-        const comment = col.comment ? '  ' + col.comment.text : '';
+        const comment = col.comment ? ' ' + col.comment.text : '';
         lines.push(indent + col.text + comma + comment);
       }
     }
@@ -2255,6 +2255,13 @@ function formatInsertSourceAlias(
   return out;
 }
 
+function formatInsertExecuteSource(source: string): string {
+  return source
+    .trim()
+    .replace(/^EXECUTE\b/i, 'EXECUTE')
+    .replace(/^EXEC\b/i, 'EXEC');
+}
+
 function shouldWrapValuesTuple(
   tupleText: string,
   prefix: string,
@@ -2380,6 +2387,13 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       }
     }
     lines.push(tableLine);
+  } else if (node.executeSource) {
+    const executeSource = formatInsertExecuteSource(node.executeSource);
+    if (!hasCommentColumns && !shouldWrapColumns && node.columns.length === 0 && !node.overriding && lines.length > 0) {
+      lines[lines.length - 1] += ' ' + executeSource;
+    } else {
+      lines.push(executeSource);
+    }
   } else if (node.selectQuery) {
     lines.push(formatQueryExpressionForSubquery(node.selectQuery, dmlCtx.runtime));
   }
@@ -3265,6 +3279,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     if (col.dataType) maxTypeLen = Math.max(maxTypeLen, col.dataType.replace(/\s+/g, ' ').length);
   }
   maxTypeLen = Math.min(maxTypeLen, ctx.runtime.layoutPolicy.createTableTypeAlignMax);
+  const tableConstraintIndent = ' '.repeat(Math.max(5, 4 + maxNameLen + 1));
 
   const hasDataElementAfter = (index: number): boolean => {
     for (let j = index + 1; j < node.elements.length; j++) {
@@ -3286,7 +3301,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     }
 
     if (elem.elementType === 'primary_key') {
-      lines.push('    ' + elem.raw + comma);
+      lines.push('    ' + normalizeConstraintIdentifierCase(elem.raw) + comma);
     } else if (elem.elementType === 'column') {
       const loweredName = elem.name ? lowerIdent(elem.name) : '';
       const name = loweredName.padEnd(maxNameLen);
@@ -3342,37 +3357,40 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
     } else if (elem.elementType === 'constraint') {
       if (elem.constraintName) {
-        lines.push('    CONSTRAINT ' + elem.constraintName);
+        const headIndent = elem.constraintType === 'check' ? tableConstraintIndent : '    ';
+        const bodyIndent = elem.constraintType === 'check' ? tableConstraintIndent : '        ';
+        lines.push(headIndent + 'CONSTRAINT ' + elem.constraintName);
         if (elem.constraintType === 'check' && elem.checkExpr) {
-          lines.push('        CHECK(' + formatExpr(elem.checkExpr) + ')');
+          lines.push(bodyIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
         } else if (elem.constraintBody) {
-          lines.push('        ' + elem.constraintBody);
+          lines.push(bodyIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
         } else {
           const pattern = new RegExp(`^CONSTRAINT\\s+${escapeRegExp(elem.constraintName)}\\b\\s*`, 'i');
           const body = elem.raw.trim().replace(pattern, '').trim();
           if (body) {
-            lines.push('        ' + body);
+            lines.push(bodyIndent + normalizeConstraintIdentifierCase(body));
           }
         }
       } else if (elem.constraintType === 'check' && elem.checkExpr) {
         lines.push('    CHECK(' + formatExpr(elem.checkExpr) + ')');
       } else if (elem.constraintBody) {
-        lines.push('    ' + elem.constraintBody);
+        lines.push('    ' + normalizeConstraintIdentifierCase(elem.constraintBody));
       } else {
-        lines.push('    ' + elem.raw);
+        lines.push('    ' + normalizeConstraintIdentifierCase(elem.raw));
       }
       if (comma) lines[lines.length - 1] += comma;
     } else if (elem.elementType === 'foreign_key') {
       if (elem.constraintName) {
         lines.push('    CONSTRAINT ' + elem.constraintName);
-        lines.push('        FOREIGN KEY (' + elem.fkColumns + ')');
+        lines.push('        ' + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
       } else {
-        lines.push('    FOREIGN KEY (' + elem.fkColumns + ')');
+        lines.push('    ' + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
       }
       let referenceLine = '        REFERENCES ' + elem.fkRefTable;
       if (elem.fkRefColumns) {
         referenceLine += ' (' + elem.fkRefColumns + ')';
       }
+      referenceLine = '        ' + normalizeConstraintIdentifierCase(referenceLine.trim());
       const actionLines = elem.fkActions
         ? elem.fkActions.split(/\n/).map(action => action.trim()).filter(Boolean)
         : [];
@@ -3526,17 +3544,18 @@ function formatRawAlterAction(text: string): string {
   const normalized = normalizeConstraintSpacing(text)
     .replace(/\bCHARACTER\s+SET\b/gi, 'CHARACTER SET')
     .trim();
+  const normalizedIdentifiers = normalizeConstraintIdentifierCase(normalized);
 
-  const fkMatch = normalized.match(
+  const fkMatch = normalizedIdentifiers.match(
     /^ADD\s+CONSTRAINT\s+(\S+)\s+FOREIGN\s+KEY\s*\(([^)]*)\)\s+REFERENCES\s+([^\s(]+)(?:\s*\(([^)]*)\))?(.*)$/i
   );
   if (fkMatch) {
     const [, name, fkCols, refTable, refCols, tail] = fkMatch;
     const lines: string[] = [];
     lines.push(`ADD CONSTRAINT ${name}`);
-    lines.push(`FOREIGN KEY (${fkCols.trim()})`);
-    let ref = `REFERENCES ${refTable}`;
-    if (refCols && refCols.trim()) ref += ` (${refCols.trim()})`;
+    lines.push(`FOREIGN KEY (${normalizeConstraintIdentifierList(fkCols.trim())})`);
+    let ref = `REFERENCES ${normalizeConstraintIdentifierToken(refTable)}`;
+    if (refCols && refCols.trim()) ref += ` (${normalizeConstraintIdentifierList(refCols.trim())})`;
     lines.push(ref);
 
     const actionTail = tail.trim();
@@ -3549,7 +3568,7 @@ function formatRawAlterAction(text: string): string {
     return lines.join('\n');
   }
 
-  return normalized;
+  return normalizedIdentifiers;
 }
 
 function normalizeConstraintSpacing(text: string): string {
@@ -3563,6 +3582,33 @@ function normalizeConstraintSpacing(text: string): string {
     .replace(/\bKEY\s+([^\s(]+)\s*\(/gi, 'KEY $1 (')
     .replace(/\bINDEX\s+([^\s(]+)\s*\(/gi, 'INDEX $1 (')
     .replace(/\bREFERENCES\s+([^\s(]+)\s*\(/gi, 'REFERENCES $1 (');
+}
+
+function normalizeConstraintIdentifierCase(text: string): string {
+  return text
+    .replace(/\bPRIMARY\s+KEY\s*\(([^)]*)\)/gi, (_, cols: string) => {
+      return `PRIMARY KEY (${normalizeConstraintIdentifierList(cols)})`;
+    })
+    .replace(/\bFOREIGN\s+KEY\s*\(([^)]*)\)/gi, (_, cols: string) => {
+      return `FOREIGN KEY (${normalizeConstraintIdentifierList(cols)})`;
+    })
+    .replace(/\bREFERENCES\s+([^\s(]+)\s*\(([^)]*)\)/gi, (_, table: string, cols: string) => {
+      return `REFERENCES ${normalizeConstraintIdentifierToken(table)} (${normalizeConstraintIdentifierList(cols)})`;
+    });
+}
+
+function normalizeConstraintIdentifierList(list: string): string {
+  return list
+    .split(',')
+    .map(item => normalizeConstraintIdentifierToken(item))
+    .join(', ');
+}
+
+function normalizeConstraintIdentifierToken(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (!/^[A-Za-z_@`"\[][A-Za-z0-9_$@.`"\[\]]*$/.test(trimmed)) return trimmed;
+  return lowerIdent(trimmed);
 }
 
 // ─── DROP TABLE ──────────────────────────────────────────────────────
@@ -3629,9 +3675,17 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
 
     if (i < node.operators.length) {
       const op = node.operators[i];
+      const nextMember = node.members[i + 1];
+      const isParenthesizedBridge = !!(member.parenthesized && nextMember?.parenthesized);
       if (member.parenthesized) {
         // Inside parenthesized union, operator indented to river
-        parts.push('  ' + op);
+        if (isParenthesizedBridge) {
+          parts.push('');
+          parts.push('  ' + op);
+          parts.push('');
+        } else {
+          parts.push('  ' + op);
+        }
       } else {
         // Align operator to the river
         const firstWord = op.split(' ')[0];
