@@ -1008,6 +1008,23 @@ export function parseDropStatement(ctx: DdlParser, comments: AST.CommentNode[]):
     throw ctx.parseError('object name', ctx.peek());
   }
 
+  let withOptions: string | undefined;
+  if (ctx.peekUpper() === 'WITH' && ctx.peekUpperAt(1) === '(') {
+    const withTokens: Token[] = [];
+    let depth = 0;
+    while (!ctx.isAtEnd() && !ctx.check(';')) {
+      const token = ctx.peek();
+      if (depth === 0 && (token.upper === 'CASCADE' || token.upper === 'RESTRICT')) break;
+      withTokens.push(ctx.advance());
+      if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+      if (token.value === ')' || token.value === ']' || token.value === '}') {
+        depth = Math.max(0, depth - 1);
+        if (depth === 0) break;
+      }
+    }
+    withOptions = ctx.tokensToSql(withTokens) || undefined;
+  }
+
   let behavior: 'CASCADE' | 'RESTRICT' | 'CASCADE CONSTRAINT' | 'CASCADE CONSTRAINTS' | undefined;
   if (ctx.peekUpper() === 'CASCADE') {
     ctx.advance();
@@ -1031,6 +1048,7 @@ export function parseDropStatement(ctx: DdlParser, comments: AST.CommentNode[]):
     concurrently: concurrently || undefined,
     ifExists,
     objectName,
+    withOptions,
     behavior,
     leadingComments: comments,
   };

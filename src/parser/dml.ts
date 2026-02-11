@@ -410,7 +410,7 @@ export function parseSetItem(ctx: DmlParser): AST.SetItem {
     column = '(' + tupleColumns.join(', ') + ')';
     tupleTarget = true;
   } else {
-    column = parseDottedName(ctx);
+    column = parseSetTarget(ctx);
   }
 
   // T-SQL XML method syntax in SET: column.method(...)
@@ -580,6 +580,31 @@ function parseParenthesizedSetTargetList(ctx: DmlParser): string[] {
   }
   ctx.expect(')');
   return columns;
+}
+
+function parseSetTarget(ctx: DmlParser): string {
+  let target = parseDottedName(ctx);
+  while (ctx.check('[')) {
+    target += parseSetTargetSubscriptSuffix(ctx);
+  }
+  return target;
+}
+
+function parseSetTargetSubscriptSuffix(ctx: DmlParser): string {
+  const tokens: Token[] = [];
+  let depth = 0;
+
+  do {
+    const token = ctx.advance();
+    tokens.push(token);
+    if (token.value === '[' || token.value === '(' || token.value === '{') depth++;
+    else if (token.value === ']' || token.value === ')' || token.value === '}') depth = Math.max(0, depth - 1);
+  } while (!ctx.isAtEnd() && depth > 0);
+
+  if (ctx.tokensToSql) {
+    return ctx.tokensToSql(tokens);
+  }
+  return tokens.map(token => token.value).join('');
 }
 
 function parseOptionalInsertSourceAlias(ctx: DmlParser): AST.InsertStatement['valuesAlias'] {
