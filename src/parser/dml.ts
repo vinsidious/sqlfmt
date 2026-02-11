@@ -270,7 +270,7 @@ export function parseValuesTuple(
   leadingComments: AST.CommentNode[] = [],
 ): AST.ValuesList {
   ctx.expect('(');
-  const values = ctx.parseExpressionList();
+  const values = ctx.check(')') ? [] : ctx.parseExpressionList();
   ctx.expect(')');
   const trailingComments = ctx.consumeComments?.() ?? [];
   return {
