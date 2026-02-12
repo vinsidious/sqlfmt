@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, symlinkSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -8,14 +8,14 @@ const cliPath = join(root, 'src', 'cli.ts');
 const bunPath = process.execPath;
 const decoder = new TextDecoder();
 
-function runCli(args: string[], cwd: string = root) {
+function runCli(args: string[], cwd: string = root, envOverrides: Record<string, string> = {}) {
   const proc = Bun.spawnSync({
     cmd: [bunPath, cliPath, ...args],
     cwd,
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
-    env: process.env,
+    env: { ...process.env, ...envOverrides },
   });
 
   return {
@@ -25,14 +25,19 @@ function runCli(args: string[], cwd: string = root) {
   };
 }
 
-function runCliWithStdin(args: string[], stdinContent: string, cwd: string = root) {
+function runCliWithStdin(
+  args: string[],
+  stdinContent: string,
+  cwd: string = root,
+  envOverrides: Record<string, string> = {}
+) {
   const proc = Bun.spawnSync({
     cmd: [bunPath, cliPath, ...args],
     cwd,
     stdin: new TextEncoder().encode(stdinContent),
     stdout: 'pipe',
     stderr: 'pipe',
-    env: process.env,
+    env: { ...process.env, ...envOverrides },
   });
 
   return {
@@ -76,6 +81,28 @@ describe('cli flags and UX', () => {
     expect(res.err).toContain('--dialect must be one of');
   });
 
+  it('accepts --max-input-size with a valid value', () => {
+    const input = `SELECT '${'x'.repeat(64)}';`;
+
+    const failRes = runCliWithStdin(['--max-input-size', '20'], input);
+    expect(failRes.code).toBe(3);
+    expect(failRes.err).toContain('Input exceeds maximum size');
+
+    const okRes = runCliWithStdin(['--max-input-size', '256'], input);
+    expect(okRes.code).toBe(0);
+    expect(okRes.out).toContain('SELECT');
+  });
+
+  it('rejects --max-input-size with invalid values', () => {
+    const missing = runCli(['--max-input-size']);
+    expect(missing.code).toBe(3);
+    expect(missing.err).toContain('--max-input-size requires');
+
+    const invalid = runCli(['--max-input-size', '0']);
+    expect(invalid.code).toBe(3);
+    expect(invalid.err).toContain('--max-input-size must be an integer >= 1');
+  });
+
   it('returns parse exit code 2 with a clean message', () => {
     const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'broken.sql');
@@ -96,7 +123,10 @@ describe('cli flags and UX', () => {
 
     const res = runCli(['--write', 'utf16le.sql'], dir);
     expect(res.code).toBe(0);
-    expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
+    const after = readFileSync(file);
+    expect(after[0]).toBe(0xff);
+    expect(after[1]).toBe(0xfe);
+    expect(after.subarray(2).toString('utf16le')).toBe('SELECT 1;\n');
   });
 
   it('reads UTF-16BE SQL files with BOM', () => {
@@ -113,7 +143,30 @@ describe('cli flags and UX', () => {
 
     const res = runCli(['--write', 'utf16be.sql'], dir);
     expect(res.code).toBe(0);
-    expect(readFileSync(file, 'utf8')).toBe('SELECT 1;\n');
+    const after = readFileSync(file);
+    expect(after[0]).toBe(0xfe);
+    expect(after[1]).toBe(0xff);
+    const body = Buffer.from(after.subarray(2));
+    for (let i = 0; i + 1 < body.length; i += 2) {
+      const a = body[i];
+      body[i] = body[i + 1];
+      body[i + 1] = a;
+    }
+    expect(body.toString('utf16le')).toBe('SELECT 1;\n');
+  });
+
+  it('preserves UTF-16LE files without BOM when writing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
+    const file = join(dir, 'utf16le-nobom.sql');
+    writeFileSync(file, Buffer.from('select 1;', 'utf16le'));
+
+    const res = runCli(['--write', 'utf16le-nobom.sql'], dir);
+    expect(res.code).toBe(0);
+
+    const after = readFileSync(file);
+    expect(after[0]).not.toBe(0xff);
+    expect(after[1]).not.toBe(0xfe);
+    expect(after.toString('utf16le')).toBe('SELECT 1;\n');
   });
 
   it('supports --check with normalized edge whitespace', () => {
@@ -135,6 +188,18 @@ describe('cli flags and UX', () => {
     expect(res.err).toContain('@@');
   });
 
+  it('handles large divergent files with --check --diff without crashing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
+    const file = join(dir, 'large-diff.sql');
+    const lines = Array.from({ length: 4500 }, (_, i) => `select ${i} as value_${i};`);
+    writeFileSync(file, lines.join('\n'), 'utf8');
+
+    const res = runCli(['--check', '--diff', 'large-diff.sql'], dir);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('--- a/large-diff.sql');
+    expect(res.err).toContain('+++ b/large-diff.sql');
+  });
+
   it('supports --write for in-place formatting', () => {
     const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
     const file = join(dir, 'q.sql');
@@ -145,6 +210,45 @@ describe('cli flags and UX', () => {
 
     const after = readFileSync(file, 'utf8');
     expect(after).toBe('SELECT 1;\n');
+  });
+
+  it('preserves file mode bits when writing', () => {
+    if (process.platform === 'win32') return;
+
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
+    const file = join(dir, 'mode.sql');
+    writeFileSync(file, 'select 1;', 'utf8');
+    chmodSync(file, 0o755);
+
+    const beforeMode = statSync(file).mode & 0o777;
+    expect(beforeMode).toBe(0o755);
+
+    const res = runCli(['--write', 'mode.sql'], dir);
+    expect(res.code).toBe(0);
+
+    const afterMode = statSync(file).mode & 0o777;
+    expect(afterMode).toBe(0o755);
+  });
+
+  it('preserves CRLF line endings when writing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
+    const file = join(dir, 'windows.sql');
+    writeFileSync(file, 'select 1;\r\nselect 2;\r\n', 'utf8');
+
+    const res = runCli(['--write', 'windows.sql'], dir);
+    expect(res.code).toBe(0);
+
+    const after = readFileSync(file, 'utf8');
+    expect(after).toBe('SELECT 1;\r\n\r\nSELECT 2;\r\n');
+  });
+
+  it('treats CRLF-formatted multi-statement files as formatted in --check mode', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-cli-'));
+    const file = join(dir, 'formatted-crlf.sql');
+    writeFileSync(file, 'SELECT 1;\r\n\r\nSELECT 2;\r\n', 'utf8');
+
+    const res = runCli(['--check', 'formatted-crlf.sql'], dir);
+    expect(res.code).toBe(0);
   });
 
   it('supports --dry-run preview without writing changes', () => {
@@ -220,6 +324,24 @@ describe('glob pattern expansion', () => {
     expect(res.err).toContain('query.sql');
     expect(res.err).not.toContain('EISDIR');
   });
+
+  it('fallback glob matcher continues past early non-matching files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-glob-fallback-'));
+    const noisyDir = join(dir, 'a-noise');
+    const targetDir = join(dir, 'z-target');
+    mkdirSync(noisyDir);
+    mkdirSync(targetDir);
+
+    for (let i = 0; i < 10_050; i++) {
+      const name = `${String(i).padStart(5, '0')}.txt`;
+      writeFileSync(join(noisyDir, name), 'noise\n', 'utf8');
+    }
+    writeFileSync(join(targetDir, 'match.sql'), 'select 1;', 'utf8');
+
+    const res = runCli(['--write', '**/*.sql'], dir, { HOLYWELL_FORCE_FALLBACK_GLOB: '1' });
+    expect(res.code).toBe(0);
+    expect(readFileSync(join(targetDir, 'match.sql'), 'utf8')).toBe('SELECT 1;\n');
+  }, 30000);
 });
 
 describe('--list-different flag', () => {
@@ -528,6 +650,7 @@ describe('--help flag', () => {
     expect(res.out).toContain('--stdin-filepath');
     expect(res.out).toContain('--color');
     expect(res.out).toContain('--completion');
+    expect(res.out).toContain('--max-input-size');
     expect(res.out).toContain('.holywellignore');
     expect(res.out).toContain('.holywellrc.json');
   });
@@ -594,6 +717,20 @@ describe('.holywellrc.json config support', () => {
     expect(res.code).toBe(0);
     expect(res.out).toContain('SELECT customer_identifier,');
     expect(res.out).toContain('\n       product_identifier,');
+  });
+
+  it('lets --max-input-size override config maxInputSize', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'holywell-config-'));
+    writeFileSync(join(dir, '.holywellrc.json'), JSON.stringify({ maxInputSize: 8 }) + '\n', 'utf8');
+    writeFileSync(join(dir, 'q.sql'), 'select 1;', 'utf8');
+
+    const strictConfigRes = runCli(['q.sql'], dir);
+    expect(strictConfigRes.code).toBe(3);
+    expect(strictConfigRes.err).toContain('Input exceeds maximum size');
+
+    const overriddenRes = runCli(['--max-input-size', '128', 'q.sql'], dir);
+    expect(overriddenRes.code).toBe(0);
+    expect(overriddenRes.out).toContain('SELECT 1;');
   });
 });
 

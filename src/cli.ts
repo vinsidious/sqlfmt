@@ -43,6 +43,7 @@ interface CLIOptions {
   configPath: string | null;
   completionShell: 'bash' | 'zsh' | 'fish' | null;
   maxLineLength?: number;
+  maxInputSize?: number;
   maxTokenCount?: number;
   dialect?: DialectName;
   files: string[];
@@ -162,6 +163,7 @@ Formatting:
   -w, --write           Write formatted output back to input file(s)
   -l, --list-different  Print only filenames that need formatting
   --max-line-length <n> Preferred output line width (default: 80)
+  --max-input-size <n>  Maximum input size in bytes
   --max-token-count <n> Tokenizer ceiling for very large SQL files
   --dialect <name>      SQL dialect: ansi|postgres|mysql|tsql
   --strict              Disable parser recovery; exit 2 on parse errors
@@ -239,6 +241,7 @@ function parseArgs(args: string[]): CLIOptions {
     configPath: null,
     completionShell: null,
     maxLineLength: undefined,
+    maxInputSize: undefined,
     maxTokenCount: undefined,
     dialect: undefined,
     files: [],
@@ -289,6 +292,19 @@ function parseArgs(args: string[]): CLIOptions {
         throw new CLIUsageError('--max-line-length must be an integer >= 40');
       }
       opts.maxLineLength = parsed;
+      i++;
+      continue;
+    }
+    if (arg === '--max-input-size') {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new CLIUsageError('--max-input-size requires a numeric argument');
+      }
+      const parsed = Number(next);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+        throw new CLIUsageError('--max-input-size must be an integer >= 1');
+      }
+      opts.maxInputSize = parsed;
       i++;
       continue;
     }
@@ -429,7 +445,7 @@ function parseArgs(args: string[]): CLIOptions {
 function renderCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
   const options = [
     '--help', '--version', '--check', '--diff', '--dry-run', '--preview',
-    '--write', '--list-different', '--max-line-length', '--max-token-count', '--dialect', '--strict', '--ignore',
+    '--write', '--list-different', '--max-line-length', '--max-input-size', '--max-token-count', '--dialect', '--strict', '--ignore',
     '--config', '--stdin-filepath', '--verbose', '--quiet', '--no-color',
     '--color', '--completion',
     '-h', '-V', '-w', '-l', '-v',
@@ -493,6 +509,8 @@ function isDirectoryPath(filepath: string): boolean {
 
 // Cap total file count from glob expansion to prevent runaway matches
 const MAX_GLOB_FILES = 10_000;
+const MAX_GLOB_SCAN_ENTRIES = 200_000;
+const FORCE_FALLBACK_GLOB = process.env.HOLYWELL_FORCE_FALLBACK_GLOB === '1';
 
 function extractLiteralGlobPrefix(pattern: string): string {
   const wildcardIndex = pattern.search(/[*?[{]/);
@@ -502,63 +520,6 @@ function extractLiteralGlobPrefix(pattern: string): string {
   if (lastSlash < 0) return '';
   if (lastSlash === 0 && prefix.startsWith('/')) return '/';
   return prefix.slice(0, lastSlash);
-}
-
-function collectGlobCandidates(startPath: string, maxFiles: number): string[] {
-  const out: string[] = [];
-  const stack: string[] = [startPath];
-  const visitedDirs = new Set<string>();
-
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (!current) continue;
-
-    let stat = null as ReturnType<typeof lstatSync> | null;
-    try {
-      stat = lstatSync(current);
-    } catch {
-      continue;
-    }
-
-    let asDirectory = stat.isDirectory();
-    if (stat.isSymbolicLink()) {
-      try {
-        asDirectory = statSync(current).isDirectory();
-      } catch {
-        continue;
-      }
-    }
-
-    if (!asDirectory) {
-      out.push(current);
-      if (out.length > maxFiles) break;
-      continue;
-    }
-
-    let realDir = current;
-    try {
-      realDir = realpathSync(current);
-    } catch {
-      // If realpath fails (broken link/permissions), skip this subtree.
-      continue;
-    }
-    if (visitedDirs.has(realDir)) continue;
-    visitedDirs.add(realDir);
-
-    let entries: Array<{ name: string }> = [];
-    try {
-      entries = readdirSync(current, { withFileTypes: true }) as Array<{ name: string }>;
-    } catch {
-      continue;
-    }
-
-    // Reverse push so traversal is stable in lexical order after stack pop.
-    for (let i = entries.length - 1; i >= 0; i--) {
-      stack.push(join(current, entries[i].name));
-    }
-  }
-
-  return out;
 }
 
 function splitGlobSegments(value: string): string[] {
@@ -656,15 +617,70 @@ function fallbackGlobMatches(pattern: string): string[] {
   const basePath = absolutePattern
     ? resolve(literalPrefix || '/')
     : resolve(cwd, literalPrefix || '.');
-
-  const candidates = collectGlobCandidates(basePath, MAX_GLOB_FILES + 1);
   const matches: string[] = [];
+  const stack: string[] = [basePath];
+  const visitedDirs = new Set<string>();
+  let scannedEntries = 0;
 
-  for (const candidate of candidates) {
-    const asMatchPath = normalizeGlobPath(absolutePattern ? candidate : relative(cwd, candidate));
-    if (matchGlobPattern(asMatchPath, normalizedPattern)) {
-      matches.push(absolutePattern ? candidate : relative(cwd, candidate));
-      if (matches.length > MAX_GLOB_FILES) break;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    scannedEntries++;
+    if (scannedEntries > MAX_GLOB_SCAN_ENTRIES) {
+      throw new CLIUsageError(
+        `Glob expansion scanned too many paths (${scannedEntries} > ${MAX_GLOB_SCAN_ENTRIES}). Narrow your glob pattern.`
+      );
+    }
+
+    let stat = null as ReturnType<typeof lstatSync> | null;
+    try {
+      stat = lstatSync(current);
+    } catch {
+      continue;
+    }
+
+    let asDirectory = stat.isDirectory();
+    if (stat.isSymbolicLink()) {
+      try {
+        asDirectory = statSync(current).isDirectory();
+      } catch {
+        continue;
+      }
+    }
+
+    if (!asDirectory) {
+      const asMatchPath = normalizeGlobPath(absolutePattern ? current : relative(cwd, current));
+      if (matchGlobPattern(asMatchPath, normalizedPattern)) {
+        matches.push(absolutePattern ? current : relative(cwd, current));
+        if (matches.length > MAX_GLOB_FILES) {
+          throw new CLIUsageError(
+            `Too many files matched (${matches.length} > ${MAX_GLOB_FILES}). Narrow your glob pattern.`
+          );
+        }
+      }
+      continue;
+    }
+
+    let realDir = current;
+    try {
+      realDir = realpathSync(current);
+    } catch {
+      continue;
+    }
+    if (visitedDirs.has(realDir)) continue;
+    visitedDirs.add(realDir);
+
+    let entries: Array<{ name: string }> = [];
+    try {
+      entries = readdirSync(current, { withFileTypes: true }) as Array<{ name: string }>;
+    } catch {
+      continue;
+    }
+
+    const names = entries.map(entry => entry.name).sort();
+    for (let i = names.length - 1; i >= 0; i--) {
+      stack.push(join(current, names[i]));
     }
   }
 
@@ -679,15 +695,28 @@ function expandGlobs(files: string[]): string[] {
       continue;
     }
     try {
+      const useFallbackGlob = FORCE_FALLBACK_GLOB || typeof globSync !== 'function';
       const matches = (
-        typeof globSync === 'function'
-          ? globSync(f)
-          : fallbackGlobMatches(f)
+        useFallbackGlob
+          ? fallbackGlobMatches(f)
+          : globSync(f)
       ).filter(m => !shouldExcludeFromGlob(m) && !isDirectoryPath(m));
-      if (matches.length === 0) {
-        throw new NoFilesMatchedError(f);
+
+      if (!useFallbackGlob && matches.length === 0) {
+        const fallbackMatches = fallbackGlobMatches(f).filter(
+          m => !shouldExcludeFromGlob(m) && !isDirectoryPath(m)
+        );
+        if (fallbackMatches.length === 0) {
+          throw new NoFilesMatchedError(f);
+        }
+        result.push(...fallbackMatches.sort());
+      } else {
+        if (matches.length === 0) {
+          throw new NoFilesMatchedError(f);
+        }
+        result.push(...matches.sort());
       }
-      result.push(...matches.sort());
+
       if (result.length > MAX_GLOB_FILES) {
         throw new CLIUsageError(
           `Too many files matched (${result.length} > ${MAX_GLOB_FILES}). Narrow your glob pattern.`
@@ -997,11 +1026,15 @@ function validateWritePath(file: string): string | null {
 
 // Write a file atomically: write to a temp file first, then rename.
 // This prevents partial writes from corrupting the original file.
-function atomicWriteFileSync(file: string, content: string): void {
+function atomicWriteFileSync(file: string, content: string | Buffer, mode?: number): void {
   const suffix = randomBytes(8).toString('hex');
   const tmpFile = `${file}.holywell.${suffix}.tmp`;
   try {
-    writeFileSync(tmpFile, content, 'utf-8');
+    if (typeof content === 'string') {
+      writeFileSync(tmpFile, content, mode === undefined ? 'utf-8' : { encoding: 'utf-8', mode });
+    } else {
+      writeFileSync(tmpFile, content, mode === undefined ? undefined : { mode });
+    }
     renameSync(tmpFile, file);
   } catch (err) {
     try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
@@ -1010,31 +1043,95 @@ function atomicWriteFileSync(file: string, content: string): void {
 }
 
 function normalizeForComparison(input: string): string {
-  const trimmed = input.trim();
+  const normalizedLineEndings = input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const trimmed = normalizedLineEndings.trim();
   if (!trimmed) return '';
   return trimmed + '\n';
 }
 
-function decodeSqlText(raw: Buffer): string {
+type LineEndingStyle = 'lf' | 'crlf' | 'cr';
+
+function detectLineEndingStyle(input: string): LineEndingStyle {
+  let crlf = 0;
+  let lf = 0;
+  let cr = 0;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\r') {
+      if (input[i + 1] === '\n') {
+        crlf++;
+        i++;
+      } else {
+        cr++;
+      }
+    } else if (ch === '\n') {
+      lf++;
+    }
+  }
+
+  if (crlf >= lf && crlf >= cr && crlf > 0) return 'crlf';
+  if (lf >= cr && lf > 0) return 'lf';
+  if (cr > 0) return 'cr';
+  return 'lf';
+}
+
+function applyLineEndingStyle(input: string, style: LineEndingStyle): string {
+  if (style === 'lf') return input;
+  if (style === 'crlf') return input.replace(/\n/g, '\r\n');
+  return input.replace(/\n/g, '\r');
+}
+
+type SqlTextEncoding =
+  | 'utf8'
+  | 'utf8_bom'
+  | 'utf16le'
+  | 'utf16le_bom'
+  | 'utf16be'
+  | 'utf16be_bom';
+
+interface DecodedSqlText {
+  text: string;
+  encoding: SqlTextEncoding;
+}
+
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+const UTF16LE_BOM = Buffer.from([0xff, 0xfe]);
+const UTF16BE_BOM = Buffer.from([0xfe, 0xff]);
+
+function swapUtf16Endianness(raw: Buffer): Buffer {
+  const swapped = Buffer.from(raw);
+  for (let i = 0; i + 1 < swapped.length; i += 2) {
+    const a = swapped[i];
+    swapped[i] = swapped[i + 1];
+    swapped[i + 1] = a;
+  }
+  return swapped;
+}
+
+function decodeSqlText(raw: Buffer): DecodedSqlText {
   // UTF-16LE with BOM.
   if (raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe) {
-    return raw.subarray(2).toString('utf16le');
+    return {
+      text: raw.subarray(2).toString('utf16le'),
+      encoding: 'utf16le_bom',
+    };
   }
 
   // UTF-16BE with BOM.
   if (raw.length >= 2 && raw[0] === 0xfe && raw[1] === 0xff) {
-    const body = Buffer.from(raw.subarray(2));
-    for (let i = 0; i + 1 < body.length; i += 2) {
-      const a = body[i];
-      body[i] = body[i + 1];
-      body[i + 1] = a;
-    }
-    return body.toString('utf16le');
+    return {
+      text: swapUtf16Endianness(raw.subarray(2)).toString('utf16le'),
+      encoding: 'utf16be_bom',
+    };
   }
 
   // UTF-8 with BOM.
   if (raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) {
-    return raw.subarray(3).toString('utf8');
+    return {
+      text: raw.subarray(3).toString('utf8'),
+      encoding: 'utf8_bom',
+    };
   }
 
   // Heuristic fallback for UTF-16 without BOM (common in exported SQL scripts).
@@ -1050,27 +1147,51 @@ function decodeSqlText(raw: Buffer): string {
   const oddRatio = sampleLen > 0 ? zeroOdd / sampleLen : 0;
   const evenRatio = sampleLen > 0 ? zeroEven / sampleLen : 0;
   if (oddRatio > 0.2 && evenRatio < 0.05) {
-    return raw.toString('utf16le');
+    return {
+      text: raw.toString('utf16le'),
+      encoding: 'utf16le',
+    };
   }
   if (evenRatio > 0.2 && oddRatio < 0.05) {
-    const swapped = Buffer.from(raw);
-    for (let i = 0; i + 1 < swapped.length; i += 2) {
-      const a = swapped[i];
-      swapped[i] = swapped[i + 1];
-      swapped[i + 1] = a;
-    }
-    return swapped.toString('utf16le');
+    return {
+      text: swapUtf16Endianness(raw).toString('utf16le'),
+      encoding: 'utf16be',
+    };
   }
 
-  return raw.toString('utf8');
+  return {
+    text: raw.toString('utf8'),
+    encoding: 'utf8',
+  };
 }
 
-function readSqlTextFile(path: string): string {
+function encodeSqlText(text: string, encoding: SqlTextEncoding): Buffer {
+  switch (encoding) {
+    case 'utf8':
+      return Buffer.from(text, 'utf8');
+    case 'utf8_bom':
+      return Buffer.concat([UTF8_BOM, Buffer.from(text, 'utf8')]);
+    case 'utf16le':
+      return Buffer.from(text, 'utf16le');
+    case 'utf16le_bom':
+      return Buffer.concat([UTF16LE_BOM, Buffer.from(text, 'utf16le')]);
+    case 'utf16be':
+      return swapUtf16Endianness(Buffer.from(text, 'utf16le'));
+    case 'utf16be_bom':
+      return Buffer.concat([UTF16BE_BOM, swapUtf16Endianness(Buffer.from(text, 'utf16le'))]);
+    default: {
+      const exhaustive: never = encoding;
+      throw new Error(`Unsupported SQL text encoding: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function readSqlTextFile(path: string): DecodedSqlText {
   return decodeSqlText(readFileSync(path));
 }
 
 function readSqlTextFd(fd: number): string {
-  return decodeSqlText(readFileSync(fd));
+  return decodeSqlText(readFileSync(fd)).text;
 }
 
 function toLines(text: string): string[] {
@@ -1082,6 +1203,8 @@ function toLines(text: string): string[] {
 // Myers diff algorithm — O(ND) time, O(N+M) space per snapshot.
 // For a formatter where D (edit count) << N (line count), this is near-linear.
 // Falls back to brute-force replacement if D exceeds safety cutoff.
+const MAX_MYERS_TRACE_CELLS = 8_000_000;
+
 function myersDiffEdits(a: string[], b: string[]): Array<{ type: 'equal' | 'delete' | 'insert'; line: string }> {
   const n = a.length;
   const m = b.length;
@@ -1098,6 +1221,9 @@ function myersDiffEdits(a: string[], b: string[]): Array<{ type: 'equal' | 'dele
 
   let solvedD = -1;
   for (let d = 0; d <= maxD; d++) {
+    // Snapshot growth is quadratic in worst-case edits. Bail out before
+    // accumulating enough snapshots to risk excessive memory usage.
+    if ((d + 1) * size > MAX_MYERS_TRACE_CELLS) break;
     trace.push(Int32Array.from(v));
     for (let k = -d; k <= d; k += 2) {
       let x: number;
@@ -1352,7 +1478,7 @@ function main(): void {
       recover: opts.strict ? false : (config.recover ?? !(config.strict ?? false)),
       maxLineLength: opts.maxLineLength ?? config.maxLineLength,
       maxDepth: config.maxDepth,
-      maxInputSize: config.maxInputSize,
+      maxInputSize: opts.maxInputSize ?? config.maxInputSize,
       maxTokenCount: opts.maxTokenCount ?? config.maxTokenCount,
       dialect: opts.dialect ?? config.dialect,
     };
@@ -1392,17 +1518,19 @@ function main(): void {
 
       if (opts.check) {
         const normalizedInput = normalizeForComparison(input);
-        if (normalizedInput !== output) {
+        const normalizedOutput = normalizeForComparison(output);
+        if (normalizedInput !== normalizedOutput) {
           checkFailures++;
           if (!opts.quiet) {
             console.error(red('Input is not formatted.'));
           }
           if (opts.diff && !opts.quiet) {
-            console.error(unifiedDiff(normalizedInput, output, 'a/stdin.sql', 'b/stdin.sql'));
+            console.error(unifiedDiff(normalizedInput, normalizedOutput, 'a/stdin.sql', 'b/stdin.sql'));
           }
         }
       } else if (!opts.quiet) {
-        process.stdout.write(output);
+        const outputStyle = detectLineEndingStyle(input);
+        process.stdout.write(applyLineEndingStyle(output, outputStyle));
       }
     } else {
       if (opts.verbose) {
@@ -1426,7 +1554,8 @@ function main(): void {
           continue;
         }
 
-        const input = readSqlTextFile(file);
+        const decodedInput = readSqlTextFile(file);
+        const input = decodedInput.text;
 
         let output: string;
         let recoveries: RecoveryEvent[];
@@ -1436,18 +1565,27 @@ function main(): void {
         } catch (err) {
           handleParseError(err, input, file);
         }
+        const outputStyle = detectLineEndingStyle(input);
+        const styledOutput = applyLineEndingStyle(output, outputStyle);
+        const normalizedOutput = normalizeForComparison(output);
 
         printRecoveryWarnings(recoveries);
         recoveryFailures += recoveries.length;
         totalPassthroughCount += passthroughCount;
 
         if (opts.write) {
-          if (input !== output) {
+          if (input !== styledOutput) {
             const validPath = validateWritePath(file);
             if (validPath === null) {
               console.error(red(`Warning: skipping '${file}' — path resolves outside working directory`));
             } else {
-              atomicWriteFileSync(validPath, output);
+              let existingMode: number | undefined;
+              try {
+                existingMode = statSync(validPath).mode & 0o777;
+              } catch {
+                existingMode = undefined;
+              }
+              atomicWriteFileSync(validPath, encodeSqlText(styledOutput, decodedInput.encoding), existingMode);
               changedCount++;
             }
           }
@@ -1456,7 +1594,7 @@ function main(): void {
 
         if (opts.listDifferent) {
           const normalizedInput = normalizeForComparison(input);
-          if (normalizedInput !== output) {
+          if (normalizedInput !== normalizedOutput) {
             checkFailures++;
             console.log(file);
           }
@@ -1465,20 +1603,20 @@ function main(): void {
 
         if (opts.check) {
           const normalizedInput = normalizeForComparison(input);
-          if (normalizedInput !== output) {
+          if (normalizedInput !== normalizedOutput) {
             checkFailures++;
             if (!opts.quiet) {
               console.error(red(`${file}: not formatted.`));
             }
             if (opts.diff && !opts.quiet) {
-              console.error(unifiedDiff(normalizedInput, output, `a/${file}`, `b/${file}`));
+              console.error(unifiedDiff(normalizedInput, normalizedOutput, `a/${file}`, `b/${file}`));
             }
           }
           continue;
         }
 
         if (!opts.quiet) {
-          process.stdout.write(output);
+          process.stdout.write(styledOutput);
         }
       }
 
