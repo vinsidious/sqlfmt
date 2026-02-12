@@ -102,7 +102,11 @@ describe('SQL regression behaviors', () => {
     const sql = 'SELECT sum(x) OVER (w RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t WINDOW w AS (ORDER BY y);';
     expect(() => parse(sql, { recover: false })).not.toThrow();
     const out = formatSQL(sql);
-    expect(out).toContain('OVER (w RANGE BETWEEN');
+    expect(out).toContain(`OVER (
+           w
+           RANGE BETWEEN UNBOUNDED PRECEDING
+                     AND CURRENT ROW
+       )`);
     expect(out).toContain('WINDOW w AS (ORDER BY y)');
   });
 
@@ -113,6 +117,15 @@ describe('SQL regression behaviors', () => {
     expect(out).toContain('DELIMITER ;;');
     expect(out).toContain('END;;');
     expect(out).toContain('DELIMITER ;');
+  });
+
+  it('supports MySQL DELIMITER $$ routines with dollar-text literals', () => {
+    const sql = "DELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT '$$';\nEND$$\nDELIMITER ;\nSELECT 1;";
+    expect(() => parse(sql, { recover: false, dialect: 'mysql' })).not.toThrow();
+    const out = formatSQL(sql, { dialect: 'mysql' });
+    expect(out).toContain("SELECT '$$';");
+    expect(out).toContain('END$$');
+    expect(out).toContain('SELECT 1;');
   });
 
   it('supports top-level T-SQL IF/BEGIN/END blocks in strict mode', () => {
@@ -134,9 +147,9 @@ describe('SQL regression behaviors', () => {
     expect(formatSQL('DROP VIEW revenue:s;').trim()).toBe('DROP VIEW revenue:s;');
   });
 
-  it('avoids blank lines around UNION operators', () => {
+  it('adds blank lines around UNION operators', () => {
     const out = formatSQL('SELECT 1 AS two UNION SELECT 2.2 ORDER BY 1;');
-    expect(out).not.toMatch(/\n\s*\n\s*UNION\n\s*\n/);
+    expect(out).toMatch(/\n\s*\n\s*UNION\n\s*\n/);
   });
 
   it('parses UESCAPE clauses in strict mode', () => {

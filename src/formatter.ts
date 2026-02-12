@@ -226,7 +226,7 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
       throw err;
     }
   }
-  if (parts.length === 0) return '\n';
+  if (parts.length === 0) return '';
 
   // Top-level statement separation already inserts a blank line. If the next
   // statement itself starts with blank lines (typically from leading comment
@@ -751,6 +751,15 @@ function contentPad(ctx: FormatContext): string {
   return ' '.repeat(contentCol(ctx));
 }
 
+function indentMultiline(text: string, spaces: number): string {
+  if (spaces <= 0) return text;
+  const pad = ' '.repeat(spaces);
+  return text
+    .split('\n')
+    .map(line => (line ? pad + line : line))
+    .join('\n');
+}
+
 function appendStatementSemicolon(sql: string): string {
   if (!sql) return ';';
   if (endsWithLineComment(sql)) return sql;
@@ -960,7 +969,7 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   // GROUP BY
   if (node.groupBy) {
     const kw = rightAlign('GROUP', ctx);
-    lines.push(kw + ' BY ' + formatGroupByClause(node.groupBy, ctx));
+    lines.push(...formatSelectGroupByLines(node.groupBy, kw, ctx));
   }
 
   // HAVING
@@ -1982,6 +1991,47 @@ function normalizeRawBinaryRight(text: string, operator: string): string {
   return text;
 }
 
+function formatSelectGroupByLines(
+  groupBy: AST.GroupByClause,
+  groupKeyword: string,
+  ctx: FormatContext,
+): string[] {
+  if (groupBy.groupingSets && groupBy.groupingSets.length > 0) {
+    return [`${groupKeyword} BY ${formatGroupByClause(groupBy, ctx)}`];
+  }
+
+  const quantifierPrefix = groupBy.setQuantifier ? groupBy.setQuantifier + ' ' : '';
+  const withRollup = groupBy.withRollup ? ' WITH ROLLUP' : '';
+
+  const inlineItems = groupBy.items.map(expr => formatExpr(expr, 0, ctx.runtime));
+  const inlineBody = inlineItems.join(', ');
+  const inlineClause = `${groupKeyword} BY ${quantifierPrefix}${inlineBody}${withRollup}`.trimEnd();
+  const hasMultilineInlineItem = inlineItems.some(item => item.includes('\n'));
+  if (!hasMultilineInlineItem && stringDisplayWidth(inlineClause) <= ctx.runtime.maxLineLength) {
+    return [inlineClause];
+  }
+
+  if (groupBy.items.length === 0) {
+    const tail = (`${quantifierPrefix}${withRollup}`).trim();
+    return [tail ? `${groupKeyword} BY ${tail}` : `${groupKeyword} BY`];
+  }
+
+  const firstPrefix = `${groupKeyword} BY ${quantifierPrefix}`;
+  const continuationPad = ' '.repeat(stringDisplayWidth(firstPrefix));
+  const lines: string[] = [];
+  for (let i = 0; i < groupBy.items.length; i++) {
+    const prefix = i === 0 ? firstPrefix : continuationPad;
+    const col = stringDisplayWidth(prefix);
+    const text = formatExprAtColumn(groupBy.items[i], col, ctx.runtime);
+    const comma = i < groupBy.items.length - 1 ? ',' : '';
+    lines.push(prefix + text + comma);
+  }
+  if (withRollup) {
+    lines[lines.length - 1] += withRollup;
+  }
+  return lines;
+}
+
 function formatGroupByClause(groupBy: AST.GroupByClause, ctx: FormatContext): string {
   const plainItems = groupBy.items.map(e => formatExpr(e, 0, ctx.runtime));
   const quantifier = groupBy.setQuantifier;
@@ -2306,16 +2356,7 @@ function formatWindowFunctionAtColumn(
   }
   const overStart = funcWithNullTreatment + ' OVER (';
   const overContentCol = col + overStart.length;
-
-  if (expr.windowName && !expr.partitionBy && !expr.orderBy && expr.frame) {
-    const frame = formatFrameClause(
-      expr.frame,
-      overContentCol + expr.windowName.length + 1,
-      expr.exclude,
-      runtime,
-    );
-    return funcWithNullTreatment + ' OVER (' + expr.windowName + ' ' + frame + ')';
-  }
+  const overBlockInnerCol = col + 4;
 
   // Collect parts with their BY keyword length for alignment
   type OverPart = { text: string; byKeywordLen: number };
@@ -2345,6 +2386,7 @@ function formatWindowFunctionAtColumn(
   // Compute BY-keyword alignment before generating frame text
   const byParts = overParts.filter(p => p.byKeywordLen > 0);
   const maxByLen = byParts.length > 0 ? Math.max(...byParts.map(p => p.byKeywordLen)) : 0;
+  const useBlockLayout = !!expr.frame;
 
   // Frame clause: align BETWEEN with BY keywords
   let frameExtraPad = 0;
@@ -2353,7 +2395,8 @@ function formatWindowFunctionAtColumn(
     // BETWEEN starts at column: overContentCol + frameExtraPad + frame.unit.length + 1
     // Align them: frameExtraPad = maxByLen - 2 - frame.unit.length - 1
     frameExtraPad = maxByLen > 0 ? Math.max(0, maxByLen - 2 - expr.frame.unit.length - 1) : 0;
-    const frameStartCol = overContentCol + frameExtraPad;
+    const frameBaseCol = useBlockLayout ? overBlockInnerCol : overContentCol;
+    const frameStartCol = frameBaseCol + frameExtraPad;
     overParts.push({
       text: formatFrameClause(expr.frame, frameStartCol, expr.exclude, runtime),
       byKeywordLen: -1, // frame part
@@ -2365,6 +2408,25 @@ function formatWindowFunctionAtColumn(
     if (col + stringDisplayWidth(inline) <= runtime.maxLineLength) {
       return inline;
     }
+  }
+
+  if (useBlockLayout) {
+    const innerPad = ' '.repeat(overBlockInnerCol);
+    const closePad = ' '.repeat(col);
+    let result = funcWithNullTreatment + ' OVER (';
+    for (const part of overParts) {
+      let extraPad: string;
+      if (part.byKeywordLen > 0 && maxByLen > 0) {
+        extraPad = ' '.repeat(maxByLen - part.byKeywordLen);
+      } else if (part.byKeywordLen === -1) {
+        extraPad = ' '.repeat(frameExtraPad);
+      } else {
+        extraPad = '';
+      }
+      result += '\n' + innerPad + extraPad + part.text;
+    }
+    result += '\n' + closePad + ')';
+    return result;
   }
 
   const pad = ' '.repeat(overContentCol);
@@ -2418,20 +2480,21 @@ function formatFrameClause(
   exclude?: string,
   runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
 ): string {
+  const excludeCol = Math.max(0, startCol + frame.unit.length - stringDisplayWidth('EXCLUDE'));
   if (!frame.end) {
     const head = `${frame.unit} ${formatFrameBound(frame.start, runtime)}`;
     return exclude
-      ? `${head}\n${' '.repeat(startCol)}EXCLUDE ${exclude}`
+      ? `${head}\n${' '.repeat(excludeCol)}EXCLUDE ${exclude}`
       : head;
   }
 
   const low = formatFrameBound(frame.start, runtime);
   const high = formatFrameBound(frame.end, runtime);
   const head = `${frame.unit} BETWEEN ${low}`;
-  // Right-align AND with frame unit keyword (ROWS/RANGE/GROUPS)
-  const andPad = ' '.repeat(startCol + frame.unit.length - 3);
+  const betweenPrefix = `${frame.unit} BETWEEN `;
+  const andPad = ' '.repeat(startCol + stringDisplayWidth(betweenPrefix) - stringDisplayWidth('AND '));
   let out = head + '\n' + andPad + 'AND ' + high;
-  if (exclude) out += '\n' + ' '.repeat(startCol) + 'EXCLUDE ' + exclude;
+  if (exclude) out += '\n' + ' '.repeat(excludeCol) + 'EXCLUDE ' + exclude;
   return out;
 }
 
@@ -2490,8 +2553,8 @@ function shouldWrapValuesTuple(
 ): boolean {
   if (valueCount <= 1) return false;
   const lineWidth = stringDisplayWidth(prefix + tupleText);
-  if (valueCount >= 8 && lineWidth > maxLineLength) return true;
-  return lineWidth > Math.max(maxLineLength * 2, 160);
+  if (valueCount >= 12 && lineWidth > maxLineLength) return true;
+  return lineWidth > Math.max(maxLineLength * 3, 240);
 }
 
 function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
@@ -2502,7 +2565,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  const insertHead = rightAlign('INSERT', dmlCtx)
+  const insertHead = ' '.repeat(dmlCtx.indentOffset)
+    + 'INSERT'
     + (node.orConflictAction ? ` OR ${node.orConflictAction}` : node.ignore ? ' IGNORE' : '')
     + ' INTO '
     + lowerIdent(node.table)
@@ -2515,7 +2579,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
   const shouldWrapColumns =
     node.columns.length > 0
     && node.columns.length >= 8
-    && stringDisplayWidth(insertHead + inlineColumns) > dmlCtx.runtime.maxLineLength;
+    && stringDisplayWidth(insertHead + inlineColumns) > Math.max(dmlCtx.runtime.maxLineLength * 2, 120);
 
   if (hasCommentColumns) {
     const colPad = contentPad(dmlCtx);
@@ -2615,7 +2679,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       lines.push(executeSource);
     }
   } else if (node.selectQuery) {
-    lines.push(formatQueryExpressionForSubquery(node.selectQuery, dmlCtx.runtime));
+    const selectQuery = formatQueryExpressionForSubquery(node.selectQuery, dmlCtx.runtime, undefined, ctx.depth + 1);
+    lines.push(indentMultiline(selectQuery, dmlCtx.indentOffset));
   }
 
   if (node.onConflict) {
@@ -2666,7 +2731,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     }
   }
 
-  if (appendReturningClause(lines, node.returning, dmlCtx, node.returningInto)) return lines.join('\n');
+  if (appendReturningClause(lines, node.returning, dmlCtx, node.returningInto, !ctx.isSubquery)) return lines.join('\n');
+  if (ctx.isSubquery) return lines.join('\n');
   return appendStatementSemicolon(lines.join('\n'));
 }
 
@@ -2773,8 +2839,8 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
     lines.push(whereKw + ' ' + formatCondition(node.where.condition, dmlCtx));
   }
 
-  if (appendReturningClause(lines, node.returning, dmlCtx)) return lines.join('\n');
-
+  if (appendReturningClause(lines, node.returning, dmlCtx, undefined, !ctx.isSubquery)) return lines.join('\n');
+  if (ctx.isSubquery) return lines.join('\n');
   return appendStatementSemicolon(lines.join('\n'));
 }
 
@@ -2848,8 +2914,8 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
     lines.push(whereKw + ' CURRENT OF ' + lowerIdent(node.currentOf));
   }
 
-  if (appendReturningClause(lines, node.returning, dmlCtx)) return lines.join('\n');
-
+  if (appendReturningClause(lines, node.returning, dmlCtx, undefined, !ctx.isSubquery)) return lines.join('\n');
+  if (ctx.isSubquery) return lines.join('\n');
   return appendStatementSemicolon(lines.join('\n'));
 }
 
@@ -2858,13 +2924,14 @@ function appendReturningClause(
   returning: readonly AST.Expression[] | undefined,
   ctx: FormatContext,
   returningInto?: readonly string[],
+  terminate: boolean = true,
 ): boolean {
   if (!returning || returning.length === 0) return false;
   let text = rightAlign('RETURNING', ctx) + ' ' + returning.map(expr => formatExpr(expr, 0, ctx.runtime)).join(', ');
   if (returningInto && returningInto.length > 0) {
     text += ' INTO ' + returningInto.join(', ');
   }
-  lines.push(text + ';');
+  lines.push(terminate ? text + ';' : text);
   return true;
 }
 
@@ -3592,11 +3659,14 @@ function normalizeIdentifierCall(name: string): string | null {
 }
 
 function createTableElementIndent(elem: AST.TableElement, tableConstraintIndent: string): string {
+  // Named constraints use the wider indent so multi-line bodies align with data types.
+  // Unnamed constraints (PRIMARY KEY, SPATIAL KEY, FULLTEXT KEY, etc.) use the
+  // same base indent as column definitions to stay visually consistent.
   if (elem.elementType === 'constraint') {
-    return tableConstraintIndent;
+    return elem.constraintName ? tableConstraintIndent : '    ';
   }
   if (elem.elementType === 'foreign_key') {
-    return tableConstraintIndent;
+    return elem.constraintName ? tableConstraintIndent : '    ';
   }
   return '    ';
 }
@@ -3806,8 +3876,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
       if (comma) lines[lines.length - 1] += comma;
     } else if (elem.elementType === 'foreign_key') {
-      const foreignKeyIndent = tableConstraintIndent;
-      const foreignKeyBodyIndent = tableConstraintIndent;
+      const foreignKeyIndent = elem.constraintName ? tableConstraintIndent : '    ';
+      const foreignKeyBodyIndent = elem.constraintName ? tableConstraintIndent : '    ';
       if (elem.constraintName) {
         lines.push(foreignKeyIndent + 'CONSTRAINT ' + elem.constraintName);
         lines.push(foreignKeyBodyIndent + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
@@ -4131,22 +4201,29 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
     if (i < node.operators.length) {
       const op = node.operators[i];
       const nextMember = node.members[i + 1];
-      const isParenthesizedBridge = !!(member.parenthesized && nextMember?.parenthesized);
+      let opLine: string;
       if (member.parenthesized) {
-        // Inside parenthesized union, operator indented to river
-        if (isParenthesizedBridge) {
-          parts.push('');
-          parts.push('  ' + op);
-          parts.push('');
-        } else {
-          parts.push('  ' + op);
-        }
+        // Inside parenthesized unions, keep the historical two-space operator indent.
+        opLine = '  ' + op;
       } else {
         // Align operator to the river
         const firstWord = op.split(' ')[0];
         const rest = op.split(' ').slice(1).join(' ');
         const aligned = rightAlign(firstWord, ctx);
-        parts.push(rest ? aligned + ' ' + rest : aligned);
+        opLine = rest ? aligned + ' ' + rest : aligned;
+      }
+
+      if (parts.length > 0 && parts[parts.length - 1] !== '') {
+        parts.push('');
+      }
+      parts.push(opLine);
+      parts.push('');
+
+      // Keep relative spacing stable when the next member begins with comments.
+      if (nextMember?.statement.leadingComments?.length) {
+        while (parts.length > 0 && parts[parts.length - 1] === '' && parts[parts.length - 2] === '') {
+          parts.pop();
+        }
       }
     }
   }
@@ -4238,6 +4315,15 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
       lines.push(formatUnion(cte.query, bodyCtx));
     } else if (cte.query.type === 'cte') {
       lines.push(formatCTE(cte.query, bodyCtx));
+    } else if (cte.query.type === 'select') {
+      lines.push(formatSelect(cte.query, bodyCtx));
+    } else if (
+      cte.query.type === 'insert'
+      || cte.query.type === 'update'
+      || cte.query.type === 'delete'
+      || cte.query.type === 'merge'
+    ) {
+      lines.push(formatNode({ ...cte.query, leadingComments: [] }, bodyCtx));
     } else {
       lines.push(formatSelect(cte.query as AST.SelectStatement, bodyCtx));
     }
