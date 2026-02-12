@@ -29,6 +29,7 @@
   "scripts": {
     "build": "tsup",
     "test": "bun test",
+    "test:coverage": "bun test --coverage",
     "test:node": "bun run build && node tests/node-smoke.mjs && node tests/node-cli-smoke.mjs",
     "check": "tsc --noEmit",
     "prepublishOnly": "bun run build",

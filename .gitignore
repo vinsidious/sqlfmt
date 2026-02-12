@@ -7,3 +7,4 @@ website/node_modules/
 docs/tmp/
 CLAUDE.md
 AGENTS.md
+coverage/
