@@ -27,7 +27,9 @@ const CodeMirror = dynamic(() => import('@uiw/react-codemirror'), {
 });
 
 export function Playground() {
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(
+    `select e.name, e.salary, d.department_name, rank() over (partition by d.department_name order by e.salary desc) as dept_rank from employees as e inner join departments as d on e.department_id = d.id where e.start_date >= '2024-01-01' and d.active = true order by d.department_name, dept_rank;`
+  );
   const [output, setOutput] = useState('');
   const [dialect, setDialect] = useState<DialectName>(DEFAULT_DIALECT);
   const [error, setError] = useState<string | null>(null);
