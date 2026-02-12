@@ -123,7 +123,7 @@ For large repos, migrate package-by-package:
 
 ## 8) Handling unsupported syntax
 
-In recovery mode (default), statements that fail structural parsing are preserved as raw SQL where possible.
+In CLI recovery mode (default for the CLI), statements that fail structural parsing are preserved as raw SQL where possible. The `formatSQL` API is strict by default.
 
 To make parse failures block CI:
 

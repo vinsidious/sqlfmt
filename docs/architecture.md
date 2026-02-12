@@ -13,13 +13,13 @@
 
 - Parser and formatter both use the shared `DEFAULT_MAX_DEPTH` from `src/constants.ts`.
 - Parser throws `MaxDepthError` when parsing exceeds the limit.
-- Formatter also throws `MaxDepthError` when AST traversal exceeds the limit, instead of emitting fallback comment text.
+- Formatter throws `FormatterError` when AST traversal exceeds the limit, instead of emitting fallback comment text.
 
 ## Recovery Model
 
 - Recovery mode (`recover: true`) preserves unparseable statements as `raw` nodes where possible.
 - `onRecover` reports recovered statements.
-- `onDropStatement` reports rare recovery failures where no raw text can be produced.
+- `onDropStatement` reports rare recovery failures where no raw text can be produced; without it, recovery failures throw.
 
 ## AST Notes
 

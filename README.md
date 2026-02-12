@@ -248,7 +248,7 @@ holywell supports statements through a mix of:
 - Keyword-normalized pass-through for unmodeled statement families
 - Verbatim pass-through for client/script commands
 
-In default mode, unparseable statements are preserved where possible. Use `--strict` to fail on true parse errors instead of recovering.
+`formatSQL` is strict by default (`recover: false`) and throws on parse errors. The CLI defaults to recovery mode unless `--strict` is set.
 
 ## Style Guide
 
@@ -376,11 +376,12 @@ This keeps editor/CLI integration predictable and avoids hidden async overhead.
 
 ### Error Recovery
 
-By default, unparseable SQL is passed through unchanged:
+`formatSQL` is strict by default. To preserve unparseable statements instead of throwing, opt into recovery:
 
 ```typescript
 const warnings: string[] = [];
 const formatted = formatSQL(sql, {
+  recover: true,
   onRecover: (error, raw) => {
     warnings.push(`Line ${error.token.line}: ${error.message}`);
   }
@@ -389,11 +390,13 @@ const formatted = formatSQL(sql, {
 
 ### Strict Mode (throw on parse errors)
 
+Strict mode is the API default:
+
 ```typescript
 import { formatSQL, ParseError } from 'holywell';
 
 try {
-  formatSQL(sql, { recover: false });
+  formatSQL(sql);
 } catch (err) {
   if (err instanceof ParseError) {
     console.error(`Parse error: ${err.message}`);
@@ -501,7 +504,7 @@ No. Style output is intentionally fixed. holywell provides operational configura
 
 **Q: What happens with SQL syntax holywell doesn't understand?**
 
-In default (recovery) mode, unrecognized statements are passed through unchanged. Use `--strict` to fail instead.
+For the API, `formatSQL` is strict by default and throws on parse errors. For the CLI, recovery mode is the default, so unsupported/unparseable statements are passed through unless you use `--strict`.
 
 **Q: How fast is holywell?**
 
