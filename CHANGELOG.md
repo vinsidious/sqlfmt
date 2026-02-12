@@ -6,27 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.8.5] - 2026-02-12
+
+### Fixed
+
+- Updated CI Bun version in workflows to match lockfile format requirements.
+
+## [1.8.4] - 2026-02-12
+
 ### Added
 
-- Examples gallery on the website with dialect-specific SQL samples.
-- Dialect selection in the playground UI.
+- Data-modifying statements inside common table expressions (CTEs).
+- Dialect-specific examples gallery and default sample query selection in the website playground.
+- Dialect selection controls and expanded SQL samples in the website playground.
 - PostgreSQL ANALYSE and NATURAL JOIN variant parsing.
-- Comprehensive multi-dialect keyword and statement support for MySQL and T-SQL.
-- Node.js version smoke tests (v18, v20, v22) in CI.
+- Expanded MySQL and T-SQL keyword and statement coverage.
+- CLI input-size limits and line-ending preservation.
+- Node.js smoke tests (v18, v20, v22) and code coverage reporting in CI.
 
 ### Changed
 
-- Default API behavior is now strict mode (`recover: false`); CLI still defaults to recovery mode.
-- Overhauled formatter engine with runtime context and improved table layout.
-- Unified dialect resolution with opt-in formatter fallback.
-- Formatter depth limit now throws `FormatterError` instead of emitting fallback comment text.
-- Improved CLI robustness, glob handling, and path security.
+- Unified dialect resolution with opt-in formatter fallback behavior.
+- Overhauled formatter runtime context and SQL layout for complex clauses and DDL elements.
+- Improved CLI glob handling and path safety.
 
 ### Fixed
 
 - UTF-8 byte counting for malformed surrogate sequences.
-- Prevented prototype-level mutation of frozen Sets via Proxy.
+- Prototype-level mutation of frozen Sets via Proxy.
 - Standalone line comment normalization and DDL element alignment.
+- Dialect-specific tokenization and custom delimiter detection.
+- Error reporting accuracy and strict-mode enforcement.
 
 ## [1.8.3] - 2026-02-11
 
@@ -144,6 +154,10 @@ _No user-visible changes. Internal release for version alignment._
 - Multiple SQL parsing and formatting regressions.
 
 ## [1.4.0] - 2026-02-08
+
+_No user-visible changes. Internal release for version alignment._
+
+## [1.3.0] - 2026-02-08
 
 ### Added
 
@@ -266,7 +280,9 @@ _No user-visible changes. Internal release for version alignment._
 - `.holywellignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.3...HEAD
+[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.5...HEAD
+[1.8.5]: https://github.com/vinsidious/holywell/compare/v1.8.4...v1.8.5
+[1.8.4]: https://github.com/vinsidious/holywell/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/vinsidious/holywell/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/vinsidious/holywell/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/vinsidious/holywell/compare/v1.8.0...v1.8.1
@@ -274,7 +290,8 @@ _No user-visible changes. Internal release for version alignment._
 [1.7.0]: https://github.com/vinsidious/holywell/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/vinsidious/holywell/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/vinsidious/holywell/compare/v1.4.0...v1.5.0
-[1.4.0]: https://github.com/vinsidious/holywell/compare/v1.2.1...v1.4.0
+[1.4.0]: https://github.com/vinsidious/holywell/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/vinsidious/holywell/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/vinsidious/holywell/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/vinsidious/holywell/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/vinsidious/holywell/compare/v1.1.0...v1.1.1
