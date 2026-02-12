@@ -12,7 +12,7 @@ describe('MySQL table key and foreign key constraints', () => {
 
     const out = formatSQL(sql, { dialect: 'mysql' });
     expect(out).toContain('\n       KEY (id),\n');
-    expect(out).toContain('\n    FOREIGN KEY (id)\n');
+    expect(out).toContain('\n       FOREIGN KEY (id)\n');
     expect(out).toContain('\n    PRIMARY KEY (id)\n');
     expect(out).not.toContain(') , FOREIGN KEY');
     expect(out).not.toContain('KEY (   id');

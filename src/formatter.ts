@@ -22,13 +22,6 @@ function getInExprList(expr: AST.InExprList): AST.Expression[] {
 // starts at a consistent column position.
 
 const DEFAULT_RIVER = 6; // length of SELECT keyword
-const MAX_FORMATTER_DEPTH = DEFAULT_MAX_DEPTH;
-
-// Module-level function keyword set for the current formatting pass.
-// Set at the start of formatStatements() and used by formatFunctionName()
-// to apply dialect-specific function keyword casing. Safe because formatting
-// is synchronous — no concurrent formatting calls can interleave.
-let activeFunctionKeywords: ReadonlySet<string> = FUNCTION_KEYWORDS;
 
 // Approximate monospace display width with East Asian wide/full-width support.
 // Used for line-length heuristics so CJK-heavy SQL wraps more predictably.
@@ -91,9 +84,10 @@ function isWideCodePoint(cp: number): boolean {
 //   expressionWrapColumnMax (80)
 //     Maximum columns for general expression wrapping. Standard terminal width.
 //
-//   createTableTypeAlignMax (13)
+//   createTableTypeAlignMax (dynamic, min 13)
 //     Maximum data-type-name length (e.g. "VARCHAR(255)") for column-type
-//     alignment in CREATE TABLE. 13 covers common types like TIMESTAMP(6).
+//     alignment in CREATE TABLE. Scales with configured width to preserve
+//     readability in wider layouts while avoiding excessive padding.
 interface LayoutPolicy {
   topLevelInlineColumnMax: number;
   nestedInlineColumnMax: number;
@@ -117,7 +111,7 @@ function buildLayoutPolicy(maxLineLength: number): LayoutPolicy {
     groupPackColumnMax: maxLineLength - DEFAULT_RIVER - 8,
     nestedGroupPackColumnMax: maxLineLength,
     expressionWrapColumnMax: maxLineLength,
-    createTableTypeAlignMax: 13,
+    createTableTypeAlignMax: Math.max(13, Math.floor(maxLineLength * 0.25)),
   };
 }
 
@@ -129,6 +123,20 @@ interface FormatterRuntime {
   maxTokenCount?: number;
   functionKeywords: ReadonlySet<string>;
   fallbackOnError: boolean;
+}
+
+const DEFAULT_FORMATTER_RUNTIME: FormatterRuntime = {
+  maxLineLength: TERMINAL_WIDTH,
+  layoutPolicy: buildLayoutPolicy(TERMINAL_WIDTH),
+  maxDepth: DEFAULT_MAX_DEPTH,
+  functionKeywords: FUNCTION_KEYWORDS,
+  fallbackOnError: false,
+};
+
+function ensureFormatDepth(depth: number, runtime: FormatterRuntime, nodeType: string): void {
+  if (depth >= runtime.maxDepth) {
+    throw new FormatterError(`maximum formatting depth ${runtime.maxDepth} exceeded`, nodeType);
+  }
 }
 
 interface FormatContext {
@@ -181,8 +189,6 @@ export function formatStatements(nodes: AST.Node[], options: FormatterOptions = 
     functionKeywords: options.functionKeywords ?? FUNCTION_KEYWORDS,
     fallbackOnError: options.fallbackOnError ?? false,
   };
-  // Set module-level function keywords for use by formatFunctionName in all call paths
-  activeFunctionKeywords = runtime.functionKeywords;
 
   const parts: string[] = [];
   for (const node of nodes) {
@@ -877,7 +883,7 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
   // SELECT [DISTINCT] columns
   const selectKw = rightAlign('SELECT', ctx);
   const distinctStr = node.distinctOn
-    ? ` DISTINCT ON (${node.distinctOn.map(e => formatExpr(e)).join(', ')})`
+    ? ` DISTINCT ON (${node.distinctOn.map(e => formatExpr(e, 0, ctx.runtime)).join(', ')})`
     : node.distinct
       ? ' DISTINCT'
       : '';
@@ -968,35 +974,35 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
     const kw = rightAlign('WINDOW', ctx);
     const first = node.windowClause[0];
     const firstComma = node.windowClause.length > 1 ? ',' : '';
-    lines.push(kw + ' ' + first.name + ' AS (' + formatWindowSpec(first.spec) + ')' + firstComma);
+    lines.push(kw + ' ' + first.name + ' AS (' + formatWindowSpec(first.spec, ctx.runtime) + ')' + firstComma);
     for (let i = 1; i < node.windowClause.length; i++) {
       const def = node.windowClause[i];
       const comma = i < node.windowClause.length - 1 ? ',' : '';
-      lines.push(contentPad(ctx) + def.name + ' AS (' + formatWindowSpec(def.spec) + ')' + comma);
+      lines.push(contentPad(ctx) + def.name + ' AS (' + formatWindowSpec(def.spec, ctx.runtime) + ')' + comma);
     }
   }
 
   // ORDER BY
   if (node.orderBy) {
     const kw = rightAlign('ORDER', ctx);
-    lines.push(...formatSelectOrderByLines(node.orderBy.items, kw, contentPad(ctx)));
+    lines.push(...formatSelectOrderByLines(node.orderBy.items, kw, contentPad(ctx), ctx.runtime));
   }
 
   // LIMIT
   if (node.limit) {
-    lines.push(rightAlign('LIMIT', ctx) + ' ' + formatExpr(node.limit.count));
+    lines.push(rightAlign('LIMIT', ctx) + ' ' + formatExpr(node.limit.count, 0, ctx.runtime));
   }
 
   // OFFSET
   if (node.offset) {
     const rows = node.offset.rowsKeyword ? ' ROWS' : '';
-    lines.push(rightAlign('OFFSET', ctx) + ' ' + formatExpr(node.offset.count) + rows);
+    lines.push(rightAlign('OFFSET', ctx) + ' ' + formatExpr(node.offset.count, 0, ctx.runtime) + rows);
   }
 
   // FETCH
   if (node.fetch) {
     const suffix = node.fetch.withTies ? ' WITH TIES' : ' ONLY';
-    lines.push(rightAlign('FETCH', ctx) + ' FIRST ' + formatExpr(node.fetch.count) + ' ROWS' + suffix);
+    lines.push(rightAlign('FETCH', ctx) + ' FIRST ' + formatExpr(node.fetch.count, 0, ctx.runtime) + ' ROWS' + suffix);
   }
 
   if (node.lockingClause) {
@@ -1245,7 +1251,7 @@ function formatExprInSelect(
   }
 
   if (expr.type === 'binary' && expr.right.type === 'subquery') {
-    const left = formatExpr(expr.left);
+    const left = formatExpr(expr.left, 0, ctx.runtime);
     const op = ' ' + expr.operator + ' ';
     const subq = formatSubqueryAtColumn(
       expr.right,
@@ -1257,7 +1263,7 @@ function formatExprInSelect(
   }
 
   // Check if single-line would be too long
-  const simple = formatExpr(expr);
+  const simple = formatExpr(expr, 0, ctx.runtime);
   const effectiveLen = colStart + outerOffset + stringDisplayWidth(simple);
 
   // Function call with CASE argument that's too long — wrap compactly
@@ -1271,7 +1277,7 @@ function formatExprInSelect(
 
   // Binary expression that's too long — wrap at outermost operator
   if (expr.type === 'binary' && effectiveLen > runtime.layoutPolicy.expressionWrapColumnMax) {
-    return formatBinaryWrapped(expr, colStart);
+    return formatBinaryWrapped(expr, colStart, runtime);
   }
 
   // Array constructor that's too long — wrap elements
@@ -1290,7 +1296,7 @@ function formatFunctionCallWrapped(
   runtime: FormatterRuntime
 ): string | null {
   if (expr.args.length === 1 && expr.args[0].type === 'case') {
-    const name = expr.name.toUpperCase();
+    const name = formatFunctionName(expr.name, runtime.functionKeywords);
     const distinct = expr.distinct ? 'DISTINCT ' : '';
     const prefix = name + '(' + distinct;
     const caseCol = colStart + prefix.length;
@@ -1305,7 +1311,7 @@ function formatFunctionCallMultiline(
   colStart: number,
   runtime: FormatterRuntime
 ): string | null {
-  const name = expr.name.toUpperCase();
+  const name = formatFunctionName(expr.name, runtime.functionKeywords);
   const innerCol = colStart + 4;
   const innerPad = ' '.repeat(innerCol);
   const closePad = ' '.repeat(colStart);
@@ -1315,7 +1321,7 @@ function formatFunctionCallMultiline(
     const lines: string[] = [];
     lines.push(name + '(');
     for (let i = 0; i < expr.args.length; i += 2) {
-      const key = formatExpr(expr.args[i]);
+      const key = formatExpr(expr.args[i], 0, runtime);
       const valueCol = innerCol;
       const value = formatExprAtColumn(expr.args[i + 1], valueCol, runtime);
       const comma = i + 2 < expr.args.length ? ',' : '';
@@ -1329,7 +1335,7 @@ function formatFunctionCallMultiline(
   if (hasSeriesArgShape(expr)) {
     const lines: string[] = [];
     lines.push(name + '(');
-    const inlineArgs = expr.args.map(formatExpr).join(', ');
+    const inlineArgs = expr.args.map(arg => formatExpr(arg, 0, runtime)).join(', ');
     const preferMultiline = expr.args.every(isLiteralLike);
     if (!preferMultiline) {
       lines.push(innerPad + inlineArgs);
@@ -1348,9 +1354,9 @@ function formatFunctionCallMultiline(
     const lines: string[] = [];
     lines.push(name + '(');
     lines.push(innerPad + formatExprAtColumn(expr.args[0], innerCol, runtime));
-    lines.push(innerPad + 'ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', '));
+    lines.push(innerPad + 'ORDER BY ' + expr.orderBy.map(item => formatOrderByItem(item, runtime)).join(', '));
     if (expr.separator) {
-      lines.push(innerPad + 'SEPARATOR ' + formatExpr(expr.separator));
+      lines.push(innerPad + 'SEPARATOR ' + formatExpr(expr.separator, 0, runtime));
     }
     lines.push(closePad + ')');
     return lines.join('\n');
@@ -1399,14 +1405,14 @@ function formatCaseCompact(
   const singleWhen = expr.whenClauses.length === 1;
 
   let result = 'CASE';
-  if (expr.operand) result += ' ' + formatExpr(expr.operand);
+  if (expr.operand) result += ' ' + formatExpr(expr.operand, 0, runtime);
 
   for (let i = 0; i < expr.whenClauses.length; i++) {
     const wc = expr.whenClauses[i];
     const condCol = whenCol + 'WHEN '.length;
     const condStr = formatExprColumnAware(wc.condition, condCol, outerOffset, runtime);
     const thenComment = wc.trailingComment ? ' ' + wc.trailingComment : '';
-    const thenStr = formatExpr(wc.result) + thenComment;
+    const thenStr = formatExpr(wc.result, 0, runtime) + thenComment;
     const isMultiLine = condStr.includes('\n');
 
     if (i === 0) {
@@ -1415,7 +1421,7 @@ function formatCaseCompact(
         // For single WHEN: put THEN + ELSE + END all on one continuation line
         let line = 'THEN ' + thenStr;
         if (singleWhen && expr.elseResult) {
-          line += ' ELSE ' + formatExpr(expr.elseResult) + ' END';
+          line += ' ELSE ' + formatExpr(expr.elseResult, 0, runtime) + ' END';
           result += '\n' + pad + line;
           return result;
         }
@@ -1429,7 +1435,7 @@ function formatCaseCompact(
   }
 
   if (expr.elseResult) {
-    result += '\n' + pad + 'ELSE ' + formatExpr(expr.elseResult);
+    result += '\n' + pad + 'ELSE ' + formatExpr(expr.elseResult, 0, runtime);
   }
   result += ' END';
   return result;
@@ -1443,21 +1449,21 @@ function formatExprColumnAware(
   runtime: FormatterRuntime
 ): string {
   if (expr.type === 'in') {
-    const simple = formatExpr(expr);
+    const simple = formatExpr(expr, 0, runtime);
     if (col + outerOffset + stringDisplayWidth(simple) > runtime.layoutPolicy.expressionWrapColumnMax) {
       return formatInExprWrapped(expr, col, runtime);
     }
   }
-  return formatExpr(expr);
+  return formatExpr(expr, 0, runtime);
 }
 
 // Wrap IN list values across lines when too long (only called for non-subquery IN).
 // Packs as many items as fit on each line before wrapping.
 function formatInExprWrapped(expr: AST.InExpr, col: number, runtime: FormatterRuntime): string {
   const neg = expr.negated ? 'NOT ' : '';
-  const prefix = formatExpr(expr.expr) + ' ' + neg + 'IN (';
+  const prefix = formatExpr(expr.expr, 0, runtime) + ' ' + neg + 'IN (';
   if (isInExprSubquery(expr)) {
-    const left = formatExpr(expr.expr);
+    const left = formatExpr(expr.expr, 0, runtime);
     const inPrefix = `${left} ${neg}IN `;
     const subquery = getInExprSubquery(expr);
     const inner = formatQueryExpressionForSubquery(subquery.query, runtime);
@@ -1471,7 +1477,7 @@ function formatInExprWrapped(expr: AST.InExpr, col: number, runtime: FormatterRu
     }
     return inPrefix.trimEnd() + '\n' + ' '.repeat(col) + wrapSubqueryLines(inner, col);
   }
-  const vals = getInExprList(expr).map(v => formatExpr(v));
+  const vals = getInExprList(expr).map(v => formatExpr(v, 0, runtime));
   const valStartCol = col + stringDisplayWidth(prefix);
   const valPad = ' '.repeat(valStartCol);
   const maxWidth = runtime.maxLineLength;
@@ -1479,7 +1485,7 @@ function formatInExprWrapped(expr: AST.InExpr, col: number, runtime: FormatterRu
   // Pack items onto lines, wrapping when exceeding maxWidth
   const lines: string[] = [];
   let currentLine = prefix;
-  let currentCol = col + prefix.length;
+  let currentCol = col + stringDisplayWidth(prefix);
 
   for (let i = 0; i < vals.length; i++) {
     const isLast = i === vals.length - 1;
@@ -1505,7 +1511,7 @@ function formatInExprWrapped(expr: AST.InExpr, col: number, runtime: FormatterRu
 // Packs items per line, aligning continuation under first element after '['.
 function formatArrayConstructorWrapped(expr: AST.ArrayConstructorExpr, col: number, runtime: FormatterRuntime): string {
   const prefix = 'ARRAY[';
-  const vals = expr.elements.map(e => formatExpr(e));
+  const vals = expr.elements.map(e => formatExpr(e, 0, runtime));
   const elemStartCol = col + stringDisplayWidth(prefix);
   const elemPad = ' '.repeat(elemStartCol);
   const maxWidth = runtime.maxLineLength;
@@ -1534,14 +1540,14 @@ function formatArrayConstructorWrapped(expr: AST.ArrayConstructorExpr, col: numb
 }
 
 // Wrap a binary expression at the outermost operator
-function formatBinaryWrapped(expr: AST.BinaryExpr, colStart: number): string {
+function formatBinaryWrapped(expr: AST.BinaryExpr, colStart: number, runtime: FormatterRuntime): string {
   if (expr.operator === ':') {
-    return formatExpr(expr.left) + ':' + formatExpr(expr.right);
+    return formatExpr(expr.left, 0, runtime) + ':' + formatExpr(expr.right, 0, runtime);
   }
 
   if (expr.operator === '||' || expr.operator === '+') {
     const op = expr.operator;
-    const parts = flattenBinaryChain(expr, op).map(part => formatExpr(part));
+    const parts = flattenBinaryChain(expr, op).map(part => formatExpr(part, 0, runtime));
     const wrapPad = ' '.repeat(colStart + 2);
     const lines = [parts[0]];
     for (let i = 1; i < parts.length; i++) {
@@ -1550,8 +1556,8 @@ function formatBinaryWrapped(expr: AST.BinaryExpr, colStart: number): string {
     return lines.join('\n');
   }
 
-  const left = formatExpr(expr.left);
-  const right = formatExpr(expr.right);
+  const left = formatExpr(expr.left, 0, runtime);
+  const right = formatExpr(expr.right, 0, runtime);
   const wrapPad = ' '.repeat(colStart + 4);
   return left + '\n' + wrapPad + expr.operator + ' ' + right;
 }
@@ -1573,9 +1579,10 @@ function formatExprAtColumn(expr: AST.Expression, colStart: number, runtime: For
   if (expr.type === 'in' && isInExprSubquery(expr)) {
     return formatInExprWrapped(expr, colStart, runtime);
   }
+  if (expr.type === 'in') return formatExprColumnAware(expr, colStart, 0, runtime);
   if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'in' && isInExprSubquery(expr.operand)) {
     const inExpr = expr.operand;
-    const prefix = 'NOT ' + formatExpr(inExpr.expr) + ' IN ';
+    const prefix = 'NOT ' + formatExpr(inExpr.expr, 0, runtime) + ' IN ';
     const subquery = getInExprSubquery(inExpr);
     const inner = formatQueryExpressionForSubquery(subquery.query, runtime);
     const wrapped = wrapSubqueryLines(inner, colStart + stringDisplayWidth(prefix));
@@ -1583,7 +1590,7 @@ function formatExprAtColumn(expr: AST.Expression, colStart: number, runtime: For
   }
   if (expr.type === 'paren') return '(' + formatExprAtColumn(expr.expr, colStart + 1, runtime) + ')';
   if (expr.type === 'binary' && expr.right.type === 'subquery') {
-    const left = formatExpr(expr.left);
+    const left = formatExpr(expr.left, 0, runtime);
     const operator = ' ' + expr.operator + ' ';
     const subquery = formatSubqueryAtColumn(
       expr.right,
@@ -1596,7 +1603,7 @@ function formatExprAtColumn(expr: AST.Expression, colStart: number, runtime: For
     const wrapped = formatFunctionCallMultiline(expr, colStart, runtime);
     if (wrapped) return wrapped;
   }
-  return formatExpr(expr);
+  return formatExpr(expr, 0, runtime);
 }
 
 function isLiteralLike(expr: AST.Expression): boolean {
@@ -1621,9 +1628,12 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
   if (from.only) result = 'ONLY ' + result;
   if (from.lateral) result = 'LATERAL ' + result;
   if (from.tablesample) {
-    result += ' TABLESAMPLE ' + from.tablesample.method + '(' + from.tablesample.args.map(formatExpr).join(', ') + ')';
+    result += ' TABLESAMPLE '
+      + from.tablesample.method
+      + '(' + from.tablesample.args.map(arg => formatExpr(arg, 0, ctx.runtime)).join(', ')
+      + ')';
     if (from.tablesample.repeatable) {
-      result += ' REPEATABLE(' + formatExpr(from.tablesample.repeatable) + ')';
+      result += ' REPEATABLE(' + formatExpr(from.tablesample.repeatable, 0, ctx.runtime) + ')';
     }
   }
   if (from.ordinality) {
@@ -1773,12 +1783,17 @@ function formatJoinUsingClause(join: AST.JoinClause): string {
   return text;
 }
 
-function formatSelectOrderByLines(items: readonly AST.OrderByItem[], orderKeyword: string, continuationPad: string): string[] {
+function formatSelectOrderByLines(
+  items: readonly AST.OrderByItem[],
+  orderKeyword: string,
+  continuationPad: string,
+  runtime: FormatterRuntime,
+): string[] {
   if (items.length === 0) return [`${orderKeyword} BY`];
 
   const hasTrailingComments = items.some(item => !!item.trailingComment);
   if (!hasTrailingComments) {
-    return [`${orderKeyword} BY ${items.map(formatOrderByItem).join(', ')}`];
+    return [`${orderKeyword} BY ${items.map(item => formatOrderByItem(item, runtime)).join(', ')}`];
   }
 
   const lines: string[] = [];
@@ -1787,7 +1802,7 @@ function formatSelectOrderByLines(items: readonly AST.OrderByItem[], orderKeywor
     const isLast = i === items.length - 1;
     const comma = isLast ? '' : ',';
     const comment = item.trailingComment ? '  ' + item.trailingComment.text : '';
-    const line = formatOrderByItem(item) + comma + comment;
+    const line = formatOrderByItem(item, runtime) + comma + comment;
     if (i === 0) {
       lines.push(`${orderKeyword} BY ${line}`);
     } else {
@@ -1825,9 +1840,7 @@ function formatJoinOn(
   runtime: FormatterRuntime,
   depth: number = 0
 ): string {
-  if (depth >= MAX_FORMATTER_DEPTH) {
-    return formatExpr(expr);
-  }
+  ensureFormatDepth(depth, runtime, 'join_condition');
   if (expr.type === 'paren' && expr.expr.type === 'binary' && (expr.expr.operator === 'AND' || expr.expr.operator === 'OR')) {
     return '(' + formatParenLogical(expr.expr, baseCol + 1, runtime, depth + 1) + ')';
   }
@@ -1844,7 +1857,7 @@ function formatJoinOn(
     }
     return left + '\n' + indent + expr.operator + ' ' + right;
   }
-  const rawInline = formatExpr(expr);
+  const rawInline = formatExpr(expr, depth, runtime);
   const inline = expr.type === 'raw'
     ? normalizeMultilineLogicalOperand(rawInline, baseCol)
     : rawInline;
@@ -1864,9 +1877,7 @@ function formatCondition(expr: AST.Expression, ctx: FormatContext): string {
 }
 
 function formatConditionInner(expr: AST.Expression, ctx: FormatContext): string {
-  if (ctx.depth >= MAX_FORMATTER_DEPTH) {
-    return formatExpr(expr);
-  }
+  ensureFormatDepth(ctx.depth, ctx.runtime, 'condition');
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     const deeper = { ...ctx, depth: ctx.depth + 1 };
     const left = formatConditionInner(expr.left, deeper);
@@ -1882,9 +1893,7 @@ function formatConditionInner(expr: AST.Expression, ctx: FormatContext): string 
 }
 
 function formatConditionRight(expr: AST.Expression, ctx: FormatContext): string {
-  if (ctx.depth >= MAX_FORMATTER_DEPTH) {
-    return formatExpr(expr);
-  }
+  ensureFormatDepth(ctx.depth, ctx.runtime, 'condition');
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     return formatConditionInner(expr, ctx);
   }
@@ -1974,7 +1983,7 @@ function normalizeRawBinaryRight(text: string, operator: string): string {
 }
 
 function formatGroupByClause(groupBy: AST.GroupByClause, ctx: FormatContext): string {
-  const plainItems = groupBy.items.map(e => formatExpr(e));
+  const plainItems = groupBy.items.map(e => formatExpr(e, 0, ctx.runtime));
   const quantifier = groupBy.setQuantifier;
   const withRollup = groupBy.withRollup ? ' WITH ROLLUP' : '';
   if (!groupBy.groupingSets || groupBy.groupingSets.length === 0) {
@@ -1999,7 +2008,7 @@ function formatGroupingSpec(
   const kind = spec.type === 'grouping_sets' ? 'GROUPING SETS' : spec.type.toUpperCase();
   if (spec.type !== 'grouping_sets') {
     const flat = spec.sets.map(set => {
-      const exprs = set.map(e => formatExpr(e));
+      const exprs = set.map(e => formatExpr(e, 0, ctx.runtime));
       return exprs.length === 1 ? exprs[0] : '(' + exprs.join(', ') + ')';
     });
     const flatText = flat.join(', ');
@@ -2019,10 +2028,10 @@ function formatGroupingSpec(
     let text: string;
 
     if (spec.type === 'grouping_sets') {
-      text = set.length === 0 ? '()' : '(' + set.map(e => formatExpr(e)).join(', ') + ')';
+      text = set.length === 0 ? '()' : '(' + set.map(e => formatExpr(e, 0, ctx.runtime)).join(', ') + ')';
     } else {
-      if (set.length === 1) text = formatExpr(set[0]);
-      else text = '(' + set.map(e => formatExpr(e)).join(', ') + ')';
+      if (set.length === 1) text = formatExpr(set[0], 0, ctx.runtime);
+      else text = '(' + set.map(e => formatExpr(e, 0, ctx.runtime)).join(', ') + ')';
     }
     lines.push(itemIndent + text + comma);
   }
@@ -2041,7 +2050,7 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
 
   if (expr.type === 'unary' && expr.operator === 'NOT' && expr.operand.type === 'in' && isInExprSubquery(expr.operand)) {
     const inExpr = expr.operand;
-    const e = formatExpr(inExpr.expr);
+    const e = formatExpr(inExpr.expr, 0, ctx.runtime);
     const subqExpr = getInExprSubquery(inExpr);
     const inner = formatQueryExpressionForSubquery(subqExpr.query, ctx.runtime);
     const lineCount = inner.split('\n').length;
@@ -2058,7 +2067,7 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
 
   // IN with subquery
   if (expr.type === 'in' && isInExprSubquery(expr)) {
-    const e = formatExpr(expr.expr);
+    const e = formatExpr(expr.expr, 0, ctx.runtime);
     const subqExpr = getInExprSubquery(expr);
 
     // NOT IN: always on new line
@@ -2083,7 +2092,7 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
 
   // IN with value list: wrap if too long
   if (expr.type === 'in' && !isInExprSubquery(expr)) {
-    const simple = formatExpr(expr);
+    const simple = formatExpr(expr, 0, ctx.runtime);
     const cCol = contentCol(ctx);
     if (cCol + stringDisplayWidth(simple) > ctx.runtime.maxLineLength) {
       return formatInExprWrapped(expr, cCol, ctx.runtime);
@@ -2104,7 +2113,7 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   }
 
   if (expr.type === 'quantified_comparison' && expr.kind === 'subquery') {
-    const left = formatExpr(expr.left);
+    const left = formatExpr(expr.left, 0, ctx.runtime);
     const prefix = `${left} ${expr.operator} ${expr.quantifier} `;
     const parenCol = contentCol(ctx) + prefix.length;
     const inner = formatQueryExpressionForSubquery(expr.subquery.query, ctx.runtime);
@@ -2114,7 +2123,7 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   // Comparison where right side is a subquery
   if (expr.type === 'binary' && ['=', '<>', '!=', '<', '>', '<=', '>='].includes(expr.operator)) {
     if (expr.right.type === 'subquery') {
-      const left = formatExpr(expr.left);
+      const left = formatExpr(expr.left, 0, ctx.runtime);
       const inner = formatQueryExpressionForSubquery(expr.right.query, ctx.runtime);
       const lineCount = inner.split('\n').length;
 
@@ -2130,14 +2139,14 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
   }
 
   if (expr.type === 'between') {
-    const simple = formatExpr(expr);
+    const simple = formatExpr(expr, 0, ctx.runtime);
     const cCol = contentCol(ctx);
     if (cCol + stringDisplayWidth(simple) <= ctx.runtime.maxLineLength) {
       return simple;
     }
-    const left = formatExpr(expr.expr);
-    const low = formatExpr(expr.low);
-    const high = formatExpr(expr.high);
+    const left = formatExpr(expr.expr, 0, ctx.runtime);
+    const low = formatExpr(expr.low, 0, ctx.runtime);
+    const high = formatExpr(expr.high, 0, ctx.runtime);
     const neg = expr.negated ? 'NOT ' : '';
     const head = `${left} ${neg}BETWEEN ${low}`;
     const betweenPrefix = `${left} ${neg}BETWEEN `;
@@ -2145,7 +2154,7 @@ function formatExprInCondition(expr: AST.Expression, ctx: FormatContext): string
     return head + '\n' + andPad + 'AND ' + high;
   }
 
-  return formatExpr(expr);
+  return formatExpr(expr, 0, ctx.runtime);
 }
 
 function formatParenLogical(
@@ -2154,9 +2163,7 @@ function formatParenLogical(
   runtime: FormatterRuntime,
   depth: number = 0
 ): string {
-  if (depth >= MAX_FORMATTER_DEPTH) {
-    return formatExpr(expr);
-  }
+  ensureFormatDepth(depth, runtime, 'binary');
   const left = formatParenOperand(expr.left, opCol, expr.operator, runtime, depth + 1);
   const right = formatParenOperand(expr.right, opCol, expr.operator, runtime, depth + 1);
   if (expr.right.type === 'raw') {
@@ -2179,9 +2186,7 @@ function formatParenOperand(
   runtime: FormatterRuntime,
   depth: number = 0
 ): string {
-  if (depth >= MAX_FORMATTER_DEPTH) {
-    return formatExpr(expr);
-  }
+  ensureFormatDepth(depth, runtime, expr.type);
   if (expr.type === 'binary' && (expr.operator === 'AND' || expr.operator === 'OR')) {
     return formatParenLogical(expr, opCol, runtime, depth);
   }
@@ -2225,9 +2230,7 @@ function formatSubqueryAtColumn(
   runtime: FormatterRuntime,
   depth: number = 0
 ): string {
-  if (depth >= MAX_FORMATTER_DEPTH) {
-    return '(/* depth exceeded */)';
-  }
+  ensureFormatDepth(depth, runtime, 'subquery');
   const inner = formatQueryExpressionForSubquery(expr.query, runtime, col + 1, depth + 1);
   return wrapSubqueryLines(inner, col);
 }
@@ -2251,27 +2254,25 @@ function formatCaseAtColumn(
   runtime: FormatterRuntime,
   depth: number = 0
 ): string {
-  if (depth >= MAX_FORMATTER_DEPTH) {
-    return formatCaseSimple(expr, depth);
-  }
+  ensureFormatDepth(depth, runtime, 'case');
   const pad = ' '.repeat(col);
   let result = 'CASE';
-  if (expr.operand) result += ' ' + formatExpr(expr.operand);
+  if (expr.operand) result += ' ' + formatExpr(expr.operand, depth, runtime);
   result += '\n';
 
   for (const wc of expr.whenClauses) {
     const thenExpr = formatCaseThenResult(
       wc.result,
-      col + 'WHEN '.length + stringDisplayWidth(formatExpr(wc.condition)) + ' THEN '.length,
+      col + 'WHEN '.length + stringDisplayWidth(formatExpr(wc.condition, depth, runtime)) + ' THEN '.length,
       runtime,
       depth + 1
     );
     const thenComment = wc.trailingComment ? ' ' + wc.trailingComment : '';
-    result += pad + 'WHEN ' + formatExpr(wc.condition) + ' THEN ' + thenExpr + thenComment + '\n';
+    result += pad + 'WHEN ' + formatExpr(wc.condition, depth, runtime) + ' THEN ' + thenExpr + thenComment + '\n';
   }
 
   if (expr.elseResult) {
-    result += pad + 'ELSE ' + formatExpr(expr.elseResult) + '\n';
+    result += pad + 'ELSE ' + formatExpr(expr.elseResult, depth, runtime) + '\n';
   }
 
   result += pad + 'END';
@@ -2297,7 +2298,7 @@ function formatWindowFunctionAtColumn(
   col: number,
   runtime: FormatterRuntime
 ): string {
-  const func = formatFunctionCall(expr.func, 0, runtime.functionKeywords);
+  const func = formatFunctionCall(expr.func, 0, runtime);
   const funcWithNullTreatment = expr.nullTreatment ? `${func} ${expr.nullTreatment}` : func;
   const hasWindowSpecParts = !!(expr.partitionBy || expr.orderBy || expr.frame || expr.exclude);
   if (expr.windowName && !hasWindowSpecParts) {
@@ -2311,6 +2312,7 @@ function formatWindowFunctionAtColumn(
       expr.frame,
       overContentCol + expr.windowName.length + 1,
       expr.exclude,
+      runtime,
     );
     return funcWithNullTreatment + ' OVER (' + expr.windowName + ' ' + frame + ')';
   }
@@ -2328,14 +2330,14 @@ function formatWindowFunctionAtColumn(
 
   if (expr.partitionBy) {
     overParts.push({
-      text: 'PARTITION BY ' + expr.partitionBy.map(e => formatExpr(e)).join(', '),
+      text: 'PARTITION BY ' + expr.partitionBy.map(e => formatExpr(e, 0, runtime)).join(', '),
       byKeywordLen: 12, // 'PARTITION BY'.length
     });
   }
 
   if (expr.orderBy) {
     overParts.push({
-      text: 'ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', '),
+      text: 'ORDER BY ' + expr.orderBy.map(item => formatOrderByItem(item, runtime)).join(', '),
       byKeywordLen: 8, // 'ORDER BY'.length
     });
   }
@@ -2353,7 +2355,7 @@ function formatWindowFunctionAtColumn(
     frameExtraPad = maxByLen > 0 ? Math.max(0, maxByLen - 2 - expr.frame.unit.length - 1) : 0;
     const frameStartCol = overContentCol + frameExtraPad;
     overParts.push({
-      text: formatFrameClause(expr.frame, frameStartCol, expr.exclude),
+      text: formatFrameClause(expr.frame, frameStartCol, expr.exclude, runtime),
       byKeywordLen: -1, // frame part
     });
   }
@@ -2388,34 +2390,43 @@ function formatWindowFunctionAtColumn(
   return result;
 }
 
-function formatFrameBound(bound: AST.FrameBound): string {
+function formatFrameBound(bound: AST.FrameBound, runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME): string {
   if (bound.kind === 'UNBOUNDED PRECEDING') return 'UNBOUNDED PRECEDING';
   if (bound.kind === 'UNBOUNDED FOLLOWING') return 'UNBOUNDED FOLLOWING';
   if (bound.kind === 'CURRENT ROW') return 'CURRENT ROW';
-  return `${formatExpr(bound.value!)} ${bound.kind}`;
+  return `${formatExpr(bound.value!, 0, runtime)} ${bound.kind}`;
 }
 
-function formatFrameInline(frame: AST.FrameSpec, exclude?: string): string {
+function formatFrameInline(
+  frame: AST.FrameSpec,
+  exclude?: string,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
   let text = '';
   if (frame.end) {
-    text = `${frame.unit} BETWEEN ${formatFrameBound(frame.start)} AND ${formatFrameBound(frame.end)}`;
+    text = `${frame.unit} BETWEEN ${formatFrameBound(frame.start, runtime)} AND ${formatFrameBound(frame.end, runtime)}`;
   } else {
-    text = `${frame.unit} ${formatFrameBound(frame.start)}`;
+    text = `${frame.unit} ${formatFrameBound(frame.start, runtime)}`;
   }
   if (exclude) text += ' EXCLUDE ' + exclude;
   return text;
 }
 
-function formatFrameClause(frame: AST.FrameSpec, startCol: number, exclude?: string): string {
+function formatFrameClause(
+  frame: AST.FrameSpec,
+  startCol: number,
+  exclude?: string,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
   if (!frame.end) {
-    const head = `${frame.unit} ${formatFrameBound(frame.start)}`;
+    const head = `${frame.unit} ${formatFrameBound(frame.start, runtime)}`;
     return exclude
       ? `${head}\n${' '.repeat(startCol)}EXCLUDE ${exclude}`
       : head;
   }
 
-  const low = formatFrameBound(frame.start);
-  const high = formatFrameBound(frame.end);
+  const low = formatFrameBound(frame.start, runtime);
+  const high = formatFrameBound(frame.end, runtime);
   const head = `${frame.unit} BETWEEN ${low}`;
   // Right-align AND with frame unit keyword (ROWS/RANGE/GROUPS)
   const andPad = ' '.repeat(startCol + frame.unit.length - 3);
@@ -2424,19 +2435,19 @@ function formatFrameClause(frame: AST.FrameSpec, startCol: number, exclude?: str
   return out;
 }
 
-function formatWindowSpec(spec: AST.WindowSpec): string {
+function formatWindowSpec(spec: AST.WindowSpec, runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME): string {
   const parts: string[] = [];
   if (spec.baseWindowName) {
     parts.push(spec.baseWindowName);
   }
   if (spec.partitionBy && spec.partitionBy.length > 0) {
-    parts.push('PARTITION BY ' + spec.partitionBy.map(formatExpr).join(', '));
+    parts.push('PARTITION BY ' + spec.partitionBy.map(expr => formatExpr(expr, 0, runtime)).join(', '));
   }
   if (spec.orderBy && spec.orderBy.length > 0) {
-    parts.push('ORDER BY ' + spec.orderBy.map(formatOrderByItem).join(', '));
+    parts.push('ORDER BY ' + spec.orderBy.map(item => formatOrderByItem(item, runtime)).join(', '));
   }
   if (spec.frame) {
-    parts.push(formatFrameInline(spec.frame, spec.exclude));
+    parts.push(formatFrameInline(spec.frame, spec.exclude, runtime));
   }
   return parts.join(' ');
 }
@@ -2550,7 +2561,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       if (tupleNode.leadingComments && tupleNode.leadingComments.length > 0) {
         emitComments(tupleNode.leadingComments, lines);
       }
-      const tupleValues = tupleNode.values.map(formatExpr);
+      const tupleValues = tupleNode.values.map(value => formatExpr(value, 0, dmlCtx.runtime));
       const tuple = '(' + tupleValues.join(', ') + ')';
       const comma = i < node.values.length - 1 ? ',' : '';
       const prefix = i === 0 ? rightAlign('VALUES', dmlCtx) + ' ' : contentPad(dmlCtx);
@@ -2577,8 +2588,8 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       const item = node.setItems[i];
       const operator = item.assignmentOperator ?? '=';
       const text = item.methodCall
-        ? formatExpr(item.value)
-        : item.column + ' ' + operator + ' ' + formatExpr(item.value);
+        ? formatExpr(item.value, 0, dmlCtx.runtime)
+        : item.column + ' ' + operator + ' ' + formatExpr(item.value, 0, dmlCtx.runtime);
       const comma = i < node.setItems.length - 1 ? ',' : '';
       const sourceAlias = i === node.setItems.length - 1 ? formatInsertSourceAlias(node.valuesAlias) : '';
       if (i === 0) {
@@ -2612,7 +2623,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     if (node.onConflict.constraintName) {
       conflictTarget = ' ON CONSTRAINT ' + node.onConflict.constraintName;
     } else if (node.onConflict.columns && node.onConflict.columns.length > 0) {
-      conflictTarget = ' (' + node.onConflict.columns.map(expr => formatExpr(expr)).join(', ') + ')';
+      conflictTarget = ' (' + node.onConflict.columns.map(expr => formatExpr(expr, 0, dmlCtx.runtime)).join(', ') + ')';
     }
     if (node.onConflict.targetWhere) {
       conflictTarget += ' WHERE ' + formatCondition(node.onConflict.targetWhere, dmlCtx);
@@ -2627,7 +2638,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
       for (let i = 0; i < (node.onConflict.setItems || []).length; i++) {
         const item = node.onConflict.setItems![i];
         const operator = item.assignmentOperator ?? '=';
-        const val = item.column + ' ' + operator + ' ' + formatExpr(item.value);
+        const val = item.column + ' ' + operator + ' ' + formatExpr(item.value, 0, dmlCtx.runtime);
         const comma = i < node.onConflict.setItems!.length - 1 ? ',' : '';
         if (i === 0) {
           lines.push(rightAlign('SET', conflictCtx) + ' ' + val + comma);
@@ -2645,7 +2656,7 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     for (let i = 0; i < node.onDuplicateKeyUpdate.length; i++) {
       const item = node.onDuplicateKeyUpdate[i];
       const operator = item.assignmentOperator ?? '=';
-      const val = item.column + ' ' + operator + ' ' + formatExpr(item.value);
+      const val = item.column + ' ' + operator + ' ' + formatExpr(item.value, 0, dmlCtx.runtime);
       const comma = i < node.onDuplicateKeyUpdate.length - 1 ? ',' : '';
       if (i === 0) {
         lines.push(rightAlign('ON', dmlCtx) + ' DUPLICATE KEY UPDATE ' + val + comma);
@@ -2705,7 +2716,7 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
     const item = node.setItems[i];
     const comma = i < node.setItems.length - 1 ? ',' : '';
     if (item.methodCall) {
-      const val = formatExpr(item.value);
+      const val = formatExpr(item.value, 0, dmlCtx.runtime);
       if (i === 0) {
         lines.push(setKw + ' ' + val + comma);
       } else {
@@ -2849,7 +2860,7 @@ function appendReturningClause(
   returningInto?: readonly string[],
 ): boolean {
   if (!returning || returning.length === 0) return false;
-  let text = rightAlign('RETURNING', ctx) + ' ' + returning.map(formatExpr).join(', ');
+  let text = rightAlign('RETURNING', ctx) + ' ' + returning.map(expr => formatExpr(expr, 0, ctx.runtime)).join(', ');
   if (returningInto && returningInto.length > 0) {
     text += ' INTO ' + returningInto.join(', ');
   }
@@ -2863,7 +2874,7 @@ function formatStandaloneValues(node: AST.StandaloneValuesStatement, ctx: Format
 
   if (node.rows.length === 0) return lines.join('\n') + 'VALUES;';
 
-  const rows = node.rows.map(r => '(' + r.values.map(formatExpr).join(', ') + ')');
+  const rows = node.rows.map(r => '(' + r.values.map(value => formatExpr(value, 0, ctx.runtime)).join(', ') + ')');
   const contPad = ' '.repeat('VALUES '.length);
   for (let i = 0; i < rows.length; i++) {
     const prefix = i === 0 ? 'VALUES ' : contPad;
@@ -2904,7 +2915,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   if (node.name) header += ' ' + node.name;
   lines.push(header);
 
-  const cols = node.columns.map(formatExpr).join(', ');
+  const cols = node.columns.map(expr => formatExpr(expr, 0, idxCtx.runtime)).join(', ');
   const onTarget = node.only ? 'ONLY ' + node.table : node.table;
   if (node.using) {
     lines.push(rightAlign('ON', idxCtx) + ' ' + onTarget);
@@ -2914,7 +2925,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   }
 
   if (node.include && node.include.length > 0) {
-    lines.push(rightAlign('INCLUDE', idxCtx) + ' (' + node.include.map(formatExpr).join(', ') + ')');
+    lines.push(rightAlign('INCLUDE', idxCtx) + ' (' + node.include.map(expr => formatExpr(expr, 0, idxCtx.runtime)).join(', ') + ')');
   }
 
   if (node.where) {
@@ -2995,8 +3006,8 @@ function formatCreatePolicy(node: AST.CreatePolicyStatement, ctx: FormatContext)
   if (node.permissive) lines.push(rightAlign('AS', policyCtx) + ' ' + node.permissive);
   if (node.command) lines.push(rightAlign('FOR', policyCtx) + ' ' + node.command);
   if (node.roles) lines.push(rightAlign('TO', policyCtx) + ' ' + node.roles.join(', '));
-  if (node.using) lines.push(rightAlign('USING', policyCtx) + ' (' + formatExpr(node.using) + ')');
-  if (node.withCheck) lines.push(rightAlign('WITH', policyCtx) + ' CHECK (' + formatExpr(node.withCheck) + ')');
+  if (node.using) lines.push(rightAlign('USING', policyCtx) + ' (' + formatExpr(node.using, 0, policyCtx.runtime) + ')');
+  if (node.withCheck) lines.push(rightAlign('WITH', policyCtx) + ' CHECK (' + formatExpr(node.withCheck, 0, policyCtx.runtime) + ')');
 
   lines[lines.length - 1] += ';';
   return lines.join('\n');
@@ -3178,7 +3189,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
   const target = node.target.table + (node.target.alias ? ' AS ' + node.target.alias : '');
   const sourceTable = typeof node.source.table === 'string'
     ? node.source.table
-    : formatExpr(node.source.table);
+    : formatExpr(node.source.table, 0, mergeCtx.runtime);
   const source = sourceTable + (node.source.alias ? ' AS ' + node.source.alias : '');
 
   lines.push(rightAlign('MERGE', mergeCtx) + ' INTO ' + target);
@@ -3191,7 +3202,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
 
   for (const wc of node.whenClauses) {
     const branch = wc.matched ? 'MATCHED' : 'NOT MATCHED';
-    const cond = wc.condition ? ' AND ' + formatExpr(wc.condition) : '';
+    const cond = wc.condition ? ' AND ' + formatExpr(wc.condition, 0, mergeCtx.runtime) : '';
     lines.push(rightAlign('WHEN', mergeCtx) + ' ' + branch + cond + ' THEN');
 
     if (wc.action === 'delete') {
@@ -3208,8 +3219,8 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
         const item = wc.setItems![i];
         const comma = i < wc.setItems!.length - 1 ? ',' : '';
         const itemText = item.methodCall
-          ? formatExpr(item.value)
-          : item.column + ' ' + (item.assignmentOperator ?? '=') + ' ' + formatExpr(item.value);
+          ? formatExpr(item.value, 0, mergeCtx.runtime)
+          : item.column + ' ' + (item.assignmentOperator ?? '=') + ' ' + formatExpr(item.value, 0, mergeCtx.runtime);
         if (i === 0) {
           lines.push(' '.repeat(setOffset) + 'SET ' + itemText + comma);
         } else {
@@ -3222,7 +3233,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
     if (wc.action === 'insert') {
       const cols = wc.columns ? ' (' + wc.columns.join(', ') + ')' : '';
       lines.push(actionPad + 'INSERT' + cols);
-      lines.push(actionPad + 'VALUES (' + (wc.values || []).map(formatExpr).join(', ') + ')');
+      lines.push(actionPad + 'VALUES (' + (wc.values || []).map(value => formatExpr(value, 0, mergeCtx.runtime)).join(', ') + ')');
     }
   }
 
@@ -3232,7 +3243,10 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
 
 // ─── CREATE TABLE ────────────────────────────────────────────────────
 
-function formatColumnConstraint(constraint: AST.ColumnConstraint): string {
+function formatColumnConstraint(
+  constraint: AST.ColumnConstraint,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
   const prefix = constraint.name ? `CONSTRAINT ${constraint.name} ` : '';
   switch (constraint.type) {
     case 'not_null':
@@ -3240,9 +3254,9 @@ function formatColumnConstraint(constraint: AST.ColumnConstraint): string {
     case 'null':
       return prefix + 'NULL';
     case 'default':
-      return prefix + 'DEFAULT ' + formatExpr(constraint.expr);
+      return prefix + 'DEFAULT ' + formatExpr(constraint.expr, 0, runtime);
     case 'check':
-      return prefix + 'CHECK(' + formatExpr(constraint.expr) + ')';
+      return prefix + 'CHECK(' + formatExpr(constraint.expr, 0, runtime) + ')';
     case 'references': {
       let out = prefix + 'REFERENCES ' + constraint.table;
       if (constraint.columns && constraint.columns.length > 0) {
@@ -3269,6 +3283,114 @@ function formatColumnConstraint(constraint: AST.ColumnConstraint): string {
     case 'raw':
       return normalizeRawColumnConstraint(constraint.text);
   }
+}
+
+function formatColumnConstraintAtColumn(
+  constraint: AST.ColumnConstraint,
+  colStart: number,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
+  const prefix = constraint.name ? `CONSTRAINT ${constraint.name} ` : '';
+  switch (constraint.type) {
+    case 'default': {
+      const defaultPrefix = prefix + 'DEFAULT ';
+      const expr = formatExprAtColumn(
+        constraint.expr,
+        colStart + stringDisplayWidth(defaultPrefix),
+        runtime,
+      );
+      return defaultPrefix + expr;
+    }
+    case 'check': {
+      const inline = prefix + 'CHECK(' + formatExpr(constraint.expr, 0, runtime) + ')';
+      if (colStart + stringDisplayWidth(inline) <= runtime.maxLineLength) {
+        return inline;
+      }
+
+      if (constraint.expr.type === 'in' && !isInExprSubquery(constraint.expr)) {
+        const inExpr = constraint.expr;
+        const inPrefix = `${formatExpr(inExpr.expr, 0, runtime)} ${inExpr.negated ? 'NOT ' : ''}IN (`;
+        const values = getInExprList(inExpr).map(value => formatExpr(value, 0, runtime));
+        if (values.length >= 5) {
+          const valueIndent = ' '.repeat(Math.max(0, colStart + 4));
+          const closeIndent = ' '.repeat(Math.max(0, colStart));
+          const lines = [prefix + 'CHECK(' + inPrefix];
+          for (let i = 0; i < values.length; i++) {
+            const suffix = i === values.length - 1 ? '' : ',';
+            lines.push(valueIndent + values[i] + suffix);
+          }
+          lines.push(closeIndent + '))');
+          return lines.join('\n');
+        }
+      }
+
+      const checkPrefix = prefix + 'CHECK(';
+      const expr = formatExprAtColumn(
+        constraint.expr,
+        colStart + stringDisplayWidth(checkPrefix),
+        runtime,
+      );
+      return checkPrefix + expr + ')';
+    }
+    default:
+      return formatColumnConstraint(constraint, runtime);
+  }
+}
+
+function formatWrappedCreateTableConstraintLines(
+  constraints: readonly AST.ColumnConstraint[],
+  headRaw: string,
+  head: string,
+  continuationIndent: string,
+  continuationIndentWidth: number,
+  runtime: FormatterRuntime,
+): string[] {
+  if (constraints.length === 0) return [head];
+
+  const lines: string[] = [];
+  const simpleConstraints = constraints.map(constraint => formatColumnConstraint(constraint, runtime));
+  let headConstraintText = '';
+  let consumed = 0;
+
+  for (let i = 0; i < simpleConstraints.length; i++) {
+    const candidate = headConstraintText
+      ? `${headConstraintText} ${simpleConstraints[i]}`
+      : simpleConstraints[i];
+    const candidateLine = (headRaw + candidate).trimEnd();
+    if (stringDisplayWidth(candidateLine) > runtime.maxLineLength) break;
+    headConstraintText = candidate;
+    consumed = i + 1;
+  }
+
+  if (headConstraintText) lines.push((headRaw + headConstraintText).trimEnd());
+  else lines.push(head);
+
+  for (let i = consumed; i < constraints.length; i++) {
+    const formatted = formatColumnConstraintAtColumn(
+      constraints[i],
+      continuationIndentWidth,
+      runtime,
+    );
+    const formattedLines = formatted.split('\n');
+    if (formattedLines.length === 1) {
+      const wrapped = wrapTextByWords(
+        formattedLines[0],
+        Math.max(20, runtime.maxLineLength - continuationIndentWidth),
+      );
+      if (wrapped.length === 0) continue;
+      for (const wrappedLine of wrapped) {
+        lines.push(continuationIndent + wrappedLine);
+      }
+      continue;
+    }
+
+    lines.push(continuationIndent + formattedLines[0]);
+    for (let j = 1; j < formattedLines.length; j++) {
+      lines.push(formattedLines[j]);
+    }
+  }
+
+  return lines;
 }
 
 function normalizeRawColumnConstraint(text: string): string {
@@ -3437,9 +3559,12 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function formatColumnConstraints(constraints: readonly AST.ColumnConstraint[] | undefined): string | undefined {
+function formatColumnConstraints(
+  constraints: readonly AST.ColumnConstraint[] | undefined,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string | undefined {
   if (!constraints || constraints.length === 0) return undefined;
-  return constraints.map(formatColumnConstraint).join(' ');
+  return constraints.map(constraint => formatColumnConstraint(constraint, runtime)).join(' ');
 }
 
 function lowerMaybeQualifiedNameWithIfNotExists(name: string): string {
@@ -3466,25 +3591,12 @@ function normalizeIdentifierCall(name: string): string | null {
   return `IDENTIFIER(${match[1].trim()})`;
 }
 
-function isCreateTableKeyLikeConstraintText(text: string): boolean {
-  const trimmed = text.trim();
-  return /^(?:UNIQUE\s+)?(?:KEY|INDEX)\b/i.test(trimmed)
-    || /^(?:FULLTEXT|SPATIAL)(?:\s+(?:KEY|INDEX))?\b/i.test(trimmed);
-}
-
-function isCreateTableKeyLikeConstraintElement(elem: AST.TableElement): boolean {
-  if (elem.elementType !== 'constraint') return false;
-  const source = elem.constraintBody || elem.raw;
-  return isCreateTableKeyLikeConstraintText(source);
-}
-
 function createTableElementIndent(elem: AST.TableElement, tableConstraintIndent: string): string {
   if (elem.elementType === 'constraint') {
-    if (elem.constraintName || isCreateTableKeyLikeConstraintElement(elem)) return tableConstraintIndent;
-    return '    ';
+    return tableConstraintIndent;
   }
   if (elem.elementType === 'foreign_key') {
-    return elem.constraintName ? tableConstraintIndent : '    ';
+    return tableConstraintIndent;
   }
   return '    ';
 }
@@ -3571,6 +3683,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
     if (col.dataType) maxTypeLen = Math.max(maxTypeLen, col.dataType.replace(/\s+/g, ' ').length);
   }
   maxTypeLen = Math.min(maxTypeLen, ctx.runtime.layoutPolicy.createTableTypeAlignMax);
+  const typeConstraintGap = maxTypeLen >= 13 ? 2 : 1;
+  const typeColumnWidth = maxTypeLen > 0 ? maxTypeLen + typeConstraintGap : 0;
   const tableConstraintIndentWidth = maxNameLen > 0 ? 4 + maxNameLen + 1 : 4;
   const tableConstraintIndent = ' '.repeat(tableConstraintIndentWidth);
   const hasDataElementAfter = (index: number): boolean => {
@@ -3599,9 +3713,9 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       const loweredName = elem.name ? lowerIdent(elem.name) : '';
       const name = loweredName.padEnd(maxNameLen);
       const typeNorm = (elem.dataType || '').replace(/\s+/g, ' ');
-      const type = typeNorm.padEnd(maxTypeLen);
-      const constraints = formatColumnConstraints(elem.columnConstraints) || elem.constraints;
-      const headRaw = '    ' + name + ' ' + type;
+      const type = typeNorm ? typeNorm.padEnd(typeColumnWidth) : '';
+      const constraints = formatColumnConstraints(elem.columnConstraints, ctx.runtime) || elem.constraints;
+      const headRaw = '    ' + name + (type ? ' ' + type : '');
       const head = headRaw.trimEnd();
       const trailingComment = elem.trailingComment ? ' ' + elem.trailingComment : '';
 
@@ -3610,19 +3724,39 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         continue;
       }
 
-      const isLongestType = typeNorm.length >= maxTypeLen;
-      const constraintPad = maxTypeLen >= 13 && !isLongestType ? '' : ' ';
-      let inlineRaw = headRaw + constraintPad + constraints;
+      const inlineConstraintGap = typeNorm && typeNorm.length >= typeColumnWidth
+        ? ' '.repeat(typeConstraintGap)
+        : '';
+      const inlineRaw = headRaw + inlineConstraintGap + constraints;
       const inline = inlineRaw.trimEnd();
       if (stringDisplayWidth(inline) <= ctx.runtime.maxLineLength) {
         lines.push(inline + trailingComment + comma);
         continue;
       }
 
-      const defaultContinuationWidth = stringDisplayWidth('    ' + name + ' ' + ' '.repeat(maxTypeLen) + ' ');
-      const actualContinuationWidth = stringDisplayWidth('    ' + name + ' ' + type + ' ');
+      const defaultContinuationWidth = stringDisplayWidth('    ' + name + (type ? ' ' + ' '.repeat(typeColumnWidth) : ' '));
+      const actualContinuationWidth = stringDisplayWidth(headRaw + inlineConstraintGap);
       const continuationIndentWidth = Math.min(actualContinuationWidth, defaultContinuationWidth);
       const continuationIndent = ' '.repeat(Math.max(5, continuationIndentWidth));
+
+      if (elem.columnConstraints && elem.columnConstraints.length > 0) {
+        const wrappedConstraintLines = formatWrappedCreateTableConstraintLines(
+          elem.columnConstraints,
+          headRaw + inlineConstraintGap,
+          head,
+          continuationIndent,
+          continuationIndentWidth,
+          ctx.runtime,
+        );
+        if (wrappedConstraintLines.length === 0) {
+          lines.push(head + trailingComment + comma);
+          continue;
+        }
+        wrappedConstraintLines[wrappedConstraintLines.length - 1] += trailingComment + comma;
+        lines.push(...wrappedConstraintLines);
+        continue;
+      }
+
       const wrapped = wrapTextByWords(
         constraints,
         Math.max(20, ctx.runtime.maxLineLength - continuationIndentWidth),
@@ -3633,7 +3767,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
         continue;
       }
 
-      const firstInline = headRaw + constraintPad + wrapped[0];
+      const firstInline = headRaw + inlineConstraintGap + wrapped[0];
       let wrappedStartIndex = 0;
       if (stringDisplayWidth(firstInline) <= ctx.runtime.maxLineLength) {
         const firstIsOnly = wrapped.length === 1;
@@ -3653,7 +3787,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       if (elem.constraintName) {
         lines.push(constraintIndent + 'CONSTRAINT ' + elem.constraintName);
         if (elem.constraintType === 'check' && elem.checkExpr) {
-          lines.push(constraintIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
+          lines.push(constraintIndent + 'CHECK(' + formatExpr(elem.checkExpr, 0, ctx.runtime) + ')');
         } else if (elem.constraintBody) {
           lines.push(constraintIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
         } else {
@@ -3664,7 +3798,7 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
           }
         }
       } else if (elem.constraintType === 'check' && elem.checkExpr) {
-        lines.push(constraintIndent + 'CHECK(' + formatExpr(elem.checkExpr) + ')');
+        lines.push(constraintIndent + 'CHECK(' + formatExpr(elem.checkExpr, 0, ctx.runtime) + ')');
       } else if (elem.constraintBody) {
         lines.push(constraintIndent + normalizeConstraintIdentifierCase(elem.constraintBody));
       } else {
@@ -3672,8 +3806,8 @@ function formatCreateTable(node: AST.CreateTableStatement, ctx: FormatContext): 
       }
       if (comma) lines[lines.length - 1] += comma;
     } else if (elem.elementType === 'foreign_key') {
-      const foreignKeyIndent = elem.constraintName ? tableConstraintIndent : '    ';
-      const foreignKeyBodyIndent = elem.constraintName ? tableConstraintIndent : '        ';
+      const foreignKeyIndent = tableConstraintIndent;
+      const foreignKeyBodyIndent = tableConstraintIndent;
       if (elem.constraintName) {
         lines.push(foreignKeyIndent + 'CONSTRAINT ' + elem.constraintName);
         lines.push(foreignKeyBodyIndent + normalizeConstraintIdentifierCase('FOREIGN KEY (' + elem.fkColumns + ')'));
@@ -4019,18 +4153,18 @@ function formatUnion(node: AST.UnionStatement, ctx: FormatContext): string {
 
   if (node.orderBy) {
     const kw = rightAlign('ORDER', ctx);
-    parts.push(...formatSelectOrderByLines(node.orderBy.items, kw, contentPad(ctx)));
+    parts.push(...formatSelectOrderByLines(node.orderBy.items, kw, contentPad(ctx), ctx.runtime));
   }
   if (node.limit) {
-    parts.push(rightAlign('LIMIT', ctx) + ' ' + formatExpr(node.limit.count));
+    parts.push(rightAlign('LIMIT', ctx) + ' ' + formatExpr(node.limit.count, 0, ctx.runtime));
   }
   if (node.offset) {
     const rows = node.offset.rowsKeyword ? ' ROWS' : '';
-    parts.push(rightAlign('OFFSET', ctx) + ' ' + formatExpr(node.offset.count) + rows);
+    parts.push(rightAlign('OFFSET', ctx) + ' ' + formatExpr(node.offset.count, 0, ctx.runtime) + rows);
   }
   if (node.fetch) {
     const ties = node.fetch.withTies ? ' WITH TIES' : ' ONLY';
-    parts.push(rightAlign('FETCH', ctx) + ' FIRST ' + formatExpr(node.fetch.count) + ' ROWS' + ties);
+    parts.push(rightAlign('FETCH', ctx) + ' FIRST ' + formatExpr(node.fetch.count, 0, ctx.runtime) + ' ROWS' + ties);
   }
   if (node.lockingClause) {
     parts.push(rightAlign('FOR', ctx) + ' ' + node.lockingClause);
@@ -4120,8 +4254,8 @@ function formatCTE(node: AST.CTEStatement, ctx: FormatContext): string {
   if (node.cycle) {
     const kw = rightAlign('CYCLE', ctx);
     let cycle = `${kw} ${node.cycle.columns.join(', ')} SET ${node.cycle.set}`;
-    if (node.cycle.to) cycle += ` TO ${formatExpr(node.cycle.to)}`;
-    if (node.cycle.default) cycle += ` DEFAULT ${formatExpr(node.cycle.default)}`;
+    if (node.cycle.to) cycle += ` TO ${formatExpr(node.cycle.to, 0, ctx.runtime)}`;
+    if (node.cycle.default) cycle += ` DEFAULT ${formatExpr(node.cycle.default, 0, ctx.runtime)}`;
     if (node.cycle.using) cycle += ` USING ${node.cycle.using}`;
     lines.push(cycle);
   }
@@ -4198,7 +4332,7 @@ function formatValuesClause(node: AST.ValuesClause, ctx: FormatContext): string 
     if (row.values.length === 0) continue;
 
     dataRowIndex++;
-    const vals = '(' + row.values.map(formatExpr).join(', ') + ')';
+    const vals = '(' + row.values.map(value => formatExpr(value, 0, ctx.runtime)).join(', ') + ')';
     const comma = dataRowIndex < totalDataRows ? ',' : '';
     const trailing = row.trailingComment ? '  ' + row.trailingComment.text : '';
     lines.push(rowIndent + vals + comma + trailing);
@@ -4210,28 +4344,12 @@ function formatValuesClause(node: AST.ValuesClause, ctx: FormatContext): string 
 // ─── Expression formatting (context-free) ────────────────────────────
 
 // Simple fallback: space-separated tokens for depth-exceeded expressions
-function formatExprSimpleFallback(expr: AST.Expression): string {
-  // Use depth=0 for the simple formatting — this won't recurse deeply
-  // because it only produces inline token output
-  return formatExpr(expr, 0);
+function formatExprSimpleFallback(expr: AST.Expression, runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME): string {
+  return formatExpr(expr, 0, runtime);
 }
 
-function formatExpr(expr: AST.Expression, depth: number = 0): string {
-  if (depth >= MAX_FORMATTER_DEPTH) {
-    // At max depth, produce a minimal inline representation to avoid stack overflow.
-    // We call the leaf formatters directly to avoid infinite recursion.
-    if (expr.type === 'identifier') {
-      const ident = expr.quoted ? expr.value : lowerIdent(expr.value);
-      return expr.withDescendants ? ident + '*' : ident;
-    }
-    if (expr.type === 'literal') return expr.literalType === 'boolean' ? expr.value.toUpperCase() : expr.value;
-    if (expr.type === 'null') return 'NULL';
-    if (expr.type === 'star') return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
-    if (expr.type === 'tuple') return '(' + expr.items.map(item => formatExpr(item, depth)).join(', ') + ')';
-    if (expr.type === 'raw') return expr.text;
-    // For anything else at max depth, return a best-effort inline string
-    return '/* depth exceeded */';
-  }
+function formatExpr(expr: AST.Expression, depth: number = 0, runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME): string {
+  ensureFormatDepth(depth, runtime, expr.type);
   const d = depth + 1;
   switch (expr.type) {
     case 'identifier':
@@ -4249,137 +4367,137 @@ function formatExpr(expr: AST.Expression, depth: number = 0): string {
       return expr.qualifier ? lowerIdent(expr.qualifier) + '.*' : '*';
     case 'binary':
       if (expr.operator === ':') {
-        return formatExpr(expr.left, d) + ':' + formatExpr(expr.right, d);
+        return formatExpr(expr.left, d, runtime) + ':' + formatExpr(expr.right, d, runtime);
       }
       if (expr.right.type === 'raw') {
         const normalizedRight = normalizeRawBinaryRight(expr.right.text, expr.operator);
-        return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + normalizedRight;
+        return formatExpr(expr.left, d, runtime) + ' ' + expr.operator + ' ' + normalizedRight;
       }
-      return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
+      return formatExpr(expr.left, d, runtime) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d, runtime);
     case 'unary':
-      // Special case: NOT EXISTS should format like EXISTS with NOT prefix
       if (expr.operator === 'NOT' && expr.operand.type === 'exists') {
-        return 'NOT EXISTS ' + formatSubquerySimple(expr.operand.subquery);
+        return 'NOT EXISTS ' + formatSubquerySimple(expr.operand.subquery, runtime, d);
       }
-      // No space for unary minus (e.g., -1), space for NOT
-      if (expr.operator === '-' || expr.operator === '~') return expr.operator + formatExpr(expr.operand, d);
-      return expr.operator + ' ' + formatExpr(expr.operand, d);
+      if (expr.operator === '-' || expr.operator === '~') return expr.operator + formatExpr(expr.operand, d, runtime);
+      return expr.operator + ' ' + formatExpr(expr.operand, d, runtime);
     case 'function_call':
-      return formatFunctionCall(expr, d);
+      return formatFunctionCall(expr, d, runtime);
     case 'subquery':
-      return formatSubquerySimple(expr);
+      return formatSubquerySimple(expr, runtime, d);
     case 'case':
-      return formatCaseSimple(expr, d);
+      return formatCaseSimple(expr, d, runtime);
     case 'between': {
       const neg = expr.negated ? 'NOT ' : '';
-      return formatExpr(expr.expr, d) + ' ' + neg + 'BETWEEN ' + formatExpr(expr.low, d) + ' AND ' + formatExpr(expr.high, d);
+      return formatExpr(expr.expr, d, runtime)
+        + ' ' + neg + 'BETWEEN '
+        + formatExpr(expr.low, d, runtime)
+        + ' AND '
+        + formatExpr(expr.high, d, runtime);
     }
     case 'quantified_comparison': {
-      const left = formatExpr(expr.left, d);
+      const left = formatExpr(expr.left, d, runtime);
       if (expr.kind === 'subquery') {
-        return left + ' ' + expr.operator + ' ' + expr.quantifier + ' ' + formatSubquerySimple(expr.subquery);
+        return left + ' ' + expr.operator + ' ' + expr.quantifier + ' ' + formatSubquerySimple(expr.subquery, runtime, d);
       }
-      return left + ' ' + expr.operator + ' ' + expr.quantifier + '(' + expr.values.map(v => formatExpr(v, d)).join(', ') + ')';
+      return left + ' ' + expr.operator + ' ' + expr.quantifier
+        + '(' + expr.values.map(v => formatExpr(v, d, runtime)).join(', ') + ')';
     }
     case 'in': {
       const neg = expr.negated ? 'NOT ' : '';
       if (isInExprSubquery(expr)) {
-        return formatExpr(expr.expr, d) + ' ' + neg + 'IN ' + formatSubquerySimple(getInExprSubquery(expr));
+        return formatExpr(expr.expr, d, runtime) + ' ' + neg + 'IN ' + formatSubquerySimple(getInExprSubquery(expr), runtime, d);
       }
-      const vals = getInExprList(expr).map(v => formatExpr(v, d)).join(', ');
-      return formatExpr(expr.expr, d) + ' ' + neg + 'IN (' + vals + ')';
+      const vals = getInExprList(expr).map(v => formatExpr(v, d, runtime)).join(', ');
+      return formatExpr(expr.expr, d, runtime) + ' ' + neg + 'IN (' + vals + ')';
     }
     case 'is':
-      return formatExpr(expr.expr, d) + ' IS ' + expr.value;
+      return formatExpr(expr.expr, d, runtime) + ' IS ' + expr.value;
     case 'like': {
       const neg = expr.negated ? 'NOT ' : '';
-      let out = formatExpr(expr.expr, d) + ' ' + neg + 'LIKE ' + formatExpr(expr.pattern, d);
-      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape, d);
+      let out = formatExpr(expr.expr, d, runtime) + ' ' + neg + 'LIKE ' + formatExpr(expr.pattern, d, runtime);
+      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape, d, runtime);
       return out;
     }
     case 'exists':
-      return 'EXISTS ' + formatSubquerySimple(expr.subquery);
+      return 'EXISTS ' + formatSubquerySimple(expr.subquery, runtime, d);
     case 'paren':
-      return '(' + formatExpr(expr.expr, d) + ')';
+      return '(' + formatExpr(expr.expr, d, runtime) + ')';
     case 'tuple':
-      return '(' + expr.items.map(item => formatExpr(item, d)).join(', ') + ')';
+      return '(' + expr.items.map(item => formatExpr(item, d, runtime)).join(', ') + ')';
     case 'cast':
-      return 'CAST(' + formatExpr(expr.expr, d) + ' AS ' + expr.targetType + ')';
+      return 'CAST(' + formatExpr(expr.expr, d, runtime) + ' AS ' + expr.targetType + ')';
     case 'window_function':
-      return formatWindowFunctionSimple(expr, d);
+      return formatWindowFunctionSimple(expr, d, runtime);
     case 'extract':
-      return 'EXTRACT(' + expr.field + ' FROM ' + formatExpr(expr.source, d) + ')';
+      return 'EXTRACT(' + expr.field + ' FROM ' + formatExpr(expr.source, d, runtime) + ')';
     case 'position':
-      return `POSITION(${formatExpr(expr.substring, d)} IN ${formatExpr(expr.source, d)})`;
+      return `POSITION(${formatExpr(expr.substring, d, runtime)} IN ${formatExpr(expr.source, d, runtime)})`;
     case 'substring': {
       if (expr.style === 'comma') {
-        let out = `SUBSTRING(${formatExpr(expr.source, d)}, ${formatExpr(expr.start, d)}`;
-        if (expr.length) out += `, ${formatExpr(expr.length, d)}`;
+        let out = `SUBSTRING(${formatExpr(expr.source, d, runtime)}, ${formatExpr(expr.start, d, runtime)}`;
+        if (expr.length) out += `, ${formatExpr(expr.length, d, runtime)}`;
         return out + ')';
       }
-      let out = `SUBSTRING(${formatExpr(expr.source, d)} FROM ${formatExpr(expr.start, d)}`;
-      if (expr.length) out += ` FOR ${formatExpr(expr.length, d)}`;
+      let out = `SUBSTRING(${formatExpr(expr.source, d, runtime)} FROM ${formatExpr(expr.start, d, runtime)}`;
+      if (expr.length) out += ` FOR ${formatExpr(expr.length, d, runtime)}`;
       return out + ')';
     }
     case 'overlay': {
-      let out = `OVERLAY(${formatExpr(expr.source, d)} PLACING ${formatExpr(expr.replacement, d)} FROM ${formatExpr(expr.start, d)}`;
-      if (expr.length) out += ` FOR ${formatExpr(expr.length, d)}`;
+      let out = `OVERLAY(${formatExpr(expr.source, d, runtime)} PLACING ${formatExpr(expr.replacement, d, runtime)} FROM ${formatExpr(expr.start, d, runtime)}`;
+      if (expr.length) out += ` FOR ${formatExpr(expr.length, d, runtime)}`;
       return out + ')';
     }
     case 'trim': {
       let out = 'TRIM(';
       if (expr.side) {
         out += expr.side;
-        if (expr.trimChar) out += ` ${formatExpr(expr.trimChar, d)} FROM ${formatExpr(expr.source, d)}`;
-        else if (expr.fromSyntax) out += ` FROM ${formatExpr(expr.source, d)}`;
-        else out += ` ${formatExpr(expr.source, d)}`;
+        if (expr.trimChar) out += ` ${formatExpr(expr.trimChar, d, runtime)} FROM ${formatExpr(expr.source, d, runtime)}`;
+        else if (expr.fromSyntax) out += ` FROM ${formatExpr(expr.source, d, runtime)}`;
+        else out += ` ${formatExpr(expr.source, d, runtime)}`;
       } else if (expr.trimChar) {
-        out += `${formatExpr(expr.trimChar, d)} FROM ${formatExpr(expr.source, d)}`;
+        out += `${formatExpr(expr.trimChar, d, runtime)} FROM ${formatExpr(expr.source, d, runtime)}`;
       } else if (expr.fromSyntax) {
-        out += `FROM ${formatExpr(expr.source, d)}`;
+        out += `FROM ${formatExpr(expr.source, d, runtime)}`;
       } else {
-        out += formatExpr(expr.source, d);
+        out += formatExpr(expr.source, d, runtime);
       }
       return out + ')';
     }
     case 'aliased':
-      return formatExpr(expr.expr, d) + ' AS ' + formatProjectionAlias(expr.alias);
+      return formatExpr(expr.expr, d, runtime) + ' AS ' + formatProjectionAlias(expr.alias);
     case 'array_subscript': {
-      const lower = expr.lower ? formatExpr(expr.lower, d) : '';
-      const upper = expr.upper ? formatExpr(expr.upper, d) : '';
+      const lower = expr.lower ? formatExpr(expr.lower, d, runtime) : '';
+      const upper = expr.upper ? formatExpr(expr.upper, d, runtime) : '';
       const body = expr.isSlice ? `${lower}:${upper}` : lower;
-      return formatExpr(expr.array, d) + '[' + body + ']';
+      return formatExpr(expr.array, d, runtime) + '[' + body + ']';
     }
     case 'ordered_expr':
-      return formatExpr(expr.expr, d) + ' ' + expr.direction;
+      return formatExpr(expr.expr, d, runtime) + ' ' + expr.direction;
     case 'raw':
       return expr.text;
-    // New expression types
     case 'pg_cast':
-      return formatExpr(expr.expr, d) + '::' + expr.targetType;
+      return formatExpr(expr.expr, d, runtime) + '::' + expr.targetType;
     case 'ilike': {
       const neg = expr.negated ? 'NOT ' : '';
-      // Use originalKeyword when the tokenizer classified ILIKE as an
-      // identifier (non-PostgreSQL dialects); otherwise uppercase it.
       const kw = expr.originalKeyword ?? 'ILIKE';
-      let out = formatExpr(expr.expr, d) + ' ' + neg + kw + ' ' + formatExpr(expr.pattern, d);
-      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape, d);
+      let out = formatExpr(expr.expr, d, runtime) + ' ' + neg + kw + ' ' + formatExpr(expr.pattern, d, runtime);
+      if (expr.escape) out += ' ESCAPE ' + formatExpr(expr.escape, d, runtime);
       return out;
     }
     case 'similar_to': {
       const neg = expr.negated ? 'NOT ' : '';
-      return formatExpr(expr.expr, d) + ' ' + neg + 'SIMILAR TO ' + formatExpr(expr.pattern, d);
+      return formatExpr(expr.expr, d, runtime) + ' ' + neg + 'SIMILAR TO ' + formatExpr(expr.pattern, d, runtime);
     }
     case 'array_constructor':
-      return 'ARRAY[' + expr.elements.map(e => formatExpr(e, d)).join(', ') + ']';
+      return 'ARRAY[' + expr.elements.map(e => formatExpr(e, d, runtime)).join(', ') + ']';
     case 'is_distinct_from': {
       const kw = expr.negated ? 'IS NOT DISTINCT FROM' : 'IS DISTINCT FROM';
-      return formatExpr(expr.left, d) + ' ' + kw + ' ' + formatExpr(expr.right, d);
+      return formatExpr(expr.left, d, runtime) + ' ' + kw + ' ' + formatExpr(expr.right, d, runtime);
     }
     case 'regex_match':
-      return formatExpr(expr.left, d) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d);
+      return formatExpr(expr.left, d, runtime) + ' ' + expr.operator + ' ' + formatExpr(expr.right, d, runtime);
     case 'collate':
-      return formatExpr(expr.expr, d) + ' COLLATE ' + expr.collation;
+      return formatExpr(expr.expr, d, runtime) + ' COLLATE ' + expr.collation;
   }
 
   return assertNeverExpr(expr);
@@ -4392,36 +4510,47 @@ function assertNeverExpr(expr: never): never {
   );
 }
 
-function formatFunctionCall(expr: AST.FunctionCallExpr, depth: number = 0, functionKeywords: ReadonlySet<string> = activeFunctionKeywords): string {
-  const name = formatFunctionName(expr.name, functionKeywords);
+function formatFunctionCall(
+  expr: AST.FunctionCallExpr,
+  depth: number = 0,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
+  ensureFormatDepth(depth, runtime, 'function_call');
+  const name = formatFunctionName(expr.name, runtime.functionKeywords);
   const functionNameParts = splitQualifiedIdentifier(expr.name);
   const upperSimpleName = functionNameParts[functionNameParts.length - 1]?.toUpperCase() ?? '';
   const distinct = expr.distinct ? 'DISTINCT ' : '';
   const args = expr.args.map((arg, index) => {
     if (upperSimpleName === 'CONVERT' && index === 0) {
-      return formatConvertTypeArgument(arg, depth);
+      return formatConvertTypeArgument(arg, depth, runtime);
     }
-    return formatExpr(arg, depth);
+    return formatExpr(arg, depth, runtime);
   }).join(', ');
   let body = distinct + args;
   if (expr.orderBy && expr.orderBy.length > 0) {
-    body += ' ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', ');
+    body += ' ORDER BY ' + expr.orderBy.map(item => formatOrderByItem(item, runtime, depth)).join(', ');
   }
   if (expr.separator) {
-    body += (body ? ' ' : '') + 'SEPARATOR ' + formatExpr(expr.separator, depth);
+    body += (body ? ' ' : '') + 'SEPARATOR ' + formatExpr(expr.separator, depth, runtime);
   }
 
   let out = name + '(' + body + ')';
   if (expr.withinGroup) {
-    out += ' WITHIN GROUP (ORDER BY ' + expr.withinGroup.orderBy.map(formatOrderByItem).join(', ') + ')';
+    out += ' WITHIN GROUP (ORDER BY '
+      + expr.withinGroup.orderBy.map(item => formatOrderByItem(item, runtime, depth)).join(', ')
+      + ')';
   }
   if (expr.filter) {
-    out += ' FILTER (WHERE ' + formatExpr(expr.filter, depth) + ')';
+    out += ' FILTER (WHERE ' + formatExpr(expr.filter, depth, runtime) + ')';
   }
   return out;
 }
 
-function formatConvertTypeArgument(expr: AST.Expression, depth: number = 0): string {
+function formatConvertTypeArgument(
+  expr: AST.Expression,
+  depth: number = 0,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
   if (expr.type === 'identifier') {
     return expr.quoted ? expr.value : expr.value.toUpperCase();
   }
@@ -4430,37 +4559,46 @@ function formatConvertTypeArgument(expr: AST.Expression, depth: number = 0): str
     const typeName = nameParts.length === 1
       ? nameParts[0].toUpperCase()
       : lowerIdentStrict(expr.name);
-    const args = expr.args.map(arg => formatExpr(arg, depth + 1)).join(', ');
+    const args = expr.args.map(arg => formatExpr(arg, depth + 1, runtime)).join(', ');
     return `${typeName}(${args})`;
   }
-  return formatExpr(expr, depth + 1);
+  return formatExpr(expr, depth + 1, runtime);
 }
 
-function formatSubquerySimple(expr: AST.SubqueryExpr): string {
-  const inner = formatQueryExpressionForSubquery(expr.query, {
-    maxLineLength: TERMINAL_WIDTH,
-    layoutPolicy: buildLayoutPolicy(TERMINAL_WIDTH),
-    maxDepth: DEFAULT_MAX_DEPTH,
-    functionKeywords: activeFunctionKeywords,
-    fallbackOnError: false,
-  });
+function formatSubquerySimple(
+  expr: AST.SubqueryExpr,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+  depth: number = 0,
+): string {
+  ensureFormatDepth(depth, runtime, 'subquery');
+  const inner = formatQueryExpressionForSubquery(expr.query, runtime, undefined, depth + 1);
   return '(' + inner + ')';
 }
 
-function formatCaseSimple(expr: AST.CaseExpr, depth: number = 0): string {
+function formatCaseSimple(
+  expr: AST.CaseExpr,
+  depth: number = 0,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
+  ensureFormatDepth(depth, runtime, 'case');
   let s = 'CASE';
-  if (expr.operand) s += ' ' + formatExpr(expr.operand, depth);
+  if (expr.operand) s += ' ' + formatExpr(expr.operand, depth, runtime);
   for (const wc of expr.whenClauses) {
-    s += ' WHEN ' + formatExpr(wc.condition, depth) + ' THEN ' + formatExpr(wc.result, depth);
+    s += ' WHEN ' + formatExpr(wc.condition, depth, runtime) + ' THEN ' + formatExpr(wc.result, depth, runtime);
     if (wc.trailingComment) s += ' ' + wc.trailingComment;
   }
-  if (expr.elseResult) s += ' ELSE ' + formatExpr(expr.elseResult, depth);
+  if (expr.elseResult) s += ' ELSE ' + formatExpr(expr.elseResult, depth, runtime);
   s += ' END';
   return s;
 }
 
-function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number = 0): string {
-  const func = formatFunctionCall(expr.func, depth);
+function formatWindowFunctionSimple(
+  expr: AST.WindowFunctionExpr,
+  depth: number = 0,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+): string {
+  ensureFormatDepth(depth, runtime, 'window_function');
+  const func = formatFunctionCall(expr.func, depth, runtime);
   const funcWithNullTreatment = expr.nullTreatment ? `${func} ${expr.nullTreatment}` : func;
   const hasWindowSpecParts = !!(expr.partitionBy || expr.orderBy || expr.frame || expr.exclude);
   if (expr.windowName && !hasWindowSpecParts) return funcWithNullTreatment + ' OVER ' + expr.windowName;
@@ -4468,15 +4606,15 @@ function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number 
   if (expr.windowName) over += expr.windowName;
   if (expr.partitionBy) {
     if (over) over += ' ';
-    over += 'PARTITION BY ' + expr.partitionBy.map(e => formatExpr(e, depth)).join(', ');
+    over += 'PARTITION BY ' + expr.partitionBy.map(e => formatExpr(e, depth, runtime)).join(', ');
   }
   if (expr.orderBy) {
     if (over) over += ' ';
-    over += 'ORDER BY ' + expr.orderBy.map(formatOrderByItem).join(', ');
+    over += 'ORDER BY ' + expr.orderBy.map(item => formatOrderByItem(item, runtime, depth)).join(', ');
   }
   if (expr.frame) {
     if (over) over += ' ';
-    over += formatFrameInline(expr.frame);
+    over += formatFrameInline(expr.frame, expr.exclude, runtime);
   }
   if (expr.exclude) {
     if (!expr.frame) {
@@ -4487,8 +4625,12 @@ function formatWindowFunctionSimple(expr: AST.WindowFunctionExpr, depth: number 
   return funcWithNullTreatment + ' OVER (' + over + ')';
 }
 
-function formatOrderByItem(item: AST.OrderByItem): string {
-  let s = formatExpr(item.expr);
+function formatOrderByItem(
+  item: AST.OrderByItem,
+  runtime: FormatterRuntime = DEFAULT_FORMATTER_RUNTIME,
+  depth: number = 0,
+): string {
+  let s = formatExpr(item.expr, depth, runtime);
   if (item.usingOperator) s += ' USING ' + item.usingOperator;
   if (item.direction) s += ' ' + item.direction;
   if (item.nulls) s += ' NULLS ' + item.nulls;
@@ -4505,7 +4647,7 @@ function formatProjectionAlias(alias: string): string {
   return alias;
 }
 
-function formatFunctionName(name: string, functionKeywords: ReadonlySet<string> = activeFunctionKeywords): string {
+function formatFunctionName(name: string, functionKeywords: ReadonlySet<string> = FUNCTION_KEYWORDS): string {
   const parts = splitQualifiedIdentifier(name);
   const last = parts[parts.length - 1];
   if (isQuotedIdentifierPart(last)) return lowerIdent(name);
