@@ -6,6 +6,143 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- Examples gallery on the website with dialect-specific SQL samples.
+- Dialect selection in the playground UI.
+- PostgreSQL ANALYSE and NATURAL JOIN variant parsing.
+- Comprehensive multi-dialect keyword and statement support for MySQL and T-SQL.
+- Node.js version smoke tests (v18, v20, v22) in CI.
+
+### Changed
+
+- Default API behavior is now strict mode (`recover: false`); CLI still defaults to recovery mode.
+- Overhauled formatter engine with runtime context and improved table layout.
+- Unified dialect resolution with opt-in formatter fallback.
+- Formatter depth limit now throws `FormatterError` instead of emitting fallback comment text.
+- Improved CLI robustness, glob handling, and path security.
+
+### Fixed
+
+- UTF-8 byte counting for malformed surrogate sequences.
+- Prevented prototype-level mutation of frozen Sets via Proxy.
+- Standalone line comment normalization and DDL element alignment.
+
+## [1.8.3] - 2026-02-11
+
+### Added
+
+- `ONLY` keyword support in table references (e.g., `SELECT ... FROM ONLY parent_table`).
+- Improved subquery and parenthesized join condition alignment.
+
+### Fixed
+
+- DDL parsing robustness and error recovery for edge-case schemas.
+- Formatting stability and indentation handling regressions.
+- Function call parsing and keyword identification accuracy.
+- Routine body indentation and comment layout logic.
+- Formatting idempotency for comment separation edge cases.
+
+## [1.8.2] - 2026-02-10
+
+### Added
+
+- Named table constraint alignment with column data types.
+- DROP statement option support (e.g., `CASCADE`, `RESTRICT`).
+- Array subscript support in UPDATE SET clauses.
+- Index hint and nested CTE query syntax.
+
+### Fixed
+
+- Backslash escape logic for quoted string literals.
+
+## [1.8.1] - 2026-02-10
+
+### Added
+
+- T-SQL OPTION hints and VIEW attribute support.
+- Advanced ON CONFLICT syntax and tuple SET assignments.
+- VALUES aliases and expression comment handling.
+- T-SQL template placeholders and PostgreSQL named arguments (`=>` syntax).
+- SQLite INSERT OR conflict resolution actions (e.g., `INSERT OR REPLACE`).
+- T-SQL INSERT EXECUTE statement support.
+
+### Fixed
+
+- Division operator disambiguation from statement terminators.
+- INSERT INTO keyword validation.
+- Empty expression lists in VALUES tuples.
+- Parser reliability for statement boundaries and charset introducers.
+
+## [1.8.0] - 2026-02-10
+
+### Added
+
+- Snowflake variant path access and core expression parsing.
+- Snowflake identifier and clustered index DDL support.
+- REINDEX statement, VALUES subqueries, and table inheritance syntax.
+- PostgreSQL INSERT aliases and cursor-based DELETE syntax.
+- Routine block formatting with enhanced identifier/comment handling.
+- Compound assignment operators and dialect-specific DML syntax.
+- T-SQL PRINT statement and ELSE IF control flow.
+- Dynamic INTERVAL expression parsing.
+- Temporary view and enhanced table creation DDL parsing.
+- EXPLAIN syntax enhancements and control flow statement formatting.
+
+### Changed
+
+- Expanded SQL keyword and function coverage across all supported dialects.
+- Enhanced core formatting engine and comment management.
+- LEFT and RIGHT treated as function keywords for proper casing.
+
+### Fixed
+
+- Backslash escaping logic in string literals.
+- Statement boundary detection for ALTER TABLE actions.
+- Oracle terminator support and parser boundary detection.
+- DDL statement parsing and column constraint formatting.
+
+## [1.7.0] - 2026-02-09
+
+### Added
+
+- MySQL UPDATE JOIN syntax with improved SET layout.
+- Expanded dialect support for MySQL, SQLite, and DB2 syntax.
+
+### Changed
+
+- Improved DDL parsing and dialect-specific formatting.
+- Enhanced core formatting engine and comment management.
+- Enhanced formatting layout and comment preservation.
+- Expanded SQL keyword and function coverage.
+
+## [1.6.0] - 2026-02-09
+
+_No user-visible changes. Internal release for version alignment._
+
+## [1.5.0] - 2026-02-09
+
+### Added
+
+- Oracle hierarchical query support (START WITH / CONNECT BY / PRIOR / NOCYCLE).
+- PL/SQL block surface syntax handling.
+- T-SQL, Oracle, and SQL\*Plus dialect expansion.
+- CREATE POLICY statement support.
+- CLI encoding detection and token limit configuration.
+- Dialect-specific lexical pattern and expression support.
+
+### Changed
+
+- Extended parser and tokenizer for multi-dialect SQL support.
+- Improved formatter alignment logic and comment preservation.
+- Enhanced DDL and DML parsing for MySQL, PostgreSQL, and T-SQL.
+- Expanded playground with diverse SQL samples.
+
+### Fixed
+
+- Parsing errors and idempotency regressions from GitHub corpus validation.
+- Multiple SQL parsing and formatting regressions.
+
 ## [1.4.0] - 2026-02-08
 
 ### Added
@@ -129,7 +266,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `.holywellignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.3...HEAD
+[1.8.3]: https://github.com/vinsidious/holywell/compare/v1.8.2...v1.8.3
+[1.8.2]: https://github.com/vinsidious/holywell/compare/v1.8.1...v1.8.2
+[1.8.1]: https://github.com/vinsidious/holywell/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/vinsidious/holywell/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/vinsidious/holywell/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/vinsidious/holywell/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/vinsidious/holywell/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/vinsidious/holywell/compare/v1.2.1...v1.4.0
 [1.2.1]: https://github.com/vinsidious/holywell/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/vinsidious/holywell/compare/v1.1.1...v1.2.0

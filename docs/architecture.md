@@ -7,7 +7,7 @@
 3. `src/formatter.ts` renders AST nodes into canonical SQL output.
 4. `src/format.ts` is the public API glue layer (`formatSQL`).
 5. `src/cli.ts` handles file/stdin UX and error reporting.
-6. `src/dialects/` provides dialect profiles (`ansi`, `postgres`, `mysql`, `tsql`) used by tokenizer/parser.
+6. `src/dialects/` provides dialect profiles (`ansi`, `postgres`, `mysql`, `tsql`) used by tokenizer/parser. Oracle, SQLite, Snowflake, and ClickHouse syntax is handled through these base profiles rather than dedicated dialect configurations.
 
 ## Depth Guards
 

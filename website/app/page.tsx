@@ -20,6 +20,9 @@ export default function HomePage() {
             <h1 className="text-4xl sm:text-5xl font-bold text-white font-mono tracking-tighter">
               holywell
             </h1>
+            <span className="mt-2 inline-block rounded-full border border-brand/20 bg-brand/[0.06] px-2.5 py-0.5 font-mono text-xs text-brand">
+              v{process.env.NEXT_PUBLIC_HOLYWELL_VERSION}
+            </span>
           </div>
 
           {/* Subtitle */}

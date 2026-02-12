@@ -24,7 +24,7 @@ Add to `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/vinsidious/holywell
-    rev: v1.7.0  # update to the latest release tag when bumping holywell
+    rev: v1.8.3  # update to the latest release tag when bumping holywell
     hooks:
       - id: holywell
         name: holywell (format)

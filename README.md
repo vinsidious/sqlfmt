@@ -275,7 +275,7 @@ For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or t
 | **Keyword casing** | Uppercase (enforced) | Configurable | Configurable | Configurable | Configurable |
 | **Identifier casing** | ALL-CAPS lowercased; mixed-case preserved | Not modified | Not modified | Configurable | Not modified |
 | **Output** | Deterministic, single style | Depends on config | Depends on config | Depends on config | Depends on config |
-| **Editor extensions** | In development | Available | Prettier-compatible | VS Code extension | VS Code extension |
+| **Editor extensions** | CLI + [editor recipes](docs/integrations.md) | Available | Prettier-compatible | VS Code extension | VS Code extension |
 
 holywell is the right choice when you want consistent, readable SQL with minimal setup and deterministic style.
 
