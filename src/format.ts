@@ -15,8 +15,15 @@ function utf8ByteLength(s: string): number {
     } else if (code <= 0x7ff) {
       bytes += 2;
     } else if (code >= 0xd800 && code <= 0xdbff) {
-      bytes += 4; // surrogate pair → 4-byte UTF-8 code point
-      i++; // skip low surrogate
+      const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4; // surrogate pair -> 4-byte UTF-8 code point
+        i++; // skip low surrogate
+      } else {
+        bytes += 3; // malformed surrogate sequences encode as U+FFFD in UTF-8
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 3; // malformed surrogate sequences encode as U+FFFD in UTF-8
     } else {
       bytes += 3;
     }

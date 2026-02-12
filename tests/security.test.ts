@@ -175,6 +175,12 @@ describe('input size validation', () => {
     expect(() => formatSQL(input, { maxInputSize: 12 })).toThrow('exceeds maximum size');
     expect(formatSQL(input, { maxInputSize: 14 })).toContain('SELECT');
   });
+
+  it('counts malformed surrogate sequences using UTF-8 replacement-byte behavior', () => {
+    const input = "SELECT '\uD800\uD800';";
+    expect(() => formatSQL(input, { maxInputSize: 15 })).toThrow('exceeds maximum size');
+    expect(formatSQL(input, { maxInputSize: 16 })).toContain('SELECT');
+  });
 });
 
 describe('CLI path validation for --write', () => {
