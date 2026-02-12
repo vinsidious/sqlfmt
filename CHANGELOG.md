@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [1.8.6] - 2026-02-12
+
+### Added
+
+- MySQL `REPLACE INTO` statement support.
+- MySQL `SET` and `SHOW` statements parsed as structured nodes and formatted natively.
+- MySQL parser coverage for `MATCH(...) AGAINST(...)`, SELECT modifiers (for example `STRAIGHT_JOIN` and `SQL_CALC_FOUND_ROWS`), and post-`FROM` `SELECT ... INTO` forms.
+
+### Changed
+
+- Improved river alignment and clause layout for `ALTER`, `EXPLAIN`, `REVOKE`, `INSERT ... RETURNING`, and CTE data-modifying bodies.
+- Refined grouping layout for `GROUPING SETS`, `ROLLUP`, and `CUBE` to keep opening/closing parentheses attached to grouped items.
+- Enhanced MySQL `CREATE TABLE` formatting for table-level key/constraint alignment and partition-clause layout.
+
+### Fixed
+
+- MySQL `EXPLAIN FORMAT=...` parsing and normalization (including `FORMAT=JSON` syntax).
+- Constraint wrapping behavior for generated/default/CHECK expressions in complex `CREATE TABLE` definitions.
+
 ## [1.8.5] - 2026-02-12
 
 ### Fixed
@@ -280,7 +299,8 @@ _No user-visible changes. Internal release for version alignment._
 - `.holywellignore` file support.
 - Zero runtime dependencies.
 
-[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.5...HEAD
+[Unreleased]: https://github.com/vinsidious/holywell/compare/v1.8.6...HEAD
+[1.8.6]: https://github.com/vinsidious/holywell/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/vinsidious/holywell/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/vinsidious/holywell/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/vinsidious/holywell/compare/v1.8.2...v1.8.3
