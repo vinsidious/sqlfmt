@@ -7,7 +7,7 @@ describe('DB2 slash delimiter statement termination', () => {
 /
 SELECT 1
 /`;
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { recover: true });
     expect(out).toContain('REORG TABLE test.table1;');
     expect(out).toContain('SELECT 1\n/');
   });

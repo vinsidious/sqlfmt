@@ -263,7 +263,7 @@ describe('dialect statement handler differentiation', () => {
     expect(myResult).toContain('DELIMITER ;;');
 
     // In postgres, DELIMITER is not a statement handler, so it gets parsed differently
-    const pgResult = formatSQL('DELIMITER ;;\nSELECT 1;;\nDELIMITER ;', { dialect: 'postgres' });
+    const pgResult = formatSQL('DELIMITER ;;\nSELECT 1;;\nDELIMITER ;', { dialect: 'postgres', recover: true });
     expect(pgResult).not.toContain('DELIMITER ;;');
   });
 

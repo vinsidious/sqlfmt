@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { formatSQL } from '../src/format';
-import { formatStatements } from '../src/formatter';
+import { formatStatements, FormatterError } from '../src/formatter';
 import type * as AST from '../src/ast';
 
 function looksLikeCommentedOutSqlCode(text: string): boolean {
@@ -1473,9 +1473,9 @@ describe('Category 48: Multiple Statements in Sequence', () => {
   assertFormat('48.1 — DDL + DML sequence',
     `create table if not exists temp_results (id serial primary key, label varchar(50) not null, value numeric(10, 2) default 0.00 not null); insert into temp_results (label, value) select category, sum(amount) from transactions group by category; update temp_results set label = upper(label) where value > 1000; select * from temp_results order by value desc;`,
     `CREATE TABLE IF NOT EXISTS temp_results (
-    id    SERIAL       PRIMARY KEY,
-    label VARCHAR(50)  NOT NULL,
-    value NUMERIC(10, 2) DEFAULT 0.00 NOT NULL
+    id    SERIAL          PRIMARY KEY,
+    label VARCHAR(50)     NOT NULL,
+    value NUMERIC(10, 2)  DEFAULT 0.00 NOT NULL
 );
 
 INSERT INTO temp_results (label, value)
@@ -1623,15 +1623,13 @@ describe('Window frame with quoted string containing AND', () => {
 });
 
 describe('Formatter depth limit', () => {
-  it('does not crash on 200+ level deeply nested expression', () => {
-    // Build a deeply nested paren expression beyond MAX_FORMATTER_DEPTH=200
-    // We keep it within parser max depth by using AND chains (not nested parens)
+  it('formats 200+ level nested predicates when maxDepth is raised', () => {
     const conditions: string[] = [];
     for (let i = 0; i < 250; i++) {
       conditions.push('x = 1');
     }
     const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' AND ') + ';';
-    const result = formatSQL(sql);
+    const result = formatSQL(sql, { maxDepth: 300 });
     expect(result).toContain('SELECT');
     expect(result).toContain('WHERE');
   });
@@ -1649,7 +1647,7 @@ describe('Formatter depth limit', () => {
     expect(result).toContain('CASE');
   });
 
-  it('emits fallback marker instead of throwing MaxDepthError', () => {
+  it('throws FormatterError when formatter depth is exceeded', () => {
     const makeSelect = (expr: AST.Expression): AST.SelectStatement => ({
       type: 'select',
       distinct: false,
@@ -1666,8 +1664,9 @@ describe('Formatter depth limit', () => {
       };
     }
 
-    const out = formatStatements([makeSelect(expr)]);
-    expect(out).toContain('/* depth exceeded */');
+    expect(() => formatStatements([makeSelect(expr)])).toThrow(FormatterError);
+    const out = formatStatements([makeSelect(expr)], { maxDepth: 700 });
+    expect(out).not.toContain('depth exceeded');
   });
 });
 
@@ -1682,7 +1681,7 @@ describe('Comment preservation regressions', () => {
 
   it('preserves trailing ORDER BY comments without emitting extra statements', () => {
     const sql = 'SELECT id FROM t ORDER BY id, -- sort 1\\ncreated_at DESC -- sort 2\\n;';
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { recover: true });
     expect(out).toContain('-- sort 1');
     expect(out).toContain('-- sort 2');
     expect(out).not.toContain('\n;\n');
@@ -1825,7 +1824,7 @@ describe('formatExpr depth tracking', () => {
       expr = `(${expr}) + 1`;
     }
     const sql = `SELECT ${expr} FROM t;`;
-    const result = formatSQL(sql);
+    const result = formatSQL(sql, { maxDepth: 600 });
     expect(result).toContain('SELECT');
   });
 });
@@ -1970,7 +1969,7 @@ describe('production-readiness formatting regressions', () => {
 
   it('preserves line-comment boundaries in recovery-mode raw output', () => {
     const sql = 'SELECT CASE WHEN x = 1 -- note\nTHEN y ELSE z END FROM t;';
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { recover: true });
     expect(out.trimEnd()).toBe(sql);
     expect(out).toContain('-- note\nTHEN');
   });

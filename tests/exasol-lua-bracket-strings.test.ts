@@ -10,7 +10,7 @@ describe('Exasol Lua Bracket Strings', () => {
 
   it('formats text containing Lua-style bracket string concatenation markers', () => {
     const sql = `where s.name ]]..SCHEMA_STR..[[ and t.name ]]..TABLE_STR..' '`;
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { recover: true });
     expect(out).toContain('SCHEMA_STR');
     expect(out).toContain('TABLE_STR');
   });

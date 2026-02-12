@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'bun:test';
 import { formatSQL } from '../src/format';
-import { parse, MaxDepthError } from '../src/parser';
+import { parse, Parser, ParseError, MaxDepthError } from '../src/parser';
+import { tokenize } from '../src/tokenizer';
 
 describe('no console.error in library code', () => {
-  it('dropped statement without onDropStatement callback does not throw', () => {
-    // When there's no onDropStatement callback and a statement is dropped,
-    // the parser should be silent (no console.error). This test verifies
-    // the code path doesn't crash; actual console output is not asserted here.
-    const result = parse(';;;', { recover: true });
-    expect(result).toEqual([]);
+  it('throws when recovery cannot preserve text and onDropStatement is not provided', () => {
+    const parser = new Parser(tokenize('SELECT (;'), { recover: true }) as any;
+
+    parser.parseRawStatement = function () {
+      this.pos = this.tokens.length - 1;
+      return null;
+    };
+
+    expect(() => parser.parseStatements()).toThrow(ParseError);
   });
 });
 

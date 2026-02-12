@@ -108,29 +108,29 @@ describe('idempotency', () => {
 describe('idempotency with comments', () => {
   it('SQL with line comment after keyword', () => {
     const sql = "SELECT -- comment\n id FROM t;";
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { recover: true });
+    const twice = formatSQL(once, { recover: true });
     expect(twice).toBe(once);
   });
 
   it('SQL with block comment in SELECT list', () => {
     const sql = "SELECT /* pick columns */ a, b FROM t;";
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { recover: true });
+    const twice = formatSQL(once, { recover: true });
     expect(twice).toBe(once);
   });
 
   it('SQL with block comment before FROM', () => {
     const sql = "SELECT a /* all columns */ FROM t WHERE x = 1;";
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { recover: true });
+    const twice = formatSQL(once, { recover: true });
     expect(twice).toBe(once);
   });
 
   it('multiple statements with comments between them', () => {
     const sql = "SELECT 1;\n-- between statements\nSELECT 2;";
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { recover: true });
+    const twice = formatSQL(once, { recover: true });
     expect(twice).toBe(once);
   });
 

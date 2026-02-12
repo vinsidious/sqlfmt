@@ -3,7 +3,7 @@ import { formatSQL } from '../src/format';
 
 describe('Numbered inline comment layout', () => {
   it('keeps number prefix and inline comment on the same line', () => {
-    const out = formatSQL('12. -- [12]');
+    const out = formatSQL('12. -- [12]', { recover: true });
     expect(out).toBe('12. -- [12]\n');
   });
 });

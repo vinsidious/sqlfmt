@@ -816,7 +816,7 @@ describe('parser recovery metadata', () => {
   });
 
   it('keeps statement ordering after recovery in multi-statement inputs', () => {
-    const out = formatSQL('SELECT 1; SELECT (; SELECT 2;');
+    const out = formatSQL('SELECT 1; SELECT (; SELECT 2;', { recover: true });
     expect(out).toContain('SELECT 1;');
     expect(out).toContain('SELECT (;');
     expect(out).toContain('SELECT 2;');

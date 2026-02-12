@@ -10,7 +10,7 @@ describe('INSERT INTO keyword validation', () => {
 
   it('preserves statement text in recovery mode when INTO is misspelled as INT', () => {
     const sql = "insert int PC_EMP values (5, '민지성', 'slave');";
-    expect(formatSQL(sql).trim()).toBe(sql);
+    expect(formatSQL(sql, { recover: true }).trim()).toBe(sql);
   });
 
   it('continues to support INSERT statements without the optional INTO keyword', () => {

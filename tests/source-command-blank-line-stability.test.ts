@@ -7,8 +7,8 @@ describe('source command blank-line stability', () => {
 
 source show_elapsed.sql ;`;
 
-    const once = formatSQL(sql);
-    const twice = formatSQL(once);
+    const once = formatSQL(sql, { recover: true });
+    const twice = formatSQL(once, { recover: true });
 
     expect(once).toMatch(/source load_salaries3\.dump ;\n\nsource show_elapsed\.sql ;/);
     expect(twice).toBe(once);

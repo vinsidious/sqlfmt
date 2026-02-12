@@ -7,8 +7,8 @@ import { tokenize } from '../src/tokenizer';
 // Helper: assert idempotency for a given SQL + dialect
 // ---------------------------------------------------------------------------
 function assertIdempotent(sql: string, dialect: 'mysql' | 'postgres' | 'tsql' | 'ansi') {
-  const once = formatSQL(sql, { dialect });
-  const twice = formatSQL(once, { dialect });
+  const once = formatSQL(sql, { dialect, recover: true });
+  const twice = formatSQL(once, { dialect, recover: true });
   expect(twice).toBe(once);
 }
 
@@ -16,7 +16,7 @@ function assertIdempotent(sql: string, dialect: 'mysql' | 'postgres' | 'tsql' | 
 //  MYSQL DIALECT
 // ===========================================================================
 describe('MySQL dialect', () => {
-  const opts = { dialect: 'mysql' as const };
+  const opts = { dialect: 'mysql' as const, recover: true };
 
   // -- Identifiers ----------------------------------------------------------
   describe('backtick identifiers', () => {
@@ -278,7 +278,7 @@ describe('MySQL dialect', () => {
 //  POSTGRESQL DIALECT
 // ===========================================================================
 describe('PostgreSQL dialect', () => {
-  const opts = { dialect: 'postgres' as const };
+  const opts = { dialect: 'postgres' as const, recover: true };
 
   // -- Dollar-quoted strings ------------------------------------------------
   describe('dollar-quoted strings', () => {
@@ -493,7 +493,7 @@ describe('PostgreSQL dialect', () => {
 //  T-SQL DIALECT
 // ===========================================================================
 describe('T-SQL dialect', () => {
-  const opts = { dialect: 'tsql' as const };
+  const opts = { dialect: 'tsql' as const, recover: true };
 
   // -- Square bracket identifiers -------------------------------------------
   describe('square bracket identifiers', () => {
@@ -742,7 +742,7 @@ describe('T-SQL dialect', () => {
 //  ANSI DIALECT
 // ===========================================================================
 describe('ANSI dialect', () => {
-  const opts = { dialect: 'ansi' as const };
+  const opts = { dialect: 'ansi' as const, recover: true };
 
   describe('standard SQL works', () => {
     it('formats basic SELECT', () => {

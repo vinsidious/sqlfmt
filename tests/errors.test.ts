@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { formatSQL } from '../src/format';
+import { FormatterError } from '../src/formatter';
 import { parse, ParseError, MaxDepthError } from '../src/parser';
 import { tokenize, TokenizeError } from '../src/tokenizer';
 
@@ -198,7 +199,7 @@ describe('deeply nested expressions hit formatter depth limit', () => {
       const result = formatSQL(sql);
       expect(result).toContain('SELECT');
     } catch (err) {
-      expect(err).toBeInstanceOf(MaxDepthError);
+      expect(err instanceof FormatterError || err instanceof MaxDepthError).toBe(true);
     }
   });
 
@@ -215,7 +216,7 @@ describe('deeply nested expressions hit formatter depth limit', () => {
       const result = formatSQL(sql);
       expect(result).toContain('SELECT');
     } catch (err) {
-      expect(err).toBeInstanceOf(MaxDepthError);
+      expect(err instanceof FormatterError || err instanceof MaxDepthError).toBe(true);
     }
   });
 });

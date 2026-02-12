@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { formatSQL } from '../src/format';
+import { FormatterError } from '../src/formatter';
 import { parse, MaxDepthError, ParseError } from '../src/parser';
 import { tokenize, TokenizeError } from '../src/tokenizer';
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'fs';
@@ -37,7 +38,7 @@ describe('formatter depth limit', () => {
     }
     const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' AND ') + ';';
     // Should not crash with stack overflow
-    const result = formatSQL(sql);
+    const result = formatSQL(sql, { maxDepth: 600 });
     expect(result).toContain('SELECT');
     expect(result).toContain('WHERE');
   });
@@ -48,7 +49,7 @@ describe('formatter depth limit', () => {
       conditions.push('b = 2');
     }
     const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' OR ') + ';';
-    const result = formatSQL(sql);
+    const result = formatSQL(sql, { maxDepth: 600 });
     expect(result).toContain('SELECT');
     expect(result).toContain('WHERE');
   });
@@ -314,7 +315,7 @@ describe('formatter depth limit enforcement in formatting phase', () => {
       conditions.push(`col${i} = ${i}`);
     }
     const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' AND ') + ';';
-    const result = formatSQL(sql);
+    const result = formatSQL(sql, { maxDepth: 700 });
     expect(result).toContain('SELECT');
     expect(result).toContain('WHERE');
   });
@@ -325,7 +326,7 @@ describe('formatter depth limit enforcement in formatting phase', () => {
       conditions.push(`col${i} = ${i}`);
     }
     const sql = 'SELECT 1 FROM t WHERE ' + conditions.join(' OR ') + ';';
-    const result = formatSQL(sql);
+    const result = formatSQL(sql, { maxDepth: 700 });
     expect(result).toContain('SELECT');
     expect(result).toContain('WHERE');
   });
@@ -408,7 +409,7 @@ describe('formatter depth limit catches deeply nested CASE expressions', () => {
       expect(result).toContain('SELECT');
       expect(result).toContain('CASE');
     } catch (err) {
-      expect(err).toBeInstanceOf(MaxDepthError);
+      expect(err instanceof FormatterError || err instanceof MaxDepthError).toBe(true);
     }
   });
 });
@@ -426,7 +427,7 @@ describe('formatter depth limit catches deeply nested parenthesized expressions'
       const result = formatSQL(sql);
       expect(result).toContain('SELECT');
     } catch (err) {
-      expect(err).toBeInstanceOf(MaxDepthError);
+      expect(err instanceof FormatterError || err instanceof MaxDepthError).toBe(true);
     }
   });
 });

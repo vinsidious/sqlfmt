@@ -108,7 +108,7 @@ export interface ParseOptions {
    * Optional callback invoked when recovery cannot produce raw text for a
    * failed statement (for example, the error occurs at end-of-input).
    *
-   * This makes statement drops explicit to callers in recovery mode.
+   * When omitted, recovery failures throw instead of silently dropping.
    */
   onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
 
@@ -431,10 +431,9 @@ export class Parser {
           }
           if (this.onDropStatement) {
             this.onDropStatement(err, recoveryContext);
+          } else {
+            throw err;
           }
-          // If no callback is provided, silently drop the statement.
-          // A library should never write to stderr; the caller can
-          // observe drops via the onDropStatement callback.
         }
       }
       this.skipSemicolons();
@@ -5735,8 +5734,8 @@ export class Parser {
  * By default, **recovery mode** is enabled: statements that cannot be parsed
  * are captured as `RawExpression` nodes (type `'raw'`) so the formatter can
  * pass them through unchanged. If recovery cannot produce raw text (for
- * example, an error at end-of-input), the statement is dropped and callers can
- * observe it via `onDropStatement`.
+ * example, an error at end-of-input), `onDropStatement` is invoked when
+ * provided; otherwise the original parse error is thrown.
  *
  * To get strict parsing where every syntax error throws, set `recover: false`.
  *

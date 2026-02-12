@@ -64,11 +64,11 @@ export interface FormatOptions {
   /**
    * Whether to recover from parse errors by passing through raw SQL.
    *
-   * When `true` (default), unparseable statements are preserved as raw text
-   * instead of throwing. When `false`, a {@link ParseError} is thrown on the
+   * When `true`, unparseable statements are preserved as raw text instead of
+   * throwing. When `false` (default), a {@link ParseError} is thrown on the
    * first parse failure.
    *
-   * @default true
+   * @default false
    */
   recover?: boolean;
 
@@ -76,7 +76,7 @@ export interface FormatOptions {
    * Called when the parser recovers from an unparseable statement.
    * The recovered statement is passed through as raw text.
    *
-   * Only called when `recover` is `true` (the default) and the parser
+   * Only called when `recover` is `true` and the parser
    * falls back to raw-passthrough for a statement.
    *
    * @param error - The ParseError that triggered recovery
@@ -88,8 +88,8 @@ export interface FormatOptions {
   /**
    * Callback invoked when recovery cannot preserve a failed statement as raw SQL.
    *
-   * This is rare (typically end-of-input failures), but allows callers to
-   * surface potential statement drops explicitly.
+   * This is rare (typically end-of-input failures). When omitted, the parser
+   * throws instead of dropping a statement silently.
    */
   onDropStatement?: (error: ParseError, context: ParseRecoveryContext) => void;
 
@@ -127,8 +127,8 @@ export interface FormatOptions {
  * @param options - Optional formatting options.
  * @returns Formatted SQL with a trailing newline, or empty string for blank input.
  * @throws {TokenizeError} When the input contains invalid tokens (e.g., unterminated strings).
- * @throws {ParseError} When `recover` is `false` and parsing fails. When `recover` is `true`
- *   (the default), unparseable statements are recovered as raw passthrough where possible.
+ * @throws {ParseError} When parsing fails and `recover` is `false` (default). When `recover`
+ *   is `true`, unparseable statements are recovered as raw passthrough where possible.
  * @throws {Error} When input exceeds maximum size.
  *
  * @example
@@ -154,7 +154,7 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
   if (!trimmed) return '';
 
   const statements = parse(trimmed, {
-    recover: options.recover ?? true,
+    recover: options.recover ?? false,
     maxDepth: options.maxDepth,
     maxTokenCount: options.maxTokenCount,
     onRecover: options.onRecover,

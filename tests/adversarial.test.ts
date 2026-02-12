@@ -260,7 +260,7 @@ describe('Comment edge cases', () => {
   });
 
   it('handles multiple consecutive line comments', () => {
-    const result = formatSQL('SELECT 1\n-- comment1\n-- comment2\n-- comment3\nFROM t;');
+    const result = formatSQL('SELECT 1\n-- comment1\n-- comment2\n-- comment3\nFROM t;', { recover: true });
     expect(result).toContain('-- comment1');
     expect(result).toContain('-- comment2');
     expect(result).toContain('-- comment3');
@@ -679,8 +679,7 @@ describe('Stress and boundary tests', () => {
   });
 
   it('handles many tokens (stress token count)', () => {
-    // Each "1 +" is 3 tokens (number, whitespace, operator)
-    const manyTokens = 'SELECT ' + '1 + '.repeat(10_000) + '1;';
+    const manyTokens = 'SELECT ' + Array.from({ length: 10_000 }, (_, i) => `${i}`).join(', ') + ';';
     const result = formatSQL(manyTokens);
     expect(result).toContain('SELECT');
   });

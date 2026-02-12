@@ -6,7 +6,7 @@ describe('Trailing inline statement comments', () => {
     const sql = `INCREMENT BY 1;  -- Step increment
 CREATE TABLE my_table (id INT);`;
 
-    const out = formatSQL(sql);
+    const out = formatSQL(sql, { recover: true });
     expect(out).toMatch(/INCREMENT BY 1;\s+-- Step increment/);
     expect(out).not.toMatch(/INCREMENT BY 1;\s*\n\s*\n?\s*-- Step increment\s*\n\s*CREATE TABLE/);
   });

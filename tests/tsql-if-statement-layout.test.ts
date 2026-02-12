@@ -6,7 +6,7 @@ describe('T-SQL IF statement layout', () => {
     const sql = `IF NOT EXISTS (SELECT 1 FROM ComponentType WHERE [Name]=N'Wheel')
 INSERT INTO ComponentType([Name], MinSelect, MaxSelect, DisplayOrder) VALUES (N'Wheel',1,1,1);`;
 
-    const out = formatSQL(sql, { dialect: 'tsql' });
+    const out = formatSQL(sql, { dialect: 'tsql', recover: true });
     expect(out).not.toContain(')\n\nINSERT INTO');
     expect(out).toContain("IF NOT EXISTS (SELECT 1 FROM ComponentType WHERE [Name]=N'Wheel')");
     expect(out).toContain('INSERT INTO ComponentType ([Name], MinSelect, MaxSelect, DisplayOrder)');
