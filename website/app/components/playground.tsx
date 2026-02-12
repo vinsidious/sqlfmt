@@ -10,17 +10,14 @@ import {
 } from 'react';
 import { formatSQL, type DialectName } from '@/lib/holywell';
 import dynamic from 'next/dynamic';
-import {
-  sql,
-  PostgreSQL,
-  StandardSQL,
-  MySQL,
-  MSSQL,
-  type SQLDialect,
-} from '@codemirror/lang-sql';
+import { sql } from '@codemirror/lang-sql';
 import { EditorView } from '@codemirror/view';
 import { holywellTheme } from './editor-theme';
-import { DIALECT_SAMPLE_QUERIES } from './sample-queries';
+import {
+  DEFAULT_DIALECT,
+  DIALECT_OPTIONS,
+  CODEMIRROR_DIALECTS,
+} from './dialect-config';
 
 const CodeMirror = dynamic(() => import('@uiw/react-codemirror'), {
   ssr: false,
@@ -29,26 +26,8 @@ const CodeMirror = dynamic(() => import('@uiw/react-codemirror'), {
   ),
 });
 
-const DEFAULT_DIALECT: DialectName = 'postgres';
-
-const DIALECT_OPTIONS: readonly { value: DialectName; label: string }[] = [
-  { value: 'postgres', label: 'PostgreSQL' },
-  { value: 'ansi', label: 'ANSI SQL' },
-  { value: 'mysql', label: 'MySQL' },
-  { value: 'tsql', label: 'SQL Server (T-SQL)' },
-];
-
-const CODEMIRROR_DIALECTS: Record<DialectName, SQLDialect> = {
-  ansi: StandardSQL,
-  postgres: PostgreSQL,
-  mysql: MySQL,
-  tsql: MSSQL,
-};
-
-const INITIAL_SAMPLE = DIALECT_SAMPLE_QUERIES[DEFAULT_DIALECT][0] ?? '';
-
 export function Playground() {
-  const [input, setInput] = useState(INITIAL_SAMPLE);
+  const [input, setInput] = useState('');
   const [output, setOutput] = useState('');
   const [dialect, setDialect] = useState<DialectName>(DEFAULT_DIALECT);
   const [error, setError] = useState<string | null>(null);
@@ -56,12 +35,6 @@ export function Playground() {
   const [formatTime, setFormatTime] = useState<number | null>(null);
 
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSampleRef = useRef<Record<DialectName, number>>({
-    ansi: -1,
-    postgres: 0,
-    mysql: -1,
-    tsql: -1,
-  });
 
   const codeMirrorDialect = CODEMIRROR_DIALECTS[dialect];
 
@@ -90,19 +63,6 @@ export function Playground() {
       })
       .catch(() => {});
   }, [output]);
-
-  const handleSample = useCallback(() => {
-    const queries = DIALECT_SAMPLE_QUERIES[dialect];
-    if (queries.length === 0) return;
-
-    let idx: number;
-    do {
-      idx = Math.floor(Math.random() * queries.length);
-    } while (idx === lastSampleRef.current[dialect] && queries.length > 1);
-
-    lastSampleRef.current[dialect] = idx;
-    setInput(queries[idx]);
-  }, [dialect]);
 
   useEffect(() => {
     if (!input.trim()) {
@@ -154,50 +114,29 @@ export function Playground() {
             <span className="text-[11px] font-medium uppercase tracking-widest text-zinc-600">
               Input
             </span>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5">
-                <label
-                  htmlFor="dialect-select"
-                  className="text-[10px] font-medium uppercase tracking-widest text-zinc-600"
-                >
-                  Dialect
-                </label>
-                <select
-                  id="dialect-select"
-                  value={dialect}
-                  onChange={handleDialectChange}
-                  className="rounded-md border border-white/[0.08] bg-white/[0.02] px-2 py-1 text-xs font-medium text-zinc-300 outline-none transition-all duration-200 hover:border-white/[0.12] focus:border-brand/30"
-                >
-                  {DIALECT_OPTIONS.map(option => (
-                    <option
-                      key={option.value}
-                      value={option.value}
-                      className="bg-[#0A0A0A] text-zinc-200"
-                    >
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <button
-                onClick={handleSample}
-                className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-zinc-500 transition-all duration-200 hover:bg-white/[0.04] hover:text-zinc-300"
+            <div className="flex items-center gap-1.5">
+              <label
+                htmlFor="dialect-select"
+                className="text-[10px] font-medium uppercase tracking-widest text-zinc-600"
               >
-                <svg
-                  className="h-3 w-3"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3"
-                  />
-                </svg>
-                Sample query
-              </button>
+                Dialect
+              </label>
+              <select
+                id="dialect-select"
+                value={dialect}
+                onChange={handleDialectChange}
+                className="rounded-md border border-white/[0.08] bg-white/[0.02] px-2 py-1 text-xs font-medium text-zinc-300 outline-none transition-all duration-200 hover:border-white/[0.12] focus:border-brand/30"
+              >
+                {DIALECT_OPTIONS.map(option => (
+                  <option
+                    key={option.value}
+                    value={option.value}
+                    className="bg-[#0A0A0A] text-zinc-200"
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
