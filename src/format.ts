@@ -64,11 +64,11 @@ export interface FormatOptions {
   /**
    * Whether to recover from parse errors by passing through raw SQL.
    *
-   * When `true`, unparseable statements are preserved as raw text instead of
-   * throwing. When `false` (default), a {@link ParseError} is thrown on the
+   * When `true` (default), unparseable statements are preserved as raw text instead of
+   * throwing. When `false`, a {@link ParseError} is thrown on the
    * first parse failure.
    *
-   * @default false
+   * @default true
    */
   recover?: boolean;
 
@@ -153,7 +153,7 @@ export function formatSQL(input: string, options: FormatOptions = {}): string {
   if (!input.trim()) return '';
 
   const statements = parse(input, {
-    recover: options.recover ?? false,
+    recover: options.recover ?? true,
     maxDepth: options.maxDepth,
     maxTokenCount: options.maxTokenCount,
     onRecover: options.onRecover,

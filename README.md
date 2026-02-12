@@ -4,7 +4,6 @@
 [![npm downloads](https://img.shields.io/npm/dm/holywell)](https://www.npmjs.com/package/holywell)
 [![license](https://img.shields.io/npm/l/holywell)](https://github.com/vinsidious/holywell/blob/main/LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/vinsidious/holywell/ci.yml?branch=main&label=CI)](https://github.com/vinsidious/holywell/actions)
-[![coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](https://github.com/vinsidious/holywell/tree/main/tests)
 
 An opinionated SQL formatter that implements [Simon Holywell's SQL Style Guide](https://www.sqlstyle.guide/). It faithfully applies the guide's formatting rules -- including river alignment, keyword uppercasing, and consistent indentation -- to produce deterministic, readable SQL with minimal configuration.
 
@@ -195,7 +194,7 @@ SELECT name,
 
 holywell ships four selectable dialect profiles: **ansi**, **postgres**, **mysql**, and **tsql**. These profiles control keyword recognition, clause boundaries, and statement-handler behavior during tokenization and parsing. PostgreSQL is the default when no dialect is specified.
 
-Syntax from other database engines (Oracle, SQLite, Snowflake, ClickHouse, BigQuery, Exasol, DB2, H2) is recognized and formatted through the existing profiles -- typically `ansi` or `postgres` -- rather than via dedicated dialect configurations. The tokenizer and parser handle many vendor-specific patterns (hierarchical queries, q-quoted strings, numbered parameters, etc.), but there is no `--dialect oracle` or `--dialect snowflake` flag. If you work primarily with one of these engines, use whichever built-in profile is the closest match and validate the output with `--check`.
+Syntax from other database engines (Oracle, SQLite, Snowflake, ClickHouse, BigQuery, Exasol, DB2, H2) may work through the existing profiles -- typically `ansi` or `postgres` -- rather than via dedicated dialect configurations. The tokenizer and parser handle many vendor-specific patterns (hierarchical queries, q-quoted strings, numbered parameters, etc.), but there is no `--dialect oracle` or `--dialect snowflake` flag. If you work primarily with one of these engines, use whichever built-in profile is the closest match and validate the output with `--check`.
 
 | Syntax Family | Status | Notes |
 |---|---|---|
@@ -203,11 +202,11 @@ Syntax from other database engines (Oracle, SQLite, Snowflake, ClickHouse, BigQu
 | **PostgreSQL** | Selectable profile (`--dialect postgres`); default | Casts, arrays, JSON operators, FILTER/WITHIN GROUP, ON CONFLICT, RETURNING, COPY stdin handling |
 | **MySQL / MariaDB** | Selectable profile (`--dialect mysql`) | Backticks, LIMIT offset normalization, STRAIGHT_JOIN, RLIKE, INTERVAL, ALTER key actions, FULLTEXT, DELIMITER scripts |
 | **SQL Server (T-SQL)** | Selectable profile (`--dialect tsql`) | GO batches, IF/BEGIN/END chains, CROSS APPLY, PIVOT, bracket identifiers, BACKUP/BULK, PRINT, compound assignments |
-| Oracle / PL/SQL surface syntax | Recognized via existing profiles; regression-tested | START WITH/CONNECT BY, q-quoted strings, slash terminators, RETURNING INTO, type declarations, nested table storage |
-| SQLite | Recognized via `ansi` profile; regression-tested | Numbered positional parameters (`?1`, `?2`, ...), INSERT OR conflict actions, plus ANSI-compatible statements |
-| Snowflake | Recognized via `ansi` profile; regression-tested | Variant path access, CREATE STAGE, CREATE FILE FORMAT, CREATE VIEW COMMENT, COPY INTO handling |
-| ClickHouse | Recognized via `ansi` profile; lightly tested | CREATE MATERIALIZED VIEW ... TO ... AS and CREATE TABLE option clauses |
-| BigQuery / Exasol / DB2 / H2 | Recognized via `ansi` profile; lightly tested | Backtick multipart identifiers + SAFE_CAST/TRY_CAST, Lua bracket strings, slash delimiters, MERGE ... VALUES shorthand |
+| Oracle / PL/SQL surface syntax | No dedicated profile; common patterns handled via `ansi`/`postgres` | START WITH/CONNECT BY, q-quoted strings, slash terminators, RETURNING INTO, type declarations, nested table storage |
+| SQLite | No dedicated profile; handled via `ansi` | Numbered positional parameters (`?1`, `?2`, ...), INSERT OR conflict actions, plus ANSI-compatible statements |
+| Snowflake | No dedicated profile; handled via `ansi` | Variant path access, CREATE STAGE, CREATE FILE FORMAT, CREATE VIEW COMMENT, COPY INTO handling |
+| ClickHouse | No dedicated profile; limited coverage via `ansi` | CREATE MATERIALIZED VIEW ... TO ... AS and CREATE TABLE option clauses |
+| BigQuery / Exasol / DB2 / H2 | No dedicated profile; limited coverage via `ansi` | Backtick multipart identifiers + SAFE_CAST/TRY_CAST, Lua bracket strings, slash delimiters, MERGE ... VALUES shorthand |
 | Client/meta command syntax | First-class passthrough | psql `\` commands/variables, SQL*Plus slash run terminators, MySQL DELIMITER blocks, T-SQL GO separators |
 
 If you rely heavily on vendor extensions not covered by a built-in profile, run `--check` in CI and use `--strict` where parse failures should block merges.
@@ -240,7 +239,7 @@ const formatted = formatSQL(sql, {
 
 - GO separators, IF/BEGIN/END and ELSE IF chains, CROSS APPLY, PIVOT, BACKUP/BULK statements
 
-### Oracle (syntax recognized, no dedicated profile)
+### Oracle (no dedicated profile)
 
 - Hierarchical queries, q-quoted strings, slash run terminators, DELETE shorthand normalization, RETURNING ... INTO
 - Uses `ansi` or `postgres` profile; common Oracle patterns are handled by the tokenizer and parser directly
@@ -253,7 +252,7 @@ holywell supports statements through a mix of:
 - Keyword-normalized pass-through for unmodeled statement families
 - Verbatim pass-through for client/script commands
 
-`formatSQL` is strict by default (`recover: false`) and throws on parse errors. The CLI defaults to recovery mode unless `--strict` is set.
+`formatSQL` defaults to recovery mode (`recover: true`), passing through unparseable statements. Use `--strict` or `recover: false` when parse failures should halt formatting.
 
 ## Style Guide
 
@@ -267,22 +266,14 @@ This formatter implements the [Simon Holywell SQL Style Guide](https://www.sqlst
 
 For the full style guide, see [sqlstyle.guide](https://www.sqlstyle.guide/) or the [source on GitHub](https://github.com/treffynnon/sqlstyle.guide).
 
-## Why holywell?
+## Prior Art & Alternatives
 
-| | **holywell** | sql-formatter | prettier-plugin-sql | pgFormatter | sqlfluff |
-|---|---|---|---|---|---|
-| **Formatting style** | River alignment ([sqlstyle.guide](https://www.sqlstyle.guide/)) | Indentation-based | Indentation-based | Indentation-based | Indentation-based |
-| **Language** | TypeScript/JavaScript | TypeScript/JavaScript | TypeScript/JavaScript | Perl | Python |
-| **Configuration** | Opinionated defaults + small operational config (`.holywellrc.json`) | Configurable | Configurable via Prettier | Highly configurable | Highly configurable |
-| **PostgreSQL support** | First-class (casts, JSON ops, dollar-quoting, arrays) | Partial | Partial | First-class | Broad dialect support |
-| **Runtime dependencies** | Zero | 8 deps | Prettier + parser | Perl runtime | Python + deps |
-| **Idempotent** | Yes | Yes | Yes | Yes | Yes |
-| **Keyword casing** | Uppercase (enforced) | Configurable | Configurable | Configurable | Configurable |
-| **Identifier casing** | ALL-CAPS lowercased; mixed-case preserved | Not modified | Not modified | Configurable | Not modified |
-| **Output** | Deterministic, single style | Depends on config | Depends on config | Depends on config | Depends on config |
-| **Editor extensions** | CLI + [editor recipes](docs/integrations.md) | Available | Prettier-compatible | VS Code extension | VS Code extension |
+holywell is not the first SQL formatter. If river alignment and opinionated defaults are not what you need, these tools may be a better fit:
 
-holywell is the right choice when you want consistent, readable SQL with minimal setup and deterministic style.
+- **[sql-formatter](https://github.com/sql-formatter-org/sql-formatter)** — Configurable TypeScript/JavaScript formatter with indentation-based output and broad dialect support. Good choice when you need fine-grained control over style.
+- **[prettier-plugin-sql](https://github.com/JounQin/prettier-plugin-sql)** — SQL formatting via the Prettier ecosystem. Ideal if your team already uses Prettier and wants unified formatting tooling.
+- **[pgFormatter](https://github.com/darold/pgFormatter)** — Perl-based PostgreSQL formatter with extensive configuration options. Mature and battle-tested in PostgreSQL-heavy environments.
+- **[sqlfluff](https://github.com/sqlfluff/sqlfluff)** — Python-based SQL linter and formatter with 50+ rules and broad dialect support. More than a formatter — it also lints for anti-patterns and style violations.
 
 ### Configuration philosophy
 
@@ -382,7 +373,7 @@ This keeps editor/CLI integration predictable and avoids hidden async overhead.
 
 ### Error Recovery
 
-`formatSQL` is strict by default. To preserve unparseable statements instead of throwing, opt into recovery:
+`formatSQL` uses recovery mode by default, preserving unparseable statements as raw text. You can hook into recovery events:
 
 ```typescript
 const warnings: string[] = [];
@@ -396,13 +387,13 @@ const formatted = formatSQL(sql, {
 
 ### Strict Mode (throw on parse errors)
 
-Strict mode is the API default:
+Opt into strict mode to throw on parse errors:
 
 ```typescript
 import { formatSQL, ParseError } from 'holywell';
 
 try {
-  formatSQL(sql);
+  formatSQL(sql, { recover: false });
 } catch (err) {
   if (err instanceof ParseError) {
     console.error(`Parse error: ${err.message}`);
@@ -510,7 +501,7 @@ No. Style output is intentionally fixed. holywell provides operational configura
 
 **Q: What happens with SQL syntax holywell doesn't understand?**
 
-For the API, `formatSQL` is strict by default and throws on parse errors. For the CLI, recovery mode is the default, so unsupported/unparseable statements are passed through unless you use `--strict`.
+`formatSQL` uses recovery mode by default: unsupported or unparseable statements are passed through as-is. Use `--strict` (CLI) or `recover: false` (API) to throw on parse errors instead.
 
 **Q: How fast is holywell?**
 
