@@ -24,10 +24,10 @@ Add to `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/vinsidious/holywell
-    rev: v1.8.3  # update to the latest release tag when bumping holywell
+    rev: ""  # run `pre-commit autoupdate` to pin the latest version
     hooks:
       - id: holywell
-        name: holywell (format)
+        name: holywell
         entry: npx holywell --write
         language: node
         types: [sql]

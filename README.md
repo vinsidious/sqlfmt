@@ -34,6 +34,8 @@ SELECT e.name,
 
 ### Install
 
+Requires Node.js 18 or later.
+
 ```bash
 npm install holywell
 ```
@@ -257,7 +259,7 @@ This formatter implements the [Simon Holywell SQL Style Guide](https://www.sqlst
 
 - **River alignment** -- Clause/logical keywords are right-aligned to a per-statement river width derived from the longest top-level aligned keyword
 - **Keyword uppercasing** -- Reserved words like `SELECT`, `FROM`, `WHERE` are uppercased
-- **Identifier normalization** -- ALL-CAPS unquoted identifiers are lowercased (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved; quoted identifiers are unchanged
+- **Identifier normalization** -- ALL-CAPS unquoted identifiers are lowercased (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved; quoted identifiers are unchanged. Projection aliases (column aliases in SELECT) are an exception -- they are preserved as-is even when ALL-CAPS (e.g., `SELECT id AS TOTAL` keeps `TOTAL` unchanged)
 - **Right-aligned clause/logical keywords** -- `SELECT`, `FROM`, `WHERE`, `AND`, `OR`, `JOIN`, `ON`, `ORDER BY`, `GROUP BY`, etc. align within each formatted block
 - **Consistent indentation** -- Continuation lines and subexpressions are indented predictably
 
@@ -290,6 +292,58 @@ CLI flags still override config values.
 A starter config is available at `.holywellrc.json.example`.
 
 ## CLI Reference
+
+```
+Usage: holywell [options] [file ...]
+```
+
+File arguments support glob patterns (e.g. `**/*.sql`). By default, `holywell query.sql` prints formatted output to **stdout**. Use `--write` to modify files in place.
+
+### Flags
+
+**General:**
+
+| Flag | Description |
+|------|-------------|
+| `-h, --help` | Show help text |
+| `-V, --version` | Show version |
+
+**Formatting:**
+
+| Flag | Description |
+|------|-------------|
+| `--check` | Exit 1 when input is not formatted |
+| `--diff` | Show unified diff when `--check` fails |
+| `--dry-run, --preview` | Preview changes without writing (implies `--check --diff`) |
+| `-w, --write` | Write formatted output back to input file(s) |
+| `-l, --list-different` | Print only filenames that need formatting |
+| `--max-line-length <n>` | Preferred output line width (default: 80) |
+| `--max-input-size <n>` | Maximum input size in bytes (default: 10 MB) |
+| `--max-token-count <n>` | Tokenizer ceiling for very large SQL files |
+| `--dialect <name>` | SQL dialect: `ansi`, `postgres`, `mysql`, `tsql` |
+| `--strict` | Disable parser recovery; exit 2 on parse errors (recommended for CI) |
+
+**File selection:**
+
+| Flag | Description |
+|------|-------------|
+| `--ignore <pattern>` | Exclude files matching glob pattern (repeatable) |
+| `--config <path>` | Use an explicit config file (default: `.holywellrc.json`) |
+| `--stdin-filepath <p>` | Path shown in error messages when reading stdin |
+
+**Output:**
+
+| Flag | Description |
+|------|-------------|
+| `-v, --verbose` | Print progress details to stderr |
+| `--quiet` | Suppress all output except errors |
+| `--color <mode>` | Colorize output: `auto` (default), `always`, `never` |
+| `--no-color` | Alias for `--color=never` |
+| `--completion <shell>` | Print shell completion script (`bash`, `zsh`, `fish`) |
+
+The `--color` flag controls ANSI color output. In `auto` mode (the default), color is enabled when stderr is a TTY and neither `NO_COLOR` nor `CI` environment variables are set. Use `--color=always` to force color (e.g. when piping to a pager), or `--color=never` / `--no-color` to disable it.
+
+### Examples
 
 ```bash
 # Format a file (prints to stdout by default)
@@ -326,9 +380,6 @@ npx holywell --check --ignore "migrations/**" "**/*.sql"
 # Or store ignore patterns in .holywellignore (one pattern per line)
 npx holywell --check "**/*.sql"
 
-# Control color in CI/logs
-npx holywell --color=always --check query.sql
-
 # Generate shell completion
 npx holywell --completion bash
 npx holywell --completion zsh
@@ -339,8 +390,6 @@ pbpaste | npx holywell | pbcopy          # Format clipboard (macOS)
 pg_dump mydb --schema-only | npx holywell > schema.sql
 echo "select 1" | npx holywell
 ```
-
-By default, `npx holywell query.sql` prints formatted output to **stdout**. Use `--write` to modify the file in place.
 
 When present, `.holywellignore` is read from the current working directory and combined with any `--ignore` flags.
 
@@ -437,7 +486,7 @@ visitAst(ast, {
 ### Error Types
 
 ```typescript
-import { formatSQL, TokenizeError, ParseError, MaxDepthError } from 'holywell';
+import { formatSQL, TokenizeError, ParseError, MaxDepthError, FormatterError } from 'holywell';
 
 try {
   const result = formatSQL(input);
@@ -451,6 +500,9 @@ try {
   } else if (err instanceof ParseError) {
     // Structural error in the SQL (e.g., unmatched parentheses)
     console.error(`Parse error at ${err.line}:${err.column}: ${err.message}`);
+  } else if (err instanceof FormatterError) {
+    // Error during AST-to-text formatting
+    console.error(`Formatter error: ${err.message}`);
   } else if (err instanceof Error && err.message.includes('Input exceeds maximum size')) {
     // Input exceeded maxInputSize
     console.error(`Input too large: ${err.message}`);
@@ -459,6 +511,76 @@ try {
   }
 }
 ```
+
+### Recovery Callbacks
+
+`FormatOptions` supports three callbacks for observing recovery and passthrough behavior:
+
+```typescript
+const warnings: string[] = [];
+const formatted = formatSQL(sql, {
+  recover: true,
+
+  // Called when the parser falls back to raw passthrough for an unparseable statement
+  onRecover: (error, raw, context) => {
+    warnings.push(`Line ${error.line}: recovered — ${error.message}`);
+  },
+
+  // Called when recovery cannot preserve a statement at all (rare)
+  onDropStatement: (error, context) => {
+    warnings.push(`Line ${error.line}: dropped — ${error.message}`);
+  },
+
+  // Called for statements the parser intentionally does not format (SET, USE, DBCC, etc.)
+  onPassthrough: (raw, context) => {
+    // Informational — these are not errors
+  },
+
+  // Additional FormatOptions fields
+  maxTokenCount: 500_000,   // Tokenizer ceiling for very large SQL files
+  maxLineLength: 100,       // Preferred output line width
+});
+```
+
+### Version
+
+The library exports a `version` string constant:
+
+```typescript
+import { version } from 'holywell';
+console.log(version); // e.g. "1.8.6"
+```
+
+### Custom Dialect Profiles
+
+For advanced use cases such as building custom dialect integrations, holywell exports the four built-in dialect profile constants and the resolver function:
+
+```typescript
+import {
+  resolveDialectProfile,
+  ANSI_PROFILE,
+  POSTGRES_PROFILE,
+  MYSQL_PROFILE,
+  TSQL_PROFILE,
+} from 'holywell';
+
+// Resolve a dialect name to its profile
+const profile = resolveDialectProfile('postgres');
+console.log(profile.clauseKeywords); // Set of keywords that start clauses
+
+// Use a profile constant directly
+const pgProfile = POSTGRES_PROFILE;
+```
+
+The `Parser` class is also exported for callers who need direct access to parser internals beyond the `parse()` convenience function.
+
+Key types for custom dialect work:
+
+| Type | Description |
+|------|-------------|
+| `SQLDialect` | Union of dialect name strings and `DialectProfile` |
+| `DialectProfile` | Full profile object with keyword sets, clause boundaries, and statement handlers |
+| `DialectStatementHandler` | Handler function type for dialect-specific statement parsing |
 
 ## How the formatter works
 
@@ -484,7 +606,7 @@ Line comments and block comments are preserved. Comments attached to specific ex
 
 ### Keyword Casing
 
-All SQL keywords are uppercased. Quoted identifiers keep their case and quotes. ALL-CAPS unquoted identifiers are lowercased to avoid shouting (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved as-is.
+All SQL keywords are uppercased. Quoted identifiers keep their case and quotes. ALL-CAPS unquoted identifiers are lowercased to avoid shouting (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved as-is. Projection aliases are exempt from lowercasing and kept verbatim.
 
 ### Idempotency
 
@@ -506,7 +628,7 @@ Throughput varies by statement complexity: ~6,000 simple statements/sec or ~5,50
 
 **Q: Does holywell modify SQL semantics?**
 
-No. holywell changes whitespace, uppercases SQL keywords, lowercases ALL-CAPS unquoted identifiers (mixed-case identifiers are preserved), and normalizes alias syntax (e.g., inserting AS). Quoted identifiers and string literals are preserved exactly. The semantic meaning is preserved.
+No. holywell changes whitespace, uppercases SQL keywords, lowercases ALL-CAPS unquoted identifiers (mixed-case identifiers and projection aliases are preserved), and normalizes alias syntax (e.g., inserting AS). Quoted identifiers and string literals are preserved exactly. The semantic meaning is preserved.
 
 **Q: Does holywell respect `.editorconfig`?**
 

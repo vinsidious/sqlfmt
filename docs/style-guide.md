@@ -11,7 +11,7 @@ These rules are automatically applied by holywell on every format.
 | Right-aligned keywords | Clause keywords (`SELECT`, `FROM`, `WHERE`, `AND`, `OR`, etc.) are right-aligned to a per-statement river derived from the widest aligned keyword in that statement |
 | Uppercase keywords | All SQL reserved words and function keywords are uppercased (`SELECT`, `FROM`, `WHERE`, `INSERT`, `COALESCE`, `NULLIF`, `EXTRACT`, `CAST`, `COUNT`, `SUM`, etc.) |
 | Boolean and NULL literals | `TRUE`, `FALSE`, and `NULL` are uppercased, treated as keywords |
-| Identifier normalization | ALL-CAPS unquoted identifiers are lowercased (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved; quoted identifiers are unchanged |
+| Identifier normalization | ALL-CAPS unquoted identifiers are lowercased (e.g., `MYTABLE` becomes `mytable`); mixed-case identifiers like `MyColumn` are preserved; quoted identifiers are unchanged. Exception: projection aliases (column aliases in `SELECT`) are never lowercased, so `SELECT id AS TOTAL` keeps `TOTAL` as-is |
 | Trailing commas | When column lists wrap to multiple lines, commas are placed in trailing position (end of line) rather than leading position; continuation lines are aligned with the first item after the keyword |
 | No trailing whitespace | All trailing whitespace is stripped from every line |
 | Consistent indentation | Continuation lines, subexpressions, and nested blocks are indented relative to the river |

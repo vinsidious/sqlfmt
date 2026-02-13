@@ -33,6 +33,7 @@ To prevent resource exhaustion when processing untrusted input, holywell enforce
 - **Input size limit** -- Inputs exceeding the maximum byte size are rejected before processing.
 - **Token count limit** -- The tokenizer limits the number of tokens produced from a single input.
 - **Parse depth limit** -- The parser limits recursion depth to prevent stack overflow from deeply nested expressions.
+- **Identifier length limit** -- The tokenizer rejects individual identifiers exceeding the maximum character length.
 
 These limits are set to values that accommodate any reasonable SQL while guarding against adversarial input.
 

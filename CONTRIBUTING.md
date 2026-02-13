@@ -56,7 +56,7 @@ Define the new node type(s) in the AST type definitions (`src/ast.ts`). Each nod
 
 ### 2. Add parser rule(s)
 
-Add parsing logic in the parser (`src/parser.ts` or the appropriate sub-module in `src/parser/`). The parser consumes tokens and returns AST nodes. Follow the existing pattern of `parse*` functions (e.g., `parseSelectStatement`, `parseJoinClause`).
+Add parsing logic in the parser (`src/parser.ts` or the appropriate sub-module in `src/parser/`). The parser consumes tokens and returns AST nodes. Follow the existing pattern of `parse*` functions (e.g., `parseSelect`, `parseJoin`, `parseCTE`, `parseFetchClause` in the main parser; `parseInsertStatement`, `parseCreateStatement`, `parseAlterStatement` in sub-modules).
 
 ### 3. Add formatter case(s)
 
@@ -64,7 +64,13 @@ Handle the new node type in the formatter (`src/formatter.ts`). The formatter sw
 
 ### 4. Add tests
 
-Add test cases in the appropriate test file under `tests/`. Each test should include:
+Add test cases in the appropriate test file under `tests/`.
+
+- **Core test files** cover broad areas: `formatter.test.ts`, `parser.test.ts`, `tokenizer.test.ts`, `cli.test.ts`, `idempotency.test.ts`, and `regressions.test.ts`.
+- **Feature-specific test files** are named after the SQL behavior they cover (e.g., `mixed-join-alignment.test.ts`, `cte-leading-comment-idempotency.test.ts`, `postgresql-insert-on-conflict-returning-alignment.test.ts`).
+- Add to an existing file when your change extends or fixes behavior already tested there. Create a new file when adding a distinct feature or dialect-specific behavior that doesn't fit an existing file.
+
+Each test should include:
 
 - An input SQL string (messy/unformatted)
 - The expected formatted output
@@ -75,7 +81,7 @@ Add test cases in the appropriate test file under `tests/`. Each test should inc
 If adding support for `LATERAL JOIN`:
 
 1. **AST**: Ensure `JoinClause` has a `lateral` flag or a `LateralJoin` node type
-2. **Parser**: Recognize `LATERAL` before `JOIN` in `parseJoinClause` and set the flag
+2. **Parser**: Recognize `LATERAL` before `JOIN` in `parseJoin` and set the flag
 3. **Formatter**: When emitting a join with the lateral flag, include `LATERAL` in the output
 4. **Tests**: Add cases for `LATERAL JOIN`, `LEFT LATERAL JOIN`, etc.
 

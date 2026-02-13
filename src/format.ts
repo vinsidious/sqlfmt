@@ -127,8 +127,8 @@ export interface FormatOptions {
  * @param options - Optional formatting options.
  * @returns Formatted SQL with a trailing newline, or empty string for blank input.
  * @throws {TokenizeError} When the input contains invalid tokens (e.g., unterminated strings).
- * @throws {ParseError} When parsing fails and `recover` is `false` (default). When `recover`
- *   is `true`, unparseable statements are recovered as raw passthrough where possible.
+ * @throws {ParseError} When parsing fails and `recover` is `false`. When `recover`
+ *   is `true` (default), unparseable statements are recovered as raw passthrough where possible.
  * @throws {Error} When input exceeds maximum size.
  *
  * @example

@@ -11,12 +11,14 @@
 7. `src/visitor.ts` provides `visitAst`, a schema-agnostic depth-first traversal that treats any object with a string `type` field as a node.
 8. `src/dialects/` provides dialect profiles used by the tokenizer and parser:
    - `types.ts` defines `DialectName` (`'ansi' | 'postgres' | 'mysql' | 'tsql'`), `DialectProfile`, and `DialectStatementHandler`.
-   - `profiles.ts` contains the built-in profile constants (`ANSI_PROFILE`, `POSTGRES_PROFILE`, `MYSQL_PROFILE`, `TSQL_PROFILE`).
+   - `profiles.ts` contains the built-in profile constants (`ANSI_PROFILE`, `POSTGRES_PROFILE`, `MYSQL_PROFILE`, `TSQL_PROFILE`) and `DIALECT_PROFILES`, a frozen record mapping each `DialectName` to its profile.
    - `resolve.ts` exports `resolveDialectProfile`, which maps a dialect name or custom profile to a resolved `DialectProfile`. When no dialect is specified, `POSTGRES_PROFILE` is the default.
+   - `index.ts` is the barrel re-export for the dialects directory. Re-exports types from `types.ts`, profile constants and `DIALECT_PROFILES` from `profiles.ts`, and `resolveDialectProfile` from `resolve.ts`.
    - Only these four profiles are selectable via `--dialect`. Oracle, SQLite, Snowflake, ClickHouse, BigQuery, Exasol, DB2, and H2 syntax is recognized by the tokenizer and parser but handled through these base profiles rather than dedicated dialect configurations.
 9. `src/dialect.ts` re-exports public dialect types from `src/dialects/types.ts` and defines the `SQLDialect` union (`DialectName | DialectProfile`).
 10. `src/constants.ts` centralizes shared limits: `DEFAULT_MAX_DEPTH`, `TERMINAL_WIDTH`, `DEFAULT_MAX_INPUT_SIZE`, `MAX_TOKEN_COUNT`, `MAX_IDENTIFIER_LENGTH`.
-11. `src/keywords.ts` defines `KEYWORD_LIST`, `FUNCTION_KEYWORD_LIST`, and their `Set` counterparts (`KEYWORDS`, `FUNCTION_KEYWORDS`).
+11. `src/keywords.ts` defines `KEYWORD_LIST`, `FUNCTION_KEYWORD_LIST`, and their `Set` counterparts (`KEYWORDS`, `FUNCTION_KEYWORDS`). Also exports `isKeyword`, a case-insensitive lookup that checks membership in the combined `KEYWORDS` set.
+12. `src/index.ts` is the package barrel entry point. Re-exports the public API from all modules (`formatSQL`, dialect types and profiles, tokenizer, parser, formatter, visitor, and AST types) and defines the `version` constant (injected at build time by tsup).
 
 ## Depth Guards
 

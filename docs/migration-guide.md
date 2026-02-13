@@ -24,12 +24,14 @@ All SQL keywords are uppercased. `select` becomes `SELECT`, `inner join` becomes
 
 ALL-CAPS unquoted identifiers are lowercased to avoid shouting: `MYTABLE` becomes `mytable`, `USERID` becomes `userid`. Mixed-case identifiers are preserved as-is: `MyTable` stays `MyTable`, `userId` stays `userId`.
 
+**Exception:** projection aliases (column aliases in `SELECT`) are not lowercased, even when ALL-CAPS. `SELECT col AS TOTAL` keeps `TOTAL` unchanged.
+
 **Quoted identifiers are preserved exactly.** `"MyTable"` stays `"MyTable"`.
 
 ### Whitespace is normalized
 
-- Leading and trailing whitespace is stripped from every line
-- Indentation is replaced with river-aligned formatting
+- Trailing whitespace is stripped from every line
+- Original indentation is replaced with river-aligned formatting
 - Blank lines inside statements are removed
 - A trailing newline is added at the end of each statement
 
@@ -133,7 +135,7 @@ For large repos, migrate package-by-package:
 
 ## 9) Handling unsupported syntax
 
-In CLI recovery mode (default for the CLI), statements that fail structural parsing are preserved as raw SQL where possible. The `formatSQL` API is strict by default.
+Both the CLI and the `formatSQL` API default to recovery mode (`recover: true`). Statements that fail structural parsing are preserved as raw SQL where possible.
 
 To make parse failures block CI:
 
@@ -141,6 +143,6 @@ To make parse failures block CI:
 npx holywell --strict --check "**/*.sql"
 ```
 
-For custom tooling, use API parse options with `recover: false`.
+For custom tooling, pass `recover: false` to opt into strict mode.
 
 For a current dialect-by-dialect coverage snapshot, see [SQL Dialect Support](../README.md#sql-dialect-support).
