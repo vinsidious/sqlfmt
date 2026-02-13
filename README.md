@@ -134,12 +134,10 @@ with monthly_totals as (select date_trunc('month', created_at) as month, sum(amo
            SELECT DATE_TRUNC('month', created_at) AS month,
                   SUM(amount) AS total
              FROM payments
-            GROUP BY 1
-       ),
+            GROUP BY 1),
        running AS (
            SELECT month, total, SUM(total) OVER (ORDER BY month) AS cumulative
-             FROM monthly_totals
-       )
+             FROM monthly_totals)
 SELECT *
   FROM running
  WHERE cumulative > 10000;
