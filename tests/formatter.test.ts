@@ -1356,6 +1356,29 @@ describe('Category 40b: CREATE INDEX River Alignment', () => {
     `CREATE INDEX IF NOT EXISTS waitlist_email_idx
     ON waitlist (email);`
   );
+
+  assertFormat('40b.5 — CREATE INDEX with INCLUDE widens river and pads header',
+    `create index idx_cover on orders (customer_id) include (total, status) where active = true;`,
+    ` CREATE INDEX idx_cover
+     ON orders (customer_id)
+INCLUDE (total, status)
+  WHERE active = TRUE;`
+  );
+
+  assertFormat('40b.6 — CREATE INDEX with INCLUDE and no WHERE',
+    `create unique index idx_lookup on products (sku) include (name, price);`,
+    ` CREATE UNIQUE INDEX idx_lookup
+     ON products (sku)
+INCLUDE (name, price);`
+  );
+
+  assertFormat('40b.7 — CREATE INDEX with INCLUDE and USING',
+    `create index idx_data on items using btree (category) include (label);`,
+    ` CREATE INDEX idx_data
+     ON items
+  USING BTREE (category)
+INCLUDE (label);`
+  );
 });
 
 describe('Category 41: Complex Parenthesized Boolean Logic', () => {

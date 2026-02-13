@@ -346,7 +346,7 @@ function deriveRiverWidth(node: AST.Node): number {
       return width;
     }
     case 'create_index': {
-      let width = 'ON'.length;
+      let width = 'CREATE'.length;
       if (node.using) width = Math.max(width, 'USING'.length);
       if (node.include && node.include.length > 0) width = Math.max(width, 'INCLUDE'.length);
       if (node.where) width = Math.max(width, 'WHERE'.length);
@@ -904,7 +904,20 @@ function formatSelect(node: AST.SelectStatement, ctx: FormatContext): string {
       : '';
   const topStr = node.top ? ` ${node.top}` : '';
   const colStartCol = contentCol(ctx) + stringDisplayWidth(distinctStr + topStr);
-  const colStr = formatColumnList(node.columns, colStartCol, ctx);
+  const isTsql = isTsqlDialect(ctx.runtime.dialect);
+  const forceTsqlSubqueryIdentifierColumns = isTsql
+    && ctx.isSubquery
+    && node.columns.length >= 3
+    && node.columns.every(col => col.alias === undefined
+      && (!col.leadingComments || col.leadingComments.length === 0)
+      && col.trailingComment === undefined
+      && col.expr.type === 'identifier');
+  const forceMultilineColumns =
+    (node.lockingClause && /^(JSON|XML)\b/i.test(node.lockingClause.trim()))
+    || (node.top && node.columns.length > 1)
+    || forceTsqlSubqueryIdentifierColumns
+    || selectHasPivotOrJsonWith(node);
+  const colStr = formatColumnList(node.columns, colStartCol, ctx, forceMultilineColumns);
   const firstColumnHasLeadingComments = !!(node.columns[0]?.leadingComments && node.columns[0].leadingComments.length > 0);
   if (firstColumnHasLeadingComments) {
     lines.push(selectKw + distinctStr + topStr);
@@ -1045,17 +1058,26 @@ interface FormattedColumnPart {
   comment?: AST.CommentNode;
 }
 
-function formatColumnList(columns: readonly AST.ColumnExpr[], firstColStartCol: number, ctx: FormatContext): string {
+function formatColumnList(
+  columns: readonly AST.ColumnExpr[],
+  firstColStartCol: number,
+  ctx: FormatContext,
+  forceOnePerLine: boolean = false,
+): string {
   if (columns.length === 0) return '';
 
   const parts = buildFormattedColumnParts(columns, ctx);
+  const cCol = contentCol(ctx);
+  if (forceOnePerLine) {
+    const indent = ' '.repeat(firstColStartCol);
+    return formatColumnsOnePerLine(parts, indent);
+  }
+  const indent = ' '.repeat(cCol);
   const inlineResult = tryFormatInlineColumnList(parts, columns, firstColStartCol, ctx);
   if (inlineResult) return inlineResult;
 
   const hasMultiLine = parts.some(p => p.text.includes('\n'));
   const hasLeadingComments = parts.some(p => !!(p.leadingComments && p.leadingComments.length > 0));
-  const cCol = contentCol(ctx);
-  const indent = ' '.repeat(cCol);
 
   // If any multi-line expression, one-per-line
   if (hasMultiLine || hasLeadingComments) {
@@ -1067,6 +1089,14 @@ function formatColumnList(columns: readonly AST.ColumnExpr[], firstColStartCol: 
   }
 
   return formatColumnListWithGroups(parts, indent, cCol, ctx);
+}
+
+function selectHasPivotOrJsonWith(node: AST.SelectStatement): boolean {
+  const from = node.from;
+  if (from?.pivotClause || from?.jsonWithClause) return true;
+  if (node.additionalFromItems?.some(item => !!(item.pivotClause || item.jsonWithClause))) return true;
+  if (node.joins.some(j => !!(j.pivotClause || j.jsonWithClause))) return true;
+  return false;
 }
 
 function buildFormattedColumnParts(columns: readonly AST.ColumnExpr[], ctx: FormatContext): FormattedColumnPart[] {
@@ -1658,7 +1688,14 @@ function formatFromClause(from: AST.FromClause, ctx: FormatContext): string {
   if (from.ordinality) {
     result += ' WITH ORDINALITY';
   }
-  if (from.alias) {
+  if (from.jsonWithClause) {
+    const withLine = normalizeOpenJsonWithClause(from.jsonWithClause);
+    const alias = from.alias
+      ? ' AS ' + formatAlias(from.alias)
+        + (from.aliasColumns && from.aliasColumns.length > 0 ? '(' + from.aliasColumns.join(', ') + ')' : '')
+      : '';
+    result += '\n' + ' '.repeat(baseCol) + withLine + alias;
+  } else if (from.alias) {
     result += ' AS ' + formatAlias(from.alias);
     if (from.aliasColumns && from.aliasColumns.length > 0) {
       result += '(' + from.aliasColumns.join(', ') + ')';
@@ -1726,6 +1763,15 @@ function normalizePivotClauseText(text: string): string {
   return text
     .replace(/\b(PIVOT|UNPIVOT)\s*\(/gi, '$1 (')
     .replace(/\bIN\s*\(/gi, 'IN (');
+}
+
+function normalizeOpenJsonWithClause(text: string): string {
+  const normalized = text.replace(/\bWITH\s*\(/gi, 'WITH (');
+  // OPENJSON schema clauses read well with lowercased type names.
+  return normalized.replace(
+    /\b(BIGINT|INT|SMALLINT|TINYINT|BIT|MONEY|SMALLMONEY|DECIMAL|NUMERIC|FLOAT|REAL|DATE|DATETIME2|DATETIMEOFFSET|NVARCHAR|VARCHAR|NCHAR|CHAR|VARBINARY|BINARY)\b/g,
+    m => m.toLowerCase(),
+  );
 }
 
 // ─── JOIN ────────────────────────────────────────────────────────────
@@ -1825,7 +1871,14 @@ function formatJoinTable(join: AST.JoinClause, tableStartCol: number, runtime: F
   if (join.only) result = 'ONLY ' + result;
   if (join.lateral) result = 'LATERAL ' + result;
   if (join.ordinality) result += ' WITH ORDINALITY';
-  if (join.alias) {
+  if (join.jsonWithClause) {
+    const withLine = normalizeOpenJsonWithClause(join.jsonWithClause);
+    const alias = join.alias
+      ? ' AS ' + formatAlias(join.alias)
+        + (join.aliasColumns && join.aliasColumns.length > 0 ? '(' + join.aliasColumns.join(', ') + ')' : '')
+      : '';
+    result += '\n' + ' '.repeat(tableStartCol) + withLine + alias;
+  } else if (join.alias) {
     result += ' AS ' + formatAlias(join.alias);
     if (join.aliasColumns && join.aliasColumns.length > 0) {
       result += '(' + join.aliasColumns.join(', ') + ')';
@@ -2615,6 +2668,10 @@ function formatInsert(node: AST.InsertStatement, ctx: FormatContext): string {
     lines.push(header);
   }
 
+  if (node.outputClause) {
+    lines.push(rightAlign('OUTPUT', dmlCtx) + ' ' + node.outputClause.trim());
+  }
+
   if (node.valueClauseLeadingComments && node.valueClauseLeadingComments.length > 0) {
     emitComments(node.valueClauseLeadingComments, lines);
   }
@@ -2772,7 +2829,11 @@ function formatUpdate(node: AST.UpdateStatement, ctx: FormatContext): string {
   emitComments(node.leadingComments, lines);
 
   const updateTargets: string[] = [];
-  updateTargets.push(lowerIdent(node.table) + (node.alias ? ' AS ' + formatAlias(node.alias) : ''));
+  updateTargets.push(
+    lowerIdent(node.table)
+    + (node.alias ? ' AS ' + formatAlias(node.alias) : '')
+    + (node.targetHint ? ' ' + node.targetHint : '')
+  );
   if (node.additionalTables && node.additionalTables.length > 0) {
     for (const tableRef of node.additionalTables) {
       updateTargets.push(
@@ -2884,6 +2945,10 @@ function formatDelete(node: AST.DeleteStatement, ctx: FormatContext): string {
     lines.push(deleteKw + ' ' + node.targets.map(formatAlias).join(', '));
   } else {
     lines.push(deleteKw);
+  }
+
+  if (node.outputClause) {
+    lines.push(rightAlign('OUTPUT', dmlCtx) + ' ' + node.outputClause.trim());
   }
   lines.push(rightAlign('FROM', dmlCtx) + ' ' + lowerIdent(node.from) + (node.alias ? ' AS ' + formatAlias(node.alias) : ''));
 
@@ -2998,7 +3063,7 @@ function formatCreateIndex(node: AST.CreateIndexStatement, ctx: FormatContext): 
   const lines: string[] = [];
   emitComments(node.leadingComments, lines);
 
-  let header = 'CREATE';
+  let header = rightAlign('CREATE', idxCtx);
   if (node.unique) header += ' UNIQUE';
   if (node.clustered) header += ' ' + node.clustered;
   header += ' INDEX';
@@ -3294,7 +3359,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
   const target = node.target.table + (node.target.alias ? ' AS ' + node.target.alias : '');
   const sourceTable = typeof node.source.table === 'string'
     ? node.source.table
-    : formatExpr(node.source.table, 0, mergeCtx.runtime);
+    : formatExprAtColumn(node.source.table, contentCol(mergeCtx), mergeCtx.runtime);
   const source = sourceTable + (node.source.alias ? ' AS ' + node.source.alias : '');
 
   lines.push(rightAlign('MERGE', mergeCtx) + ' INTO ' + target);
@@ -3306,7 +3371,7 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
   const actionPad = contentPad(mergeCtx);
 
   for (const wc of node.whenClauses) {
-    const branch = wc.matched ? 'MATCHED' : 'NOT MATCHED';
+    const branch = wc.matched ? 'MATCHED' : (wc.matchKind ?? 'NOT MATCHED');
     const cond = wc.condition ? ' AND ' + formatExpr(wc.condition, 0, mergeCtx.runtime) : '';
     lines.push(rightAlign('WHEN', mergeCtx) + ' ' + branch + cond + ' THEN');
 
@@ -3340,6 +3405,11 @@ function formatMerge(node: AST.MergeStatement, ctx: FormatContext): string {
       lines.push(actionPad + 'INSERT' + cols);
       lines.push(actionPad + 'VALUES (' + (wc.values || []).map(value => formatExpr(value, 0, mergeCtx.runtime)).join(', ') + ')');
     }
+  }
+
+  if (node.outputClause) {
+    lines.push('OUTPUT ' + node.outputClause.trim() + ';');
+    return lines.join('\n');
   }
 
   lines[lines.length - 1] += ';';
@@ -3778,6 +3848,10 @@ function normalizeIdentifierCall(name: string): string | null {
 
 function isMySqlDialect(dialect?: SQLDialect): boolean {
   return dialect === 'mysql' || (typeof dialect === 'object' && dialect.name === 'mysql');
+}
+
+function isTsqlDialect(dialect?: SQLDialect): boolean {
+  return dialect === 'tsql' || (typeof dialect === 'object' && dialect.name === 'tsql');
 }
 
 function createTableElementIndent(
