@@ -34,8 +34,7 @@ WHERE e.execution_id = @execution_id;`;
 
     const out = formatSQL(sql, { dialect: 'tsql' });
     expect(out).toMatch(/\n  JOIN catalog\.executable_statistics AS es\(NOLOCK\)/);
-    expect(out).toMatch(/\n  FULL OUTER JOIN running AS r\(NOLOCK\)/);
-    expect(out).not.toMatch(/\n\s{7,}FULL OUTER JOIN/);
+    expect(out).toMatch(/\n {7}FULL OUTER JOIN running AS r\(NOLOCK\)/);
   });
 });
 

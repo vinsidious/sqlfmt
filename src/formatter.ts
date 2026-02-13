@@ -1753,33 +1753,16 @@ function formatJoin(join: AST.JoinClause, ctx: FormatContext, needsBlank: boolea
       lines.push(usingPad + formatJoinUsingClause(join));
     }
   } else {
-    const isFullOuter = /^FULL(?:\s+OUTER)?\s+JOIN$/i.test(join.joinType);
-    if (isFullOuter) {
-      const joinTail = join.joinType.replace(/^FULL\s*/i, '').trim();
-      const joinPrefix = rightAlign('FULL', ctx) + (joinTail ? ' ' + joinTail : '');
-      const tableStartCol = stringDisplayWidth(joinPrefix) + 1;
-      const tableStr = formatJoinTable(join, tableStartCol, ctx.runtime);
-      lines.push(joinPrefix + ' ' + tableStr);
-      if (join.on) {
-        const indent = ' '.repeat(cCol);
-        const cond = formatJoinOn(join.on, cCol + 3, ctx.runtime);
-        lines.push(indent + 'ON ' + cond);
-      } else if (join.usingClause && join.usingClause.length > 0) {
-        const indent = ' '.repeat(cCol);
-        lines.push(indent + formatJoinUsingClause(join));
-      }
-    } else {
-      // Qualified JOIN: indented at content column
-      const indent = ' '.repeat(cCol);
-      const tableStr = formatJoinTable(join, cCol + join.joinType.length + 1, ctx.runtime);
-      lines.push(indent + join.joinType + ' ' + tableStr);
+    // Qualified JOIN: indented at content column
+    const indent = ' '.repeat(cCol);
+    const tableStr = formatJoinTable(join, cCol + join.joinType.length + 1, ctx.runtime);
+    lines.push(indent + join.joinType + ' ' + tableStr);
 
-      if (join.on) {
-        const cond = formatJoinOn(join.on, cCol + 3, ctx.runtime); // 3 for "ON "
-        lines.push(indent + 'ON ' + cond);
-      } else if (join.usingClause && join.usingClause.length > 0) {
-        lines.push(indent + formatJoinUsingClause(join));
-      }
+    if (join.on) {
+      const cond = formatJoinOn(join.on, cCol + 3, ctx.runtime); // 3 for "ON "
+      lines.push(indent + 'ON ' + cond);
+    } else if (join.usingClause && join.usingClause.length > 0) {
+      lines.push(indent + formatJoinUsingClause(join));
     }
   }
 
