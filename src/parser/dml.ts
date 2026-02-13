@@ -102,6 +102,22 @@ export function parseInsertStatement(
     }
   }
 
+  let outputClause: string | undefined;
+  if (ctx.peekUpper() === 'OUTPUT') {
+    ctx.advance(); // OUTPUT
+    const tokens: Token[] = [];
+    let depth = 0;
+    const stop = new Set(['DEFAULT', 'VALUES', 'VALUE', 'SET', 'TABLE', 'SELECT', 'WITH', 'EXEC', 'EXECUTE']);
+    while (!ctx.isAtEnd() && !ctx.check(';')) {
+      if (depth === 0 && stop.has(ctx.peekUpper())) break;
+      const token = ctx.advance();
+      tokens.push(token);
+      if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+      else if (token.value === ')' || token.value === ']' || token.value === '}') depth = Math.max(0, depth - 1);
+    }
+    outputClause = tokensToSql(tokens).trim() || undefined;
+  }
+
   let defaultValues = false;
   const valueClauseLeadingComments: AST.CommentNode[] = ctx.consumeComments?.() ?? [];
   let values: AST.ValuesList[] | undefined;
@@ -200,6 +216,7 @@ export function parseInsertStatement(
     alias,
     columns,
     overriding,
+    outputClause,
     valueClauseLeadingComments: valueClauseLeadingComments.length > 0 ? valueClauseLeadingComments : undefined,
     defaultValues,
     values,
@@ -337,7 +354,8 @@ export function parseUpdateStatement(
 ): AST.UpdateStatement {
   ctx.expect('UPDATE');
   const table = parseDottedName(ctx);
-  const alias = parseOptionalTableAlias(ctx, new Set(['SET', ',']));
+  const alias = parseOptionalTableAlias(ctx, new Set(['WITH', 'SET', ',']));
+  const targetHint = parseOptionalTsqlTableHint(ctx);
 
   const additionalTables: Array<{ table: string; alias?: string }> = [];
   while (ctx.check(',')) {
@@ -396,6 +414,7 @@ export function parseUpdateStatement(
     type: 'update',
     table,
     alias,
+    targetHint,
     additionalTables: additionalTables.length > 0 ? additionalTables : undefined,
     joinSources,
     setItems,
@@ -405,6 +424,58 @@ export function parseUpdateStatement(
     returning,
     leadingComments: comments,
   };
+}
+
+function parseOptionalTsqlTableHint(ctx: DmlParser): string | undefined {
+  // T-SQL table hints: UPDATE t WITH (UPDLOCK, HOLDLOCK) SET ...
+  if (!(ctx.peekUpper() === 'WITH' && ctx.peekUpperAt(1) === '(')) return undefined;
+
+  const tokens: Token[] = [];
+  tokens.push(ctx.advance()); // WITH
+  tokens.push(ctx.advance()); // (
+
+  let depth = 1;
+  while (!ctx.isAtEnd() && depth > 0) {
+    const token = ctx.advance();
+    tokens.push(token);
+    if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+    else if (token.value === ')' || token.value === ']' || token.value === '}') depth = Math.max(0, depth - 1);
+  }
+
+  // Ensure space between WITH and opening paren: WITH(X) -> WITH (X)
+  const text = tokensToSql(tokens).replace(/\bWITH\(/g, 'WITH (').trim();
+  return text || undefined;
+}
+
+function tokensToSql(tokens: Token[]): string {
+  if (tokens.length === 0) return '';
+  let out = '';
+  for (let i = 0; i < tokens.length; i++) {
+    const currToken = tokens[i];
+    const curr = currToken.type === 'keyword' ? currToken.upper : currToken.value;
+    const prevToken = i > 0 ? tokens[i - 1] : undefined;
+    const prev = prevToken ? (prevToken.type === 'keyword' ? prevToken.upper : prevToken.value) : '';
+    if (i === 0) {
+      out += curr;
+      continue;
+    }
+
+    if (prevToken?.type === 'line_comment') {
+      out += '\n' + curr;
+      continue;
+    }
+
+    const noSpaceBefore =
+      curr === ',' || curr === ')' || curr === ']' || curr === ';' || curr === '.' || curr === '(' || curr === ':';
+    const noSpaceAfterPrev = prev === '(' || prev === '[' || prev === '.' || prev === '::' || prev === ':';
+    const noSpaceAroundPair = curr === '::' || curr === '[' || prev === '::' || curr === '@' || prev === '@' || curr === '$' || prev === '$';
+    if (noSpaceBefore || noSpaceAfterPrev || noSpaceAroundPair) {
+      out += curr;
+    } else {
+      out += ' ' + curr;
+    }
+  }
+  return out.trim();
 }
 
 export function parseSetItem(ctx: DmlParser): AST.SetItem {
@@ -475,6 +546,7 @@ export function parseDeleteStatement(
   comments: AST.CommentNode[]
 ): AST.DeleteStatement {
   ctx.expect('DELETE');
+  let outputClause: string | undefined;
   let targets: string[] | undefined;
   let table: string;
   if (ctx.peekUpper() !== 'FROM') {
@@ -483,6 +555,20 @@ export function parseDeleteStatement(
     while (ctx.check(',')) {
       ctx.advance();
       parsedTargets.push(parseDottedName(ctx));
+    }
+
+    if (ctx.peekUpper() === 'OUTPUT') {
+      ctx.advance(); // OUTPUT
+      const tokens: Token[] = [];
+      let depth = 0;
+      while (!ctx.isAtEnd() && !ctx.check(';')) {
+        if (depth === 0 && ctx.peekUpper() === 'FROM') break;
+        const token = ctx.advance();
+        tokens.push(token);
+        if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+        else if (token.value === ')' || token.value === ']' || token.value === '}') depth = Math.max(0, depth - 1);
+      }
+      outputClause = tokensToSql(tokens).trim() || undefined;
     }
 
     if (ctx.peekUpper() === 'FROM') {
@@ -504,6 +590,21 @@ export function parseDeleteStatement(
     table = parseDottedName(ctx);
   }
   const alias = parseOptionalTableAlias(ctx, new Set(['USING', 'WHERE', 'RETURNING', 'GO', 'DBCC']));
+
+  if (!outputClause && ctx.peekUpper() === 'OUTPUT') {
+    ctx.advance(); // OUTPUT
+    const tokens: Token[] = [];
+    let depth = 0;
+    const stop = new Set(['USING', 'WHERE', 'RETURNING', 'GO', 'DBCC']);
+    while (!ctx.isAtEnd() && !ctx.check(';')) {
+      if (depth === 0 && stop.has(ctx.peekUpper())) break;
+      const token = ctx.advance();
+      tokens.push(token);
+      if (token.value === '(' || token.value === '[' || token.value === '{') depth++;
+      else if (token.value === ')' || token.value === ']' || token.value === '}') depth = Math.max(0, depth - 1);
+    }
+    outputClause = tokensToSql(tokens).trim() || undefined;
+  }
 
   let fromJoins: AST.JoinClause[] | undefined;
   {
@@ -548,6 +649,7 @@ export function parseDeleteStatement(
   return {
     type: 'delete',
     targets,
+    outputClause,
     from: table,
     alias,
     fromJoins,

@@ -128,6 +128,7 @@ export interface InsertStatement {
   readonly alias?: string;
   readonly columns: readonly string[];
   readonly overriding?: 'SYSTEM VALUE' | 'USER VALUE';
+  readonly outputClause?: string;
   readonly valueClauseLeadingComments?: readonly CommentNode[];
   readonly defaultValues?: boolean;
   readonly values?: readonly ValuesList[];
@@ -161,6 +162,7 @@ export interface UpdateStatement {
   readonly type: 'update';
   readonly table: string;
   readonly alias?: string;
+  readonly targetHint?: string;
   readonly additionalTables?: readonly { readonly table: string; readonly alias?: string }[];
   readonly joinSources?: readonly JoinClause[];
   readonly setItems: readonly SetItem[];
@@ -174,6 +176,7 @@ export interface UpdateStatement {
 export interface DeleteStatement {
   readonly type: 'delete';
   readonly targets?: readonly string[];
+  readonly outputClause?: string;
   readonly from: string;
   readonly alias?: string;
   readonly fromJoins?: readonly JoinClause[];
@@ -350,11 +353,13 @@ export interface MergeStatement {
   readonly source: { readonly table: string | Expression; readonly alias?: string };
   readonly on: Expression;
   readonly whenClauses: readonly MergeWhenClause[];
+  readonly outputClause?: string;
   readonly leadingComments: readonly CommentNode[];
 }
 
 export interface MergeWhenClause {
   readonly matched: boolean;
+  readonly matchKind?: 'NOT MATCHED' | 'NOT MATCHED BY TARGET' | 'NOT MATCHED BY SOURCE';
   readonly condition?: Expression;
   readonly action: 'delete' | 'update' | 'insert';
   readonly setItems?: readonly SetItem[];
@@ -807,6 +812,7 @@ export interface FromClause {
   readonly aliasColumns?: readonly string[];
   readonly indexHint?: string;
   readonly pivotClause?: string;
+  readonly jsonWithClause?: string;
   readonly lateral?: boolean;
   readonly ordinality?: boolean;
   readonly tablesample?: { readonly method: string; readonly args: readonly Expression[]; readonly repeatable?: Expression };
@@ -821,6 +827,7 @@ export interface JoinClause {
   readonly aliasColumns?: readonly string[];
   readonly indexHint?: string;
   readonly pivotClause?: string;
+  readonly jsonWithClause?: string;
   readonly lateral?: boolean;
   readonly ordinality?: boolean;
   readonly on?: Expression;

@@ -203,6 +203,8 @@ export const TSQL_PROFILE: DialectProfile = makeProfile('tsql', {
   extraFunctionKeywords: [
     'GETDATE', 'DATEDIFF', 'GETUTCDATE', 'ISNULL', 'NEWID', 'SCOPE_IDENTITY',
     'OBJECT_ID', 'CHARINDEX', 'PATINDEX', 'STUFF', 'IIF', 'CHOOSE', 'TRY_CONVERT',
+    'OPENJSON', 'JSON_VALUE',
+    'SYSDATETIME', 'SYSDATETIMEOFFSET', 'EOMONTH', 'CHECKSUM', 'ABS',
   ],
   removeKeywords: [
     'AUTO_INCREMENT', 'BIGSERIAL', 'SERIAL', 'BYTEA', 'CIDR', 'INET', 'MACADDR',
