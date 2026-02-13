@@ -1,6 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
+import { CopyMarkdown } from './copy-markdown';
 
 const components: Components = {
   h1: ({ children, ...props }) => (
@@ -140,8 +141,13 @@ const components: Components = {
 
 export function MarkdownContent({ content }: { content: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-      {content}
-    </ReactMarkdown>
+    <div className="relative">
+      <div className="absolute top-0 right-0">
+        <CopyMarkdown content={content} />
+      </div>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {content}
+      </ReactMarkdown>
+    </div>
   );
 }
