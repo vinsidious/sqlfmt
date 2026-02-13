@@ -32,14 +32,21 @@ const components: Components = {
       {children}
     </p>
   ),
-  a: ({ children, ...props }) => (
-    <a
-      className="text-brand hover:text-brand-light underline underline-offset-2 transition-colors duration-200"
-      {...props}
-    >
-      {children}
-    </a>
-  ),
+  a: ({ children, href, ...props }) => {
+    // Transform relative links to ../README.md into /docs route
+    const resolvedHref = href?.replace(/^\.\.\/README\.md(#.*)?$/, '/docs$1') ?? href;
+    const isExternal = resolvedHref?.startsWith('http://') || resolvedHref?.startsWith('https://');
+    return (
+      <a
+        href={resolvedHref}
+        className="text-brand hover:text-brand-light underline underline-offset-2 transition-colors duration-200"
+        {...(isExternal && { target: '_blank', rel: 'noopener noreferrer' })}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
   code: ({ children, className, ...props }) => {
     const isBlock = className?.startsWith('language-');
     if (isBlock) {
